@@ -1,0 +1,487 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .db import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    full_name: Mapped[Optional[str]] = mapped_column(String(255))
+    logo_url: Mapped[Optional[str]] = mapped_column(String(2048))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace_memberships: Mapped[list[WorkspaceMember]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="user")
+
+
+class Workspace(Base):
+    __tablename__ = "workspaces"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    logo_url: Mapped[Optional[str]] = mapped_column(String(2048))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    members: Mapped[list[WorkspaceMember]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    subscriptions: Mapped[list[Subscription]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    datasets: Mapped[list[Dataset]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    integrations: Mapped[list[Integration]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    conversations: Mapped[list[Conversation]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    reports: Mapped[list[Report]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    exports: Mapped[list[Export]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    schedules: Mapped[list[Schedule]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    jobs: Mapped[list[Job]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    audit_logs: Mapped[list[AuditLog]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+
+
+class WorkspaceMember(Base):
+    __tablename__ = "workspace_members"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "user_id", name="uq_workspace_member"),
+        Index("ix_workspace_members_workspace_id", "workspace_id"),
+        Index("ix_workspace_members_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    role: Mapped[str] = mapped_column(String(50), nullable=False, default="member")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="members")
+    user: Mapped[User] = relationship(back_populates="workspace_memberships")
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+    __table_args__ = (Index("ix_subscriptions_workspace_id", "workspace_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    plan: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    current_period_start: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    current_period_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="subscriptions")
+
+
+class Dataset(Base):
+    __tablename__ = "datasets"
+    __table_args__ = (Index("ix_datasets_workspace_id", "workspace_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    data: Mapped[Optional[dict]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="datasets")
+    files: Mapped[list[DatasetFile]] = relationship(
+        back_populates="dataset", cascade="all, delete-orphan"
+    )
+
+
+class DatasetFile(Base):
+    __tablename__ = "dataset_files"
+    __table_args__ = (
+        Index("ix_dataset_files_dataset_id", "dataset_id"),
+        Index("ix_dataset_files_workspace_id", "workspace_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    s3_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    content_type: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    dataset: Mapped[Dataset] = relationship(back_populates="files")
+    workspace: Mapped[Workspace] = relationship()
+
+
+class Integration(Base):
+    __tablename__ = "integrations"
+    __table_args__ = (Index("ix_integrations_workspace_id", "workspace_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="disconnected")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="integrations")
+    accounts: Mapped[list[IntegrationAccount]] = relationship(
+        back_populates="integration", cascade="all, delete-orphan"
+    )
+    meta_pages: Mapped[list[MetaPage]] = relationship(
+        back_populates="integration", cascade="all, delete-orphan"
+    )
+
+
+class IntegrationAccount(Base):
+    __tablename__ = "integration_accounts"
+    __table_args__ = (
+        UniqueConstraint("integration_id", "external_account_id", name="uq_integration_account"),
+        Index("ix_integration_accounts_integration_id", "integration_id"),
+        Index("ix_integration_accounts_workspace_id", "workspace_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    integration_id: Mapped[int] = mapped_column(ForeignKey("integrations.id"), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    external_account_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    integration: Mapped[Integration] = relationship(back_populates="accounts")
+    workspace: Mapped[Workspace] = relationship()
+    tokens: Mapped[list[IntegrationToken]] = relationship(
+        back_populates="account", cascade="all, delete-orphan"
+    )
+
+
+class IntegrationToken(Base):
+    __tablename__ = "integration_tokens"
+    __table_args__ = (
+        Index("ix_integration_tokens_account_id", "account_id"),
+        Index("ix_integration_tokens_workspace_id", "workspace_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("integration_accounts.id"), nullable=False
+    )
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    token_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token: Mapped[Optional[str]] = mapped_column(Text)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    account: Mapped[IntegrationAccount] = relationship(back_populates="tokens")
+    workspace: Mapped[Workspace] = relationship()
+
+
+class MetaPage(Base):
+    __tablename__ = "meta_pages"
+    __table_args__ = (
+        UniqueConstraint("integration_id", "record_type", "page_id", name="uq_meta_pages_integration_record"),
+        Index("ix_meta_pages_integration_id", "integration_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    integration_id: Mapped[int] = mapped_column(ForeignKey("integrations.id"), nullable=False)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    record_type: Mapped[str] = mapped_column(String(50), nullable=False, default="facebook_page")
+    page_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    parent_page_id: Mapped[Optional[str]] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    instagram_username: Mapped[Optional[str]] = mapped_column(String(255))
+    profile_picture_url: Mapped[Optional[str]] = mapped_column(String(2048))
+    page_access_token: Mapped[Optional[str]] = mapped_column(Text)
+    tasks: Mapped[Optional[list]] = mapped_column(JSONB)
+    perms: Mapped[Optional[list]] = mapped_column(JSONB)
+    category: Mapped[Optional[str]] = mapped_column(String(255))
+    business_name: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    integration: Mapped[Integration] = relationship(back_populates="meta_pages")
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+    __table_args__ = (Index("ix_conversations_workspace_id", "workspace_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="conversations")
+    messages: Mapped[list[Message]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan"
+    )
+
+
+class Message(Base):
+    __tablename__ = "messages"
+    __table_args__ = (Index("ix_messages_conversation_id", "conversation_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+class Report(Base):
+    __tablename__ = "reports"
+    __table_args__ = (Index("ix_reports_workspace_id", "workspace_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="reports")
+    versions: Mapped[list[ReportVersion]] = relationship(
+        back_populates="report", cascade="all, delete-orphan"
+    )
+
+
+class ReportVersion(Base):
+    __tablename__ = "report_versions"
+    __table_args__ = (
+        UniqueConstraint("report_id", "version", name="uq_report_version"),
+        Index("ix_report_versions_report_id", "report_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    report: Mapped[Report] = relationship(back_populates="versions")
+    blocks: Mapped[list[ReportBlock]] = relationship(
+        back_populates="report_version", cascade="all, delete-orphan"
+    )
+
+
+class ReportBlock(Base):
+    __tablename__ = "report_blocks"
+    __table_args__ = (Index("ix_report_blocks_report_version_id", "report_version_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_version_id: Mapped[int] = mapped_column(
+        ForeignKey("report_versions.id"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(String(50), nullable=False)
+    order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    data_json: Mapped[Optional[str]] = mapped_column(Text)
+    editable_fields_json: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    report_version: Mapped[ReportVersion] = relationship(back_populates="blocks")
+
+
+class Export(Base):
+    __tablename__ = "exports"
+    __table_args__ = (
+        Index("ix_exports_workspace_id", "workspace_id"),
+        Index("ix_exports_report_id", "report_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    report_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reports.id"))
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    output_s3_key: Mapped[Optional[str]] = mapped_column(String(1024))
+    download_key: Mapped[Optional[str]] = mapped_column(String(1024))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="exports")
+    report: Mapped[Optional[Report]] = relationship()
+
+
+class Schedule(Base):
+    __tablename__ = "schedules"
+    __table_args__ = (
+        Index("ix_schedules_workspace_id", "workspace_id"),
+        Index("ix_schedules_report_id", "report_id"),
+        Index("ix_schedules_integration_id", "integration_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    report_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reports.id"))
+    integration_id: Mapped[Optional[int]] = mapped_column(ForeignKey("integrations.id"))
+    freq: Mapped[str] = mapped_column(String(50), nullable=False, default="monthly")
+    day_of_month: Mapped[Optional[int]] = mapped_column(Integer)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="schedules")
+    report: Mapped[Report] = relationship()
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+    __table_args__ = (
+        Index("ix_jobs_workspace_id", "workspace_id"),
+        Index("ix_jobs_schedule_id", "schedule_id"),
+        Index("ix_jobs_export_id", "export_id"),
+        Index("ix_jobs_type", "type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    schedule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schedules.id"))
+    export_id: Mapped[Optional[int]] = mapped_column(ForeignKey("exports.id"))
+    type: Mapped[str] = mapped_column(String(50), nullable=False, default="sync_integration")
+    payload_json: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="queued")
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="jobs")
+    schedule: Mapped[Optional[Schedule]] = relationship()
+    export: Mapped[Optional[Export]] = relationship()
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_logs_workspace_id", "workspace_id"),
+        Index("ix_audit_logs_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    action: Mapped[str] = mapped_column(String(255), nullable=False)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="audit_logs")
+    user: Mapped[Optional[User]] = relationship(back_populates="audit_logs")
