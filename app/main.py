@@ -9878,7 +9878,12 @@ def meta_sync_pages(
         )
 
         key = f"workspaces/{integration.workspace_id}/datasets/{dataset.id}/{filename}"
-        s3 = boto3.client("s3", region_name=settings.aws_region)
+        s3 = boto3.client(
+            "s3",
+            region_name=settings.aws_region,
+            aws_access_key_id=settings.aws_access_key_id,
+            aws_secret_access_key=settings.aws_secret_access_key,
+        )
         try:
             s3.put_object(Bucket=settings.s3_inputs_bucket, Key=key, Body=csv_bytes)
         except ClientError as exc:

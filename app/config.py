@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     aws_region: str
     s3_inputs_bucket: str
     s3_outputs_bucket: str
+    aws_access_key_id: str | None = Field(default=None, validation_alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str | None = Field(default=None, validation_alias="AWS_SECRET_ACCESS_KEY")
 
     export_lambda_url: str
     export_api_key: str | None = None
