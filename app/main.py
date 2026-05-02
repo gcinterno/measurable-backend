@@ -9895,7 +9895,12 @@ def meta_sync_pages(
         )
         try:
             s3.put_object(Bucket=settings.s3_inputs_bucket, Key=key, Body=csv_bytes)
-        except ClientError as exc:
+        except Exception as exc:
+            print("S3 PUT ERROR")
+            print(exc)
+            print(repr(exc))
+            if hasattr(exc, "response"):
+                print(getattr(exc, "response"))
             error_response = getattr(exc, "response", {}) if hasattr(exc, "response") else {}
             error_details = error_response.get("Error", {}) if isinstance(error_response, dict) else {}
             metadata = error_response.get("ResponseMetadata", {}) if isinstance(error_response, dict) else {}
@@ -9910,46 +9915,7 @@ def meta_sync_pages(
                     "error_message": error_details.get("Message"),
                     "http_status_code": metadata.get("HTTPStatusCode"),
                     "request_id": metadata.get("RequestId"),
-                },
-            )
-            db.delete(dataset)
-            db.commit()
-            raise http_error(502, "s3_upload_failed", "Failed to upload file.")
-        except NoCredentialsError as exc:
-            logger.error(
-                "Meta Pages sync S3 upload failed: AWS credentials missing",
-                extra={
-                    "bucket": settings.s3_inputs_bucket,
-                    "key": key,
-                    "aws_region": settings.aws_region,
-                    "exception_class": exc.__class__.__name__,
-                },
-            )
-            db.delete(dataset)
-            db.commit()
-            raise http_error(502, "s3_upload_failed", "Failed to upload file.")
-        except PartialCredentialsError as exc:
-            logger.error(
-                "Meta Pages sync S3 upload failed: AWS credentials incomplete",
-                extra={
-                    "bucket": settings.s3_inputs_bucket,
-                    "key": key,
-                    "aws_region": settings.aws_region,
-                    "exception_class": exc.__class__.__name__,
-                },
-            )
-            db.delete(dataset)
-            db.commit()
-            raise http_error(502, "s3_upload_failed", "Failed to upload file.")
-        except Exception as exc:
-            logger.error(
-                "Meta Pages sync S3 upload failed",
-                extra={
-                    "bucket": settings.s3_inputs_bucket,
-                    "key": key,
-                    "aws_region": settings.aws_region,
-                    "exception_class": exc.__class__.__name__,
-                    "error_message": str(exc),
+                    "exception_repr": repr(exc),
                 },
             )
             db.delete(dataset)
