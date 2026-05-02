@@ -183,6 +183,24 @@ def _get_conversation_for_workspace(
         raise http_error(403, "forbidden", "Conversation access denied.")
     return conversation
 
+
+def _sqlalchemy_error_log_payload(exc: Exception, *, stage: str) -> dict[str, object]:
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None) if orig is not None else None
+    return {
+        "stage": stage,
+        "exception_type": type(exc).__name__,
+        "message": str(exc),
+        "driver_exception_type": type(orig).__name__ if orig is not None else None,
+        "driver_message": str(orig) if orig is not None else None,
+        "pgcode": getattr(orig, "pgcode", None),
+        "schema_name": getattr(diag, "schema_name", None) if diag is not None else None,
+        "table_name": getattr(diag, "table_name", None) if diag is not None else None,
+        "column_name": getattr(diag, "column_name", None) if diag is not None else None,
+        "constraint_name": getattr(diag, "constraint_name", None) if diag is not None else None,
+        "sqlalchemy_exception": exc.__class__.__name__,
+    }
+
 def _report_metadata(report: Report) -> dict[str, object]:
     if not report.description:
         return {}
@@ -559,19 +577,35 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
             plan=subscription.plan,
             message="User registered successfully.",
         )
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
+        logger.exception(
+            "auth_register_db_error",
+            extra=_sqlalchemy_error_log_payload(exc, stage="insert"),
+        )
         raise http_error(409, "email_taken", "Email already registered.")
-    except OperationalError:
+    except OperationalError as exc:
         db.rollback()
+        logger.exception(
+            "auth_register_db_error",
+            extra=_sqlalchemy_error_log_payload(exc, stage="connection"),
+        )
         raise http_error(500, "db_unavailable", "Database connection failed.")
-    except ProgrammingError:
+    except ProgrammingError as exc:
         db.rollback()
+        logger.exception(
+            "auth_register_db_error",
+            extra=_sqlalchemy_error_log_payload(exc, stage="insert"),
+        )
         raise http_error(
             500, "db_schema_mismatch", "Database schema is out of date. Run migrations."
         )
-    except SQLAlchemyError:
+    except SQLAlchemyError as exc:
         db.rollback()
+        logger.exception(
+            "auth_register_db_error",
+            extra=_sqlalchemy_error_log_payload(exc, stage="sqlalchemy"),
+        )
         raise http_error(500, "db_error", "Database error.")
 
 @app.post("/auth/login", response_model=TokenOut)
