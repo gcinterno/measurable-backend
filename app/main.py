@@ -9884,6 +9884,15 @@ def meta_sync_pages(
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
         )
+        logger.info(
+            "S3 put_object start",
+            extra={
+                "bucket": settings.s3_inputs_bucket,
+                "aws_region": settings.aws_region,
+                "key": key,
+                "csv_bytes_length": len(csv_bytes),
+            },
+        )
         try:
             s3.put_object(Bucket=settings.s3_inputs_bucket, Key=key, Body=csv_bytes)
         except ClientError as exc:
