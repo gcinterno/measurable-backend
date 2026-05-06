@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import secrets
 from functools import lru_cache
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -18,8 +19,10 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import engine
 from .errors import http_error
+from .security import hash_password, hash_verification_code, verify_password, verify_verification_code
 from .models import (
     Conversation,
+    EmailVerificationCode,
     Dataset,
     DatasetFile,
     Export,
@@ -293,11 +296,28 @@ def register_user_with_default_workspace(
     email: str,
     password_hash: str,
     full_name: str | None,
+    email_verified: bool = False,
+    auth_provider: str = "email",
+    google_sub: str | None = None,
+    facebook_sub: str | None = None,
+    last_login_at: datetime | None = None,
 ) -> tuple[User, Workspace, Subscription]:
     user = User(
         email=email,
         password_hash=password_hash,
         full_name=full_name,
+        email_verified=email_verified,
+        auth_provider=auth_provider,
+        google_sub=google_sub,
+        facebook_sub=facebook_sub,
+        is_admin=False,
+        onboarding_completed=False,
+        user_type=None,
+        goals=[],
+        platforms=[],
+        is_deleted=False,
+        deleted_at=None,
+        last_login_at=last_login_at,
         is_active=True,
     )
     db.add(user)
@@ -320,11 +340,285 @@ def register_user_with_default_workspace(
         status="active",
     )
     db.add(subscription)
-    db.commit()
-    db.refresh(user)
-    db.refresh(workspace)
-    db.refresh(subscription)
     return user, workspace, subscription
+
+
+AUTH_CODE_PURPOSE_EMAIL_VERIFICATION = "email_verification"
+AUTH_CODE_PURPOSE_PASSWORD_RESET = "password_reset"
+AUTH_CODE_TTL_MINUTES = 15
+AUTH_CODE_RESEND_COOLDOWN_SECONDS = 60
+AUTH_CODE_MAX_ATTEMPTS = 5
+
+
+def generate_six_digit_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _auth_code_subject(purpose: str) -> str:
+    if purpose == AUTH_CODE_PURPOSE_PASSWORD_RESET:
+        return "Reset your Measurable password"
+    return "Your Measurable verification code"
+
+
+def _auth_code_action_label(purpose: str) -> str:
+    if purpose == AUTH_CODE_PURPOSE_PASSWORD_RESET:
+        return "reset your password"
+    return "verify your email"
+
+
+def build_auth_email_html(
+    *,
+    full_name: str | None,
+    code: str,
+    purpose: str,
+    expires_minutes: int = AUTH_CODE_TTL_MINUTES,
+) -> str:
+    safe_name = (full_name or "there").strip() or "there"
+    subject = _auth_code_subject(purpose)
+    is_password_reset = purpose == AUTH_CODE_PURPOSE_PASSWORD_RESET
+    title = "Reset your password" if is_password_reset else "Verify your email"
+    subtitle = (
+        "Use the code below to reset your password"
+        if is_password_reset
+        else "Use the code below to verify your account"
+    )
+    footer_hint = (
+        "If you didn’t request this, you can ignore this email."
+        if not is_password_reset
+        else "If you didn’t request a password reset, you can ignore this email."
+    )
+    return f"""\
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{subject}</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f6f7fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f6f7fb;width:100%;border-collapse:collapse;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:480px;width:100%;border-collapse:collapse;">
+            <tr>
+              <td style="background:#ffffff;border-radius:12px;box-shadow:0 8px 24px rgba(15,23,42,0.08);padding:32px;">
+                <div style="font-size:14px;line-height:20px;font-weight:600;color:#6b7280;letter-spacing:0.02em;margin:0 0 20px;">
+                  Measurable
+                </div>
+
+                <h1 style="margin:0 0 12px;font-size:24px;line-height:32px;font-weight:700;color:#111827;">
+                  {title}
+                </h1>
+
+                <p style="margin:0 0 24px;font-size:15px;line-height:24px;color:#374151;">
+                  {subtitle}
+                </p>
+
+                <p style="margin:0 0 16px;font-size:14px;line-height:22px;color:#6b7280;">
+                  Hi {safe_name},
+                </p>
+
+                <div style="background:#f1f3f5;border-radius:8px;padding:16px;text-align:center;margin:0 0 16px;">
+                  <div style="font-size:32px;line-height:40px;font-weight:700;letter-spacing:8px;color:#111827;">
+                    {code}
+                  </div>
+                </div>
+
+                <p style="margin:0 0 24px;font-size:14px;line-height:22px;color:#6b7280;text-align:center;">
+                  This code expires in {expires_minutes} minutes
+                </p>
+
+                <div style="border-top:1px solid #e5e7eb;padding-top:16px;">
+                  <p style="margin:0 0 8px;font-size:12px;line-height:18px;color:#9ca3af;">
+                    {footer_hint}
+                  </p>
+                  <p style="margin:0;font-size:12px;line-height:18px;color:#9ca3af;">
+                    Measurable — AI Report Generator
+                  </p>
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+
+
+def build_auth_email_text(
+    *,
+    full_name: str | None,
+    code: str,
+    purpose: str,
+    expires_minutes: int = AUTH_CODE_TTL_MINUTES,
+) -> str:
+    safe_name = (full_name or "there").strip() or "there"
+    action_label = _auth_code_action_label(purpose)
+    footer_hint = (
+        "If you did not request this email, you can ignore it."
+        if purpose != AUTH_CODE_PURPOSE_PASSWORD_RESET
+        else "If you did not request a password reset, you can ignore it."
+    )
+    return (
+        f"Hi {safe_name},\n\n"
+        f"Use this code to {action_label}: {code}\n\n"
+        f"This code expires in {expires_minutes} minutes.\n"
+        f"{footer_hint}\n"
+    )
+
+
+def _ses_client() -> Any:
+    client_kwargs: dict[str, Any] = {"region_name": settings.aws_region}
+    if settings.aws_access_key_id:
+        client_kwargs["aws_access_key_id"] = settings.aws_access_key_id
+    if settings.aws_secret_access_key:
+        client_kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+    if settings.aws_session_token:
+        client_kwargs["aws_session_token"] = settings.aws_session_token
+    return boto3.client("ses", **client_kwargs)
+
+
+def send_auth_email(
+    *,
+    recipient_email: str,
+    subject: str,
+    html_body: str,
+    text_body: str,
+) -> None:
+    from_email = str(settings.ses_from_email or "").strip()
+    if not from_email:
+        raise http_error(503, "email_service_unavailable", "Email service is not configured.")
+
+    try:
+        ses = _ses_client()
+        ses.send_email(
+            Source=from_email,
+            Destination={"ToAddresses": [recipient_email]},
+            ReplyToAddresses=["hello@measurableapp.com"],
+            Message={
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": {
+                    "Text": {"Data": text_body, "Charset": "UTF-8"},
+                    "Html": {"Data": html_body, "Charset": "UTF-8"},
+                },
+            },
+        )
+    except (NoCredentialsError, BotoCoreError, ClientError) as exc:
+        logger.exception(
+            "auth_email_send_failed",
+            extra={
+                "recipient_domain": recipient_email.split("@")[-1] if "@" in recipient_email else None,
+                "exception_class": exc.__class__.__name__,
+                "reply_to": "hello@measurableapp.com",
+            },
+        )
+        raise http_error(503, "email_delivery_failed", "Unable to send verification email.") from exc
+
+
+def _latest_auth_code(
+    db: Session,
+    *,
+    user_id: int,
+    purpose: str,
+    include_expired: bool = True,
+) -> EmailVerificationCode | None:
+    query = (
+        db.query(EmailVerificationCode)
+        .filter(EmailVerificationCode.user_id == user_id, EmailVerificationCode.purpose == purpose)
+        .order_by(EmailVerificationCode.created_at.desc(), EmailVerificationCode.id.desc())
+    )
+    if not include_expired:
+        query = query.filter(EmailVerificationCode.used_at.is_(None))
+    return query.first()
+
+
+def _as_utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def issue_auth_code(
+    db: Session,
+    *,
+    user: User,
+    purpose: str,
+    cooldown_seconds: int = AUTH_CODE_RESEND_COOLDOWN_SECONDS,
+    ttl_minutes: int = AUTH_CODE_TTL_MINUTES,
+) -> str:
+    now = datetime.now(timezone.utc)
+    latest = _latest_auth_code(db, user_id=user.id, purpose=purpose)
+    if latest and latest.used_at is None:
+        latest_expires_at = _as_utc_datetime(latest.expires_at)
+        latest_created_at = _as_utc_datetime(latest.created_at)
+        if latest_expires_at and latest_expires_at > now:
+            elapsed_seconds = (now - latest_created_at).total_seconds() if latest_created_at else None
+            if elapsed_seconds is not None and elapsed_seconds < cooldown_seconds:
+                raise http_error(
+                    429,
+                    "code_resend_rate_limited",
+                    "Please wait before requesting another code.",
+                )
+        latest.used_at = now
+        db.add(latest)
+
+    code = generate_six_digit_code()
+    code_row = EmailVerificationCode(
+        user_id=user.id,
+        purpose=purpose,
+        code_hash=hash_verification_code(code),
+        expires_at=now + timedelta(minutes=ttl_minutes),
+        attempts=0,
+    )
+    db.add(code_row)
+    db.flush()
+    logger.info(
+        "auth_code_issued",
+        extra={
+            "user_id": user.id,
+            "purpose": purpose,
+            "expires_at": code_row.expires_at.isoformat() if code_row.expires_at else None,
+        },
+    )
+    return code
+
+
+def validate_auth_code(
+    db: Session,
+    *,
+    user: User,
+    code: str,
+    purpose: str,
+) -> EmailVerificationCode:
+    now = datetime.now(timezone.utc)
+    auth_code = _latest_auth_code(db, user_id=user.id, purpose=purpose)
+    expires_at = _as_utc_datetime(auth_code.expires_at) if auth_code else None
+    if (
+        not auth_code
+        or auth_code.used_at is not None
+        or expires_at is None
+        or expires_at <= now
+        or auth_code.attempts >= AUTH_CODE_MAX_ATTEMPTS
+    ):
+        raise http_error(400, "invalid_or_expired_code", "Invalid or expired verification code.")
+
+    if not verify_verification_code(code, auth_code.code_hash):
+        auth_code.attempts += 1
+        if auth_code.attempts >= AUTH_CODE_MAX_ATTEMPTS:
+            auth_code.used_at = now
+        db.add(auth_code)
+        db.flush()
+        db.commit()
+        raise http_error(400, "invalid_or_expired_code", "Invalid or expired verification code.")
+
+    auth_code.used_at = now
+    db.add(auth_code)
+    db.flush()
+    return auth_code
 
 
 def build_conversation_title(message: str) -> str:
@@ -334,8 +628,8 @@ def build_conversation_title(message: str) -> str:
     return normalized[:80]
 
 
-def build_workspace_ai_demo_response() -> str:
-    return "This is a demo AI response based on your workspace data."
+def build_workspace_ai_no_data_response() -> str:
+    return "No report or dataset is available for this workspace yet. Please sync data or select a report first."
 
 
 def _extract_workspace_metric_value(data: dict[str, Any], key: str) -> Any:
@@ -396,53 +690,167 @@ def build_workspace_data_snapshot(db: Session, workspace_id: int) -> dict[str, A
     }
 
 
+def build_ai_chat_context_snapshot(
+    db: Session,
+    *,
+    workspace_id: int,
+    report: Report | None = None,
+    dataset: Dataset | None = None,
+    current_route: str | None = None,
+    page_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    workspace_snapshot = build_workspace_data_snapshot(db, workspace_id)
+    resolved_dataset = dataset
+    if resolved_dataset is None and report is not None:
+        resolved_dataset = db.get(Dataset, report.dataset_id)
+
+    report_description = _load_json(report.description, {}) if report and report.description else {}
+    report_version = None
+    report_blocks: list[dict[str, Any]] = []
+    if report is not None:
+        report_version = (
+            db.query(ReportVersion)
+            .filter(ReportVersion.report_id == report.id)
+            .order_by(ReportVersion.version.desc(), ReportVersion.id.desc())
+            .first()
+        )
+        if report_version is not None:
+            blocks = (
+                db.query(ReportBlock)
+                .filter(ReportBlock.report_version_id == report_version.id)
+                .order_by(ReportBlock.order.asc(), ReportBlock.id.asc())
+                .all()
+            )
+            for block in blocks:
+                block_data = _load_json(block.data_json, {})
+                editable_fields = _load_json(block.editable_fields_json, [])
+                report_blocks.append(
+                    {
+                        "id": block.id,
+                        "type": block.type,
+                        "order": block.order,
+                        "data": block_data if isinstance(block_data, dict) else {},
+                        "editable_fields": editable_fields if isinstance(editable_fields, list) else [],
+                    }
+                )
+
+    dataset_data = resolved_dataset.data if resolved_dataset and isinstance(resolved_dataset.data, dict) else {}
+    report_inputs = extract_meta_pages_report_inputs(dataset_data) if dataset_data else {}
+    report_inputs_for_ai = dict(report_inputs)
+    if resolved_dataset is not None:
+        report_inputs_for_ai.setdefault("dataset_id", resolved_dataset.id)
+        report_inputs_for_ai.setdefault("dataset_name", resolved_dataset.name)
+        report_inputs_for_ai.setdefault("dataset_description", resolved_dataset.description)
+        report_inputs_for_ai.setdefault("dataset_data", dataset_data)
+
+    report_snapshot: dict[str, Any] = {
+        "id": report.id if report is not None else None,
+        "title": report.name if report is not None else None,
+        "name": report.name if report is not None else None,
+        "description": report_description if isinstance(report_description, dict) else {},
+        "timeframe": report_description.get("timeframe") if isinstance(report_description, dict) else None,
+        "latest_version": {
+            "id": report_version.id if report_version is not None else None,
+            "version": report_version.version if report_version is not None else None,
+        },
+        "slides": report_blocks,
+        "blocks": report_blocks,
+    }
+    dataset_snapshot: dict[str, Any] = {
+        "id": resolved_dataset.id if resolved_dataset is not None else None,
+        "name": resolved_dataset.name if resolved_dataset is not None else None,
+        "description": resolved_dataset.description if resolved_dataset is not None else None,
+        "data": dataset_data,
+        "file": {},
+    }
+    if resolved_dataset is not None:
+        latest_file = (
+            db.query(DatasetFile)
+            .filter(DatasetFile.dataset_id == resolved_dataset.id)
+            .order_by(DatasetFile.created_at.desc(), DatasetFile.id.desc())
+            .first()
+        )
+        if latest_file is not None:
+            dataset_snapshot["file"] = {
+                "id": latest_file.id,
+                "s3_key": latest_file.s3_key,
+                "size_bytes": latest_file.size_bytes,
+                "content_type": latest_file.content_type,
+            }
+
+    return {
+        "workspace": {
+            "id": workspace_id,
+            "snapshot": workspace_snapshot,
+        },
+        "route_context": {
+            "current_route": current_route,
+            "page_context": page_context or {},
+        },
+        "report": report_snapshot,
+        "dataset": dataset_snapshot,
+        "report_inputs": report_inputs_for_ai,
+    }
+
+
+def _build_ai_system_prompt(chat_context: dict[str, Any]) -> str:
+    context_json = json.dumps(chat_context, ensure_ascii=False, default=str, indent=2)
+    return (
+        "You are the AI assistant inside Measurable.\n"
+        "Answer only with the information provided in the context below.\n"
+        "Do not invent metrics, dates, report names, or dataset values.\n"
+        "If a metric is missing or unavailable, say so clearly.\n"
+        "Keep the answer concise, specific, and business-focused.\n\n"
+        "Context JSON:\n"
+        f"{context_json}"
+    )
+
+
 def generate_workspace_ai_reply(
     db: Session,
     *,
     conversation: Conversation,
     history: list[Message],
     user_message: str,
+    chat_context: dict[str, Any] | None = None,
 ) -> str:
     if not settings.anthropic_api_key:
-        return build_workspace_ai_demo_response()
+        logger.error(
+            "ai_chat_provider_error",
+            extra={
+                "provider": "anthropic",
+                "exception_class": "ProviderNotConfigured",
+            },
+        )
+        raise http_error(503, "ai_provider_unavailable", "AI provider is not configured.")
 
     try:
         from anthropic import Anthropic
     except ImportError:
-        return build_workspace_ai_demo_response()
-
-    workspace_snapshot = build_workspace_data_snapshot(db, conversation.workspace_id)
-    workspace_data_lines = [
-        f"- Total datasets: {workspace_snapshot['datasets_count']}",
-    ]
-    if workspace_snapshot.get("latest_dataset_summary"):
-        workspace_data_lines.append(
-            f"- Latest insights: {workspace_snapshot['latest_dataset_summary']}"
+        logger.error(
+            "ai_chat_provider_error",
+            extra={
+                "provider": "anthropic",
+                "exception_class": "ImportError",
+            },
         )
-    metrics = workspace_snapshot.get("metrics") if isinstance(workspace_snapshot.get("metrics"), dict) else {}
-    if metrics:
-        metrics_text = ", ".join(f"{key}={value}" for key, value in metrics.items())
-        workspace_data_lines.append(f"- Key metrics: {metrics_text}")
-    else:
-        workspace_data_lines.append("- Key metrics: unavailable")
+        raise http_error(503, "ai_provider_unavailable", "AI provider is not configured.")
 
-    system_prompt = (
-        "You are an AI assistant inside Measurable, a platform that generates "
-        "marketing reports from data.\n\n"
-        "You help users:\n"
-        "- understand their reports\n"
-        "- explain metrics (reach, engagement, sales)\n"
-        "- suggest improvements\n"
-        "- summarize insights\n\n"
-        "Keep answers:\n"
-        "- concise\n"
-        "- actionable\n"
-        "- business-focused\n\n"
-        "You MUST use the workspace data when available.\n"
-        "If data is missing, say so clearly.\n\n"
-        "Workspace data:\n"
-        + "\n".join(workspace_data_lines)
+    effective_context = chat_context or build_ai_chat_context_snapshot(
+        db,
+        workspace_id=conversation.workspace_id,
     )
+    workspace_snapshot = effective_context.get("workspace") if isinstance(effective_context.get("workspace"), dict) else {}
+    report_snapshot = effective_context.get("report") if isinstance(effective_context.get("report"), dict) else {}
+    dataset_snapshot = effective_context.get("dataset") if isinstance(effective_context.get("dataset"), dict) else {}
+    if (
+        not report_snapshot.get("id")
+        and not dataset_snapshot.get("id")
+        and int(workspace_snapshot.get("snapshot", {}).get("datasets_count") or 0) == 0
+    ):
+        return build_workspace_ai_no_data_response()
+
+    system_prompt = _build_ai_system_prompt(effective_context)
     anthropic_messages: list[dict[str, str]] = []
     for message in history[-14:]:
         if message.role not in {"user", "assistant"}:
@@ -464,8 +872,15 @@ def generate_workspace_ai_reply(
             system=system_prompt,
             messages=anthropic_messages,
         )
-    except Exception:
-        return build_workspace_ai_demo_response()
+    except Exception as exc:
+        logger.exception(
+            "ai_chat_provider_error",
+            extra={
+                "provider": "anthropic",
+                "exception_class": exc.__class__.__name__,
+            },
+        )
+        raise
 
     text_parts = [
         block.text.strip()
@@ -474,7 +889,19 @@ def generate_workspace_ai_reply(
     ]
     reply = " ".join(text_parts).strip()
     if not reply:
-        return build_workspace_ai_demo_response()
+        return build_workspace_ai_no_data_response()
+    logger.info(
+        "ai_chat_provider_success",
+        extra={
+            "provider": "anthropic",
+            "workspace_id": conversation.workspace_id,
+            "has_report_context": bool(report_snapshot.get("id")),
+            "has_dataset_context": bool(dataset_snapshot.get("id")),
+            "report_id": report_snapshot.get("id"),
+            "dataset_id": dataset_snapshot.get("id"),
+            "reply_length": len(reply),
+        },
+    )
     return reply
 
 

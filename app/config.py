@@ -14,9 +14,11 @@ class Settings(BaseSettings):
     s3_outputs_bucket: str
     aws_access_key_id: str | None = Field(default=None, validation_alias="AWS_ACCESS_KEY_ID")
     aws_secret_access_key: str | None = Field(default=None, validation_alias="AWS_SECRET_ACCESS_KEY")
+    aws_session_token: str | None = Field(default=None, validation_alias="AWS_SESSION_TOKEN")
 
     export_lambda_url: str
     export_api_key: str | None = None
+    ses_from_email: str | None = Field(default=None, validation_alias="SES_FROM_EMAIL")
     report_export_base_url: str | None = None
     frontend_base_url: str | None = Field(default=None, validation_alias="FRONTEND_BASE_URL")
     cors_origins: str | None = Field(default=None, validation_alias="CORS_ORIGINS")
@@ -50,6 +52,9 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("META_PAGES_REDIRECT_URI", "META_REDIRECT_URI"),
     )
+    google_client_id: str | None = Field(default=None, validation_alias="GOOGLE_CLIENT_ID")
+    google_client_secret: str | None = Field(default=None, validation_alias="GOOGLE_CLIENT_SECRET")
+    google_redirect_uri: str | None = Field(default=None, validation_alias="GOOGLE_REDIRECT_URI")
     meta_api_version: str = "v19.0"
 
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal, Optional
+from datetime import date, datetime
+from typing import Any, ClassVar, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class BaseSchema(BaseModel):
@@ -14,6 +14,14 @@ class UserSchema(BaseSchema):
     id: int
     email: str
     full_name: Optional[str]
+    email_verified: bool
+    auth_provider: str
+    is_admin: bool = False
+    onboarding_completed: bool = False
+    user_type: Optional[str] = None
+    goals: list[str] = Field(default_factory=list)
+    platforms: list[str] = Field(default_factory=list)
+    last_login_at: Optional[datetime] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -26,11 +34,125 @@ class RegisterIn(BaseModel):
 
 
 class RegisterOut(BaseModel):
-    user_id: int
-    email: str
-    workspace_id: int
-    plan: str
     message: str
+    verification_required: bool = True
+    user_id: Optional[int] = None
+    email: Optional[str] = None
+    workspace_id: Optional[int] = None
+    plan: Optional[str] = None
+
+
+class VerifyEmailIn(BaseModel):
+    email: str
+    code: str
+
+
+class VerifyEmailUserOut(BaseModel):
+    id: int
+    email: str
+    full_name: Optional[str] = None
+    email_verified: bool
+    onboarding_completed: bool = False
+
+
+class VerifyEmailOut(BaseModel):
+    ok: bool = True
+    access_token: str
+    token_type: str = "bearer"
+    user: VerifyEmailUserOut
+
+
+class ResendVerificationCodeIn(BaseModel):
+    email: str
+
+
+class ForgotPasswordIn(BaseModel):
+    email: str
+
+
+class ResetPasswordIn(BaseModel):
+    email: str
+    code: str
+    new_password: str
+
+
+class AuthMessageOut(BaseModel):
+    message: str
+
+
+class DeleteAccountIn(BaseModel):
+    reason: Optional[str] = None
+    details: Optional[str] = None
+    confirmation: str
+
+
+class DeleteAccountOut(BaseModel):
+    ok: bool = True
+
+
+class OnboardingUpdate(BaseModel):
+    user_type: str
+    goals: list[str]
+    platforms: list[str]
+
+    _allowed_user_types: ClassVar[set[str]] = {"freelancer", "agency", "business", "team"}
+    _allowed_goals: ClassVar[set[str]] = {
+        "track_growth",
+        "client_reports",
+        "fast_insights",
+        "improve_performance",
+        "understand_data",
+        "export_reports",
+        "automate_reports",
+    }
+    _allowed_platforms: ClassVar[set[str]] = {
+        "facebook",
+        "instagram",
+        "tiktok",
+        "google_analytics",
+        "shopify",
+        "meta_ads",
+        "google_ads",
+        "other",
+    }
+
+    @field_validator("user_type")
+    @classmethod
+    def validate_user_type(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if normalized not in cls._allowed_user_types:
+            raise ValueError("Invalid user_type.")
+        return normalized
+
+    @field_validator("goals")
+    @classmethod
+    def validate_goals(cls, value: list[str]) -> list[str]:
+        normalized = [str(item or "").strip() for item in value]
+        invalid = [item for item in normalized if item not in cls._allowed_goals]
+        if invalid:
+            raise ValueError("Invalid goals value.")
+        return normalized
+
+    @field_validator("platforms")
+    @classmethod
+    def validate_platforms(cls, value: list[str]) -> list[str]:
+        normalized = [str(item or "").strip() for item in value]
+        invalid = [item for item in normalized if item not in cls._allowed_platforms]
+        if invalid:
+            raise ValueError("Invalid platforms value.")
+        return normalized
+
+
+class OnboardingStateOut(BaseModel):
+    onboarding_completed: bool
+    user_type: Optional[str] = None
+    goals: list[str] = Field(default_factory=list)
+    platforms: list[str] = Field(default_factory=list)
+
+
+class OnboardingCompleteOut(BaseModel):
+    ok: bool = True
+    onboarding_completed: bool = True
 
 
 class LoginIn(BaseModel):
@@ -41,6 +163,11 @@ class LoginIn(BaseModel):
 class ChatMessageIn(BaseModel):
     message: str
     conversation_id: Optional[int] = None
+    workspace_id: Optional[int] = None
+    report_id: Optional[int] = None
+    dataset_id: Optional[int] = None
+    current_route: Optional[str] = None
+    page_context: Optional[dict[str, Any]] = None
 
 
 class ChatReplyOut(BaseModel):
@@ -53,6 +180,203 @@ class TokenOut(BaseModel):
     token_type: str = "bearer"
 
 
+class AdminMetricsOut(BaseModel):
+    timeframe: str = "all"
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    total_users: int
+    users_in_period: int
+    active_users_in_period: int
+    reports_in_period: int
+    onboarding_completed_in_period: int
+    onboarding_completion_rate: float
+    deletions_in_period: int = 0
+    users_last_7_days: int = 0
+    active_users_last_7_days: int = 0
+    onboarding_completed: int = 0
+    onboarding_pending: int = 0
+    total_reports: int = 0
+    reports_last_7_days: int = 0
+    paid_users: int
+    free_users: int
+    mrr: float
+    daily_users: list["AdminDailyUsersOut"] = Field(default_factory=list)
+    daily_reports: list["AdminDailyReportsOut"] = Field(default_factory=list)
+    cumulative_users: list["AdminCumulativeUsersOut"] = Field(default_factory=list)
+    users_growth_percent: Optional[float] = None
+    reports_growth_percent: Optional[float] = None
+    active_users_growth_percent: Optional[float] = None
+    insights: list["AdminInsightOut"] = Field(default_factory=list)
+
+
+class AdminDailyUsersOut(BaseModel):
+    date: date
+    users: int
+
+
+class AdminDailyReportsOut(BaseModel):
+    date: date
+    reports: int
+
+
+class AdminCumulativeUsersOut(BaseModel):
+    date: date
+    total_users: int
+
+
+class AdminFunnelStepOut(BaseModel):
+    name: str
+    count: int
+    conversion_from_previous: float = 0.0
+    conversion_from_start: float = 0.0
+    dropoff: int = 0
+
+
+class AdminFunnelOut(BaseModel):
+    steps: list[AdminFunnelStepOut]
+    summary: dict[str, str | float] = Field(default_factory=dict)
+
+
+class AdminCohortRetentionOut(BaseModel):
+    day_0: float = 100.0
+    day_1: float = 0.0
+    day_3: float = 0.0
+    day_7: float = 0.0
+    day_14: float = 0.0
+    day_30: float = 0.0
+
+
+class AdminCohortOut(BaseModel):
+    date: date
+    size: int
+    retention: AdminCohortRetentionOut
+
+
+class AdminCohortAveragesOut(BaseModel):
+    day_1: float = 0.0
+    day_3: float = 0.0
+    day_7: float = 0.0
+    day_14: float = 0.0
+    day_30: float = 0.0
+
+
+class AdminCohortsOut(BaseModel):
+    cohorts: list[AdminCohortOut]
+    averages: AdminCohortAveragesOut = Field(default_factory=AdminCohortAveragesOut)
+
+
+class AdminInsightOut(BaseModel):
+    type: str
+    message: str
+    severity: Literal["positive", "neutral", "warning", "critical"]
+
+
+class AdminUserOut(BaseModel):
+    id: int
+    full_name: Optional[str] = None
+    email: str
+    auth_provider: str
+    email_verified: bool
+    onboarding_completed: bool
+    user_type: Optional[str] = None
+    plan: Optional[str] = None
+    reports_count: int = 0
+    last_login_at: Optional[datetime] = None
+    last_report_created_at: Optional[datetime] = None
+    reports_last_7_days: int = 0
+    health_score: int = 0
+    health_status: Literal["healthy", "active", "at_risk", "dormant"] = "dormant"
+    health_reasons: list[str] = Field(default_factory=list)
+    created_at: datetime
+    is_active: bool
+    is_deleted: bool
+
+
+class AdminUsersOut(BaseModel):
+    items: list[AdminUserOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminProductMetricsOut(BaseModel):
+    avg_time_to_first_report: float = 0.0
+    time_to_first_report_unit: Literal["hours", "days"] = "hours"
+    reports_per_user: float = 0.0
+    ai_usage_rate: float = 0.0
+    repeat_usage_rate: float = 0.0
+    total_users: int = 0
+    users_with_reports: int = 0
+    users_with_2_reports: int = 0
+    users_used_ai: int = 0
+
+
+class AdminOnboardingCountsOut(BaseModel):
+    freelancer: int = 0
+    agency: int = 0
+    business: int = 0
+    team: int = 0
+
+
+class AdminGoalCountsOut(BaseModel):
+    track_growth: int = 0
+    client_reports: int = 0
+    fast_insights: int = 0
+    improve_performance: int = 0
+    understand_data: int = 0
+    export_reports: int = 0
+    automate_reports: int = 0
+
+
+class AdminPlatformCountsOut(BaseModel):
+    facebook: int = 0
+    instagram: int = 0
+    tiktok: int = 0
+    google_analytics: int = 0
+    shopify: int = 0
+    meta_ads: int = 0
+    google_ads: int = 0
+    other: int = 0
+
+
+class AdminOnboardingInsightsOut(BaseModel):
+    user_types: AdminOnboardingCountsOut
+    goals: AdminGoalCountsOut
+    platforms: AdminPlatformCountsOut
+    completed: int
+    pending: int
+    completion_rate: float
+
+
+class AdminDeletionReasonCountsOut(BaseModel):
+    too_expensive: int = 0
+    missing_features: int = 0
+    hard_to_use: int = 0
+    no_longer_needed: int = 0
+    switching_tool: int = 0
+    privacy_concerns: int = 0
+    other: int = 0
+
+
+class AdminDeletionFeedbackOut(BaseModel):
+    email: str
+    reason: Optional[str] = None
+    details: Optional[str] = None
+    created_at: datetime
+
+
+class AdminDeletionInsightsOut(BaseModel):
+    total: int
+    last_7_days: int
+    reasons: AdminDeletionReasonCountsOut
+    recent_feedback: list[AdminDeletionFeedbackOut]
+
+
+class AdminInsightsOut(BaseModel):
+    onboarding: AdminOnboardingInsightsOut
+    deletions: AdminDeletionInsightsOut
+
+
 class BrandingOut(BaseModel):
     logo_url: Optional[str] = None
 
@@ -61,6 +385,10 @@ class MeOut(BaseSchema):
     id: int
     email: str
     full_name: Optional[str]
+    email_verified: bool
+    auth_provider: str
+    is_admin: bool = False
+    last_login_at: Optional[datetime] = None
     logo_url: Optional[str] = None
     branding: BrandingOut = BrandingOut()
     created_at: datetime

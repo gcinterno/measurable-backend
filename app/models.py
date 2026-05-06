@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -28,6 +29,18 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[Optional[str]] = mapped_column(String(255))
     logo_url: Mapped[Optional[str]] = mapped_column(String(2048))
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    auth_provider: Mapped[str] = mapped_column(String(50), nullable=False, default="email")
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    google_sub: Mapped[Optional[str]] = mapped_column(String(255))
+    facebook_sub: Mapped[Optional[str]] = mapped_column(String(255))
+    onboarding_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    user_type: Mapped[Optional[str]] = mapped_column(String(50))
+    goals: Mapped[Optional[list[str]]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), default=list)
+    platforms: Mapped[Optional[list[str]]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), default=list)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -40,6 +53,26 @@ class User(Base):
         back_populates="user", cascade="all, delete-orphan"
     )
     audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="user")
+    email_verification_codes: Mapped[list[EmailVerificationCode]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class AccountDeletionFeedback(Base):
+    __tablename__ = "account_deletion_feedback"
+    __table_args__ = (
+        Index("ix_account_deletion_feedback_user_id", "user_id"),
+        Index("ix_account_deletion_feedback_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(String(50))
+    details: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class Workspace(Base):
@@ -108,6 +141,28 @@ class WorkspaceMember(Base):
 
     workspace: Mapped[Workspace] = relationship(back_populates="members")
     user: Mapped[User] = relationship(back_populates="workspace_memberships")
+
+
+class EmailVerificationCode(Base):
+    __tablename__ = "email_verification_codes"
+    __table_args__ = (
+        Index("ix_email_verification_codes_user_id", "user_id"),
+        Index("ix_email_verification_codes_purpose", "purpose"),
+        Index("ix_email_verification_codes_expires_at", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(50), nullable=False, default="email_verification")
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    user: Mapped[User] = relationship(back_populates="email_verification_codes")
 
 
 class Subscription(Base):
@@ -272,8 +327,8 @@ class MetaPage(Base):
     instagram_username: Mapped[Optional[str]] = mapped_column(String(255))
     profile_picture_url: Mapped[Optional[str]] = mapped_column(String(2048))
     page_access_token: Mapped[Optional[str]] = mapped_column(Text)
-    tasks: Mapped[Optional[list]] = mapped_column(JSONB)
-    perms: Mapped[Optional[list]] = mapped_column(JSONB)
+    tasks: Mapped[Optional[list]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    perms: Mapped[Optional[list]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     category: Mapped[Optional[str]] = mapped_column(String(255))
     business_name: Mapped[Optional[str]] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(

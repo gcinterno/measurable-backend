@@ -1,19 +1,35 @@
 from datetime import datetime, timedelta, timezone
+import secrets
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from passlib.hash import pbkdf2_sha256
 
 from .config import settings
 
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt", "pbkdf2_sha256"], deprecated="pbkdf2_sha256")
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    try:
+        return pwd_context.hash(password)
+    except Exception:
+        return pbkdf2_sha256.hash(password)
 
 
 def verify_password(password: str, password_hash: str) -> bool:
     return pwd_context.verify(password, password_hash)
+
+
+def hash_verification_code(code: str) -> str:
+    try:
+        return pwd_context.hash(code)
+    except Exception:
+        return pbkdf2_sha256.hash(code)
+
+
+def verify_verification_code(code: str, code_hash: str) -> bool:
+    return pwd_context.verify(code, code_hash)
 
 
 def create_access_token(subject: str, expires_seconds: int = 3600) -> str:
@@ -44,6 +60,27 @@ def create_report_export_token(
         "exp": int((now + timedelta(seconds=expires_seconds)).timestamp()),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_alg)
+
+
+def create_oauth_state(*, purpose: str, expires_seconds: int = 600) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "purpose": purpose,
+        "nonce": secrets.token_urlsafe(32),
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=expires_seconds)).timestamp()),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_alg)
+
+
+def decode_oauth_state(state: str) -> dict:
+    try:
+        payload = jwt.decode(state, settings.jwt_secret, algorithms=[settings.jwt_alg])
+    except JWTError as exc:
+        raise TokenError("invalid_state") from exc
+    if not payload.get("purpose"):
+        raise TokenError("missing_purpose")
+    return payload
 
 
 def decode_token(token: str) -> dict:

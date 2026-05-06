@@ -3,9 +3,12 @@ import io
 import json
 import logging
 import os
+import secrets
+import requests
 from urllib.parse import urlencode
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone, time
 from time import perf_counter
+from functools import lru_cache
 from typing import Any
 
 from fastapi import Body, Depends, FastAPI, File, Form, Query, Request, UploadFile, HTTPException
@@ -14,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
-from sqlalchemy import func
+from sqlalchemy import and_, case, func, inspect, literal, or_
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.datastructures import FormData
@@ -23,12 +26,16 @@ from .deps import (
     get_current_user_for_report_read,
     get_db,
     load_user_by_email,
+    load_user_by_google_sub,
+    require_admin_user,
     user_logo_column_available,
+    user_onboarding_columns_available,
 )
 from .errors import http_error
 import boto3
 
 from .config import settings
+from .db import engine
 from .integrations.meta_ads import (
     META_ADS_OAUTH_SCOPE,
     META_PAGES_OAUTH_SCOPE,
@@ -54,18 +61,22 @@ from .integrations.meta_ads import (
     oauth_connect_pages_url,
 )
 from .models import (
+    AccountDeletionFeedback,
+    AuditLog,
     Conversation,
     Dataset,
     DatasetFile,
     Export,
     Integration,
     IntegrationAccount,
+    EmailVerificationCode,
     MetaPage,
     IntegrationToken,
     Message,
     Report,
     ReportBlock,
     ReportVersion,
+    Subscription,
     Schedule,
     User,
     Workspace,
@@ -74,10 +85,34 @@ from .models import (
 from .schemas import (
     ChatMessageIn,
     ChatReplyOut,
+    AuthMessageOut,
+    AdminDeletionFeedbackOut,
+    AdminDeletionInsightsOut,
+    AdminDeletionReasonCountsOut,
+    AdminGoalCountsOut,
+    AdminInsightsOut,
+    AdminFunnelOut,
+    AdminFunnelStepOut,
+    AdminCohortOut,
+    AdminCohortAveragesOut,
+    AdminCohortRetentionOut,
+    AdminCohortsOut,
+    AdminProductMetricsOut,
+    AdminMetricsOut,
+    AdminOnboardingCountsOut,
+    AdminOnboardingInsightsOut,
+    AdminPlatformCountsOut,
+    AdminUserOut,
+    AdminUsersOut,
+    DeleteAccountIn,
+    DeleteAccountOut,
     ConversationOut,
     DatasetDetailOut,
     DatasetUploadOut,
     InstagramBusinessReportCreateIn,
+    OnboardingCompleteOut,
+    OnboardingStateOut,
+    OnboardingUpdate,
     LoginIn,
     MeOut,
     MeUpdateIn,
@@ -94,6 +129,11 @@ from .schemas import (
     PlanLimitsOut,
     RegisterIn,
     RegisterOut,
+    ResendVerificationCodeIn,
+    ForgotPasswordIn,
+    ResetPasswordIn,
+    VerifyEmailIn,
+    VerifyEmailOut,
     ReportBlockOut,
     ReportExportOut,
     ReportListItemOut,
@@ -109,7 +149,15 @@ from .schemas import (
     WorkspaceCreateIn,
     WorkspaceOut,
 )
-from .security import create_access_token, create_report_export_token, hash_password, verify_password
+from .security import (
+    TokenError,
+    create_access_token,
+    create_report_export_token,
+    create_oauth_state,
+    decode_oauth_state,
+    hash_password,
+    verify_password,
+)
 from .ai_agents import (
     build_ai_agent_metadata,
     build_ai_agent_plan_context,
@@ -126,6 +174,14 @@ from .services import (
     build_meta_pages_reach_insight,
     build_meta_pages_recent_posts_summary,
     build_meta_pages_summary,
+    build_ai_chat_context_snapshot,
+    AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
+    AUTH_CODE_PURPOSE_PASSWORD_RESET,
+    build_auth_email_html,
+    build_auth_email_text,
+    issue_auth_code,
+    send_auth_email,
+    validate_auth_code,
     count_workspace_storage_bytes,
     enforce_storage_limit,
     enforce_export_capability,
@@ -201,6 +257,488 @@ def _sqlalchemy_error_log_payload(exc: Exception, *, stage: str) -> dict[str, ob
         "constraint_name": getattr(diag, "constraint_name", None) if diag is not None else None,
         "sqlalchemy_exception": exc.__class__.__name__,
     }
+
+
+@lru_cache(maxsize=1)
+def _table_names() -> set[str]:
+    try:
+        return set(inspect(engine).get_table_names())
+    except SQLAlchemyError:
+        return set()
+
+
+def _table_available(table_name: str) -> bool:
+    return table_name in _table_names()
+
+
+def _safe_int_scalar(db: Session, query, *, default: int = 0) -> int:
+    try:
+        value = query.scalar()
+    except SQLAlchemyError:
+        return default
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _day_start(value: date) -> datetime:
+    return datetime.combine(value, time.min, tzinfo=timezone.utc)
+
+
+def _day_end(value: date) -> datetime:
+    return datetime.combine(value, time.max, tzinfo=timezone.utc)
+
+
+def _previous_month_bounds(now: datetime) -> tuple[date, date]:
+    current_first = now.date().replace(day=1)
+    previous_last = current_first - timedelta(days=1)
+    previous_first = previous_last.replace(day=1)
+    return previous_first, previous_last
+
+
+def _resolve_admin_metrics_timeframe(
+    timeframe: str | None,
+    start_date: date | None,
+    end_date: date | None,
+) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
+    selected = str(timeframe or "all").strip().lower() or "all"
+    if selected not in {"all", "this_month", "last_month", "custom"}:
+        logger.warning(
+            "ADMIN_METRICS_INVALID_TIMEFRAME",
+            extra={"timeframe": selected},
+        )
+        raise http_error(
+            400,
+            "invalid_timeframe",
+            'Invalid timeframe. Use "all", "this_month", "last_month", or "custom".',
+        )
+
+    if selected == "all":
+        return {
+            "timeframe": "all",
+            "start_date": None,
+            "end_date": None,
+            "start_dt": None,
+            "end_dt": None,
+        }
+
+    if selected == "this_month":
+        start = now.date().replace(day=1)
+        end = now.date()
+    elif selected == "last_month":
+        start, end = _previous_month_bounds(now)
+    else:
+        if start_date is None or end_date is None:
+            logger.warning(
+                "ADMIN_METRICS_CUSTOM_DATE_MISSING",
+                extra={"timeframe": selected, "start_date": start_date, "end_date": end_date},
+            )
+            raise http_error(
+                400,
+                "missing_timeframe_dates",
+                "start_date and end_date are required when timeframe=custom.",
+            )
+        if start_date > end_date:
+            logger.warning(
+                "ADMIN_METRICS_CUSTOM_DATE_ORDER_INVALID",
+                extra={"timeframe": selected, "start_date": start_date, "end_date": end_date},
+            )
+            raise http_error(
+                400,
+                "invalid_timeframe_dates",
+                "start_date must be on or before end_date.",
+            )
+        start, end = start_date, end_date
+
+    return {
+        "timeframe": selected,
+        "start_date": start,
+        "end_date": end,
+        "start_dt": _day_start(start),
+        "end_dt": _day_end(end),
+    }
+
+
+def _count_users_in_range(
+    db: Session,
+    *,
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+    column,
+    extra_filters: list[Any] | None = None,
+) -> int:
+    query = db.query(func.count(User.id)).filter(User.is_deleted.is_(False))
+    if start_dt is not None:
+        query = query.filter(column >= start_dt)
+    if end_dt is not None:
+        query = query.filter(column <= end_dt)
+    for extra_filter in extra_filters or []:
+        query = query.filter(extra_filter)
+    return _safe_int_scalar(db, query)
+
+
+def _count_rows_in_range(
+    db: Session,
+    *,
+    model,
+    column,
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+    extra_filters: list[Any] | None = None,
+) -> int:
+    query = db.query(func.count(model.id))
+    if start_dt is not None:
+        query = query.filter(column >= start_dt)
+    if end_dt is not None:
+        query = query.filter(column <= end_dt)
+    for extra_filter in extra_filters or []:
+        query = query.filter(extra_filter)
+    return _safe_int_scalar(db, query)
+
+
+def _date_range(start_date: date, end_date: date) -> list[date]:
+    if start_date > end_date:
+        return []
+    days = (end_date - start_date).days
+    return [start_date + timedelta(days=offset) for offset in range(days + 1)]
+
+
+def _previous_equivalent_range(start_date: date, end_date: date) -> tuple[date | None, date | None]:
+    if start_date > end_date:
+        return None, None
+    period_days = (end_date - start_date).days + 1
+    previous_end = start_date - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=period_days - 1)
+    return previous_start, previous_end
+
+
+def _percent_change(current: int, previous: int) -> float | None:
+    if previous <= 0:
+        return None
+    return round(((current - previous) / previous) * 100.0, 2)
+
+
+def _daily_counts(
+    db: Session,
+    *,
+    model,
+    column,
+    start_dt: datetime,
+    end_dt: datetime,
+    extra_filters: list[Any] | None = None,
+) -> dict[date, int]:
+    query = db.query(column)
+    query = query.filter(column >= start_dt).filter(column <= end_dt)
+    for extra_filter in extra_filters or []:
+        query = query.filter(extra_filter)
+    counts: dict[date, int] = {}
+    for (value,) in query.all():
+        if not value:
+            continue
+        day = value.date()
+        counts[day] = counts.get(day, 0) + 1
+    return counts
+
+
+def _build_daily_points(
+    counts: dict[date, int],
+    dates: list[date],
+    *,
+    value_key: str,
+) -> list[dict[str, Any]]:
+    return [{"date": current_date, value_key: counts.get(current_date, 0)} for current_date in dates]
+
+
+def _build_admin_metric_insights(
+    *,
+    timeframe: str,
+    users_in_period: int,
+    previous_users_in_period: int | None,
+    reports_in_period: int,
+    previous_reports_in_period: int | None,
+    active_users_in_period: int,
+    previous_active_users_in_period: int | None,
+    onboarding_completion_rate: float,
+    paid_users_in_scope: int | None,
+    previous_paid_users_in_scope: int | None,
+) -> list[dict[str, str]]:
+    insights: list[dict[str, str]] = []
+
+    def _append_unique(insight_type: str, message: str, severity: str) -> None:
+        if any(item["type"] == insight_type for item in insights):
+            return
+        insights.append({"type": insight_type, "message": message, "severity": severity})
+
+    if timeframe != "all" and previous_users_in_period is not None:
+        if users_in_period > previous_users_in_period:
+            _append_unique(
+                "growth",
+                "User growth increased in the selected period.",
+                "positive",
+            )
+        elif users_in_period < previous_users_in_period:
+            _append_unique(
+                "growth",
+                "User growth slowed compared to the previous period.",
+                "neutral",
+            )
+        else:
+            _append_unique(
+                "growth",
+                "User growth stayed flat compared to the previous period.",
+                "neutral",
+            )
+
+    if users_in_period > 0:
+        _append_unique(
+            "growth",
+            "New users were added in this timeframe.",
+            "positive",
+        )
+
+    if onboarding_completion_rate < 10:
+        _append_unique(
+            "onboarding",
+            "Onboarding completion is low. Review the onboarding flow to reduce activation drop-off.",
+            "critical",
+        )
+    elif onboarding_completion_rate < 30:
+        _append_unique(
+            "onboarding",
+            "Onboarding completion is low. Review the onboarding flow to reduce activation drop-off.",
+            "warning",
+        )
+    else:
+        _append_unique(
+            "onboarding",
+            "Onboarding completion is healthy.",
+            "positive",
+        )
+
+    if reports_in_period >= 5 and onboarding_completion_rate < 30:
+        _append_unique(
+            "activation",
+            "Report activity exists, but most users have not completed onboarding.",
+            "warning",
+        )
+
+    if paid_users_in_scope is not None:
+        if paid_users_in_scope == 0:
+            _append_unique(
+                "monetization",
+                "Users are signing up, but no paid users are active yet.",
+                "neutral",
+            )
+        elif previous_paid_users_in_scope is not None:
+            if paid_users_in_scope > previous_paid_users_in_scope:
+                _append_unique(
+                    "monetization",
+                    "You already have paid users. Start tracking conversion and MRR growth.",
+                    "positive",
+                )
+            elif paid_users_in_scope < previous_paid_users_in_scope:
+                _append_unique(
+                    "monetization",
+                    "Paid users slowed compared to the previous period.",
+                    "neutral",
+                )
+        else:
+            _append_unique(
+                "monetization",
+                "You already have paid users. Start tracking conversion and MRR growth.",
+                "positive",
+            )
+
+    return insights[:5]
+
+
+def _user_onboarding_started(user: User) -> bool:
+    onboarding_started_value = getattr(user, "onboarding_started", None)
+    if onboarding_started_value is not None:
+        return bool(onboarding_started_value)
+    return bool(
+        user.onboarding_completed
+        or (user.user_type and str(user.user_type).strip())
+        or _user_list_value(user.goals)
+        or _user_list_value(user.platforms)
+    )
+
+
+def _report_dates_by_user(
+    db: Session,
+    *,
+    user_ids: list[int],
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+) -> dict[int, set[date]]:
+    if not user_ids or not _table_available("reports"):
+        return {}
+    query = (
+        db.query(WorkspaceMember.user_id, Report.created_at)
+        .join(Report, Report.workspace_id == WorkspaceMember.workspace_id)
+        .filter(WorkspaceMember.user_id.in_(user_ids))
+    )
+    if start_dt is not None:
+        query = query.filter(Report.created_at >= start_dt)
+    if end_dt is not None:
+        query = query.filter(Report.created_at <= end_dt)
+    report_dates_by_user: dict[int, set[date]] = {}
+    for user_id, created_at in query.all():
+        if user_id is None or created_at is None:
+            continue
+        report_dates_by_user.setdefault(int(user_id), set()).add(created_at.date())
+    return report_dates_by_user
+
+
+def _admin_reports_count_subquery(db: Session):
+    if not _table_available("reports"):
+        return None
+    return (
+        db.query(
+            WorkspaceMember.user_id.label("user_id"),
+            func.count(func.distinct(Report.id)).label("reports_count"),
+        )
+        .join(Report, Report.workspace_id == WorkspaceMember.workspace_id)
+        .group_by(WorkspaceMember.user_id)
+        .subquery()
+    )
+
+
+def _admin_reports_activity_subquery(db: Session):
+    if not _table_available("reports"):
+        return None
+    recent_cutoff_7 = datetime.now(timezone.utc) - timedelta(days=7)
+    return (
+        db.query(
+            WorkspaceMember.user_id.label("user_id"),
+            func.max(Report.created_at).label("last_report_created_at"),
+            func.sum(
+                case(
+                    (Report.created_at >= recent_cutoff_7, 1),
+                    else_=0,
+                )
+            ).label("reports_last_7_days"),
+        )
+        .join(Report, Report.workspace_id == WorkspaceMember.workspace_id)
+        .group_by(WorkspaceMember.user_id)
+        .subquery()
+    )
+
+
+def _admin_ai_usage_subquery(db: Session):
+    if not (_table_available("conversations") and _table_available("messages")):
+        return None
+    return (
+        db.query(
+            WorkspaceMember.user_id.label("user_id"),
+            func.count(func.distinct(Message.id)).label("ai_messages_count"),
+        )
+        .join(Conversation, Conversation.workspace_id == WorkspaceMember.workspace_id)
+        .join(Message, Message.conversation_id == Conversation.id)
+        .group_by(WorkspaceMember.user_id)
+        .subquery()
+    )
+
+
+def _admin_integrations_count_subquery(db: Session):
+    if not _table_available("integrations"):
+        return None
+    return (
+        db.query(
+            WorkspaceMember.user_id.label("user_id"),
+            func.count(func.distinct(Integration.id)).label("integrations_count"),
+        )
+        .join(Integration, Integration.workspace_id == WorkspaceMember.workspace_id)
+        .group_by(WorkspaceMember.user_id)
+        .subquery()
+    )
+
+
+def _admin_latest_plan_subquery(db: Session):
+    if not _table_available("subscriptions"):
+        return None
+    latest_subscription = (
+        db.query(
+            WorkspaceMember.user_id.label("user_id"),
+            func.max(Subscription.created_at).label("latest_created_at"),
+        )
+        .join(Subscription, Subscription.workspace_id == WorkspaceMember.workspace_id)
+        .filter(Subscription.status == "active")
+        .group_by(WorkspaceMember.user_id)
+        .subquery()
+    )
+    return (
+        db.query(
+            WorkspaceMember.user_id.label("user_id"),
+            Subscription.plan.label("plan"),
+        )
+        .join(Subscription, Subscription.workspace_id == WorkspaceMember.workspace_id)
+        .join(
+            latest_subscription,
+            and_(
+                latest_subscription.c.user_id == WorkspaceMember.user_id,
+                latest_subscription.c.latest_created_at == Subscription.created_at,
+            ),
+        )
+        .filter(Subscription.status == "active")
+        .subquery()
+    )
+
+
+def _admin_health_score_expression(
+    *,
+    cutoff_7: datetime,
+    reports_count_expr,
+    reports_last_7_days_expr,
+    integrations_count_expr,
+    plan_expr,
+):
+    return (
+        case((User.email_verified.is_(True), 20), else_=0)
+        + case((User.onboarding_completed.is_(True), 20), else_=0)
+        + case((reports_count_expr > 0, 20), else_=0)
+        + case((reports_last_7_days_expr > 0, 15), else_=0)
+        + case((User.last_login_at.is_not(None) & (User.last_login_at >= cutoff_7), 10), else_=0)
+        + case((integrations_count_expr > 0, 10), else_=0)
+        + case((func.lower(plan_expr) != "free", 15), else_=0)
+    )
+
+
+def _admin_health_status_from_score(score: int) -> str:
+    if score >= 80:
+        return "healthy"
+    if score >= 50:
+        return "active"
+    if score >= 25:
+        return "at_risk"
+    return "dormant"
+
+
+def _admin_health_reasons(
+    *,
+    email_verified: bool,
+    onboarding_completed: bool,
+    reports_count: int,
+    reports_last_7_days: int,
+    last_login_at: datetime | None,
+    integrations_count: int,
+    plan_value: str | None,
+) -> list[str]:
+    cutoff_7 = datetime.now(timezone.utc) - timedelta(days=7)
+    last_login_aware = last_login_at
+    if last_login_aware is not None and last_login_aware.tzinfo is None:
+        last_login_aware = last_login_aware.replace(tzinfo=timezone.utc)
+    reasons: list[str] = []
+    reasons.append("Email verified" if email_verified else "Email not verified")
+    reasons.append("Onboarding completed" if onboarding_completed else "Onboarding pending")
+    reasons.append("Generated reports" if reports_count > 0 else "No reports yet")
+    reasons.append("Recent report activity" if reports_last_7_days > 0 else "No reports in last 7 days")
+    reasons.append("Recent login" if last_login_aware and last_login_aware >= cutoff_7 else "No recent login")
+    reasons.append("Integrations connected" if integrations_count > 0 else "No integrations connected")
+    reasons.append("Paid plan" if plan_value and plan_value.lower() != "free" else "Free plan")
+    return reasons
 
 def _report_metadata(report: Report) -> dict[str, object]:
     if not report.description:
@@ -497,6 +1035,8 @@ def debug_cors() -> dict[str, object]:
 def _make_json_safe(value):
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
+    if isinstance(value, BaseException):
+        return str(value)
     if isinstance(value, UploadFile):
         return {
             "filename": value.filename,
@@ -518,7 +1058,7 @@ async def validation_exception_handler(request, exc: RequestValidationError):
     return JSONResponse(
         status_code=422,
         content={
-            "detail": exc.errors(),
+            "detail": _make_json_safe(exc.errors()),
             "body": _make_json_safe(exc.body),
         },
         headers=_cors_error_headers(request),
@@ -548,6 +1088,246 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
+GOOGLE_OAUTH_STATE_PURPOSE = "google_oauth"
+GOOGLE_OAUTH_SCOPE = "openid email profile"
+
+
+def _google_client_id() -> str:
+    client_id = str(settings.google_client_id or "").strip()
+    if not client_id:
+        raise http_error(503, "google_oauth_config_missing", "Google OAuth is not configured.")
+    return client_id
+
+
+def _google_client_secret() -> str:
+    client_secret = str(settings.google_client_secret or "").strip()
+    if not client_secret:
+        raise http_error(503, "google_oauth_config_missing", "Google OAuth is not configured.")
+    return client_secret
+
+
+def _google_redirect_uri() -> str:
+    redirect_uri = str(settings.google_redirect_uri or "").strip()
+    if not redirect_uri:
+        raise http_error(503, "google_oauth_config_missing", "Google OAuth is not configured.")
+    return redirect_uri
+
+
+def _google_frontend_base_url() -> str:
+    configured_base = str(settings.frontend_base_url or settings.report_export_base_url or "").strip()
+    if not configured_base:
+        raise http_error(503, "google_oauth_config_missing", "Google OAuth is not configured.")
+    return configured_base.rstrip("/")
+
+
+def _auth_cookie_secure() -> bool:
+    configured_base = str(settings.frontend_base_url or settings.report_export_base_url or "").strip()
+    return configured_base.startswith("https://")
+
+
+def _build_google_oauth_url(state: str) -> str:
+    params = {
+        "client_id": _google_client_id(),
+        "redirect_uri": _google_redirect_uri(),
+        "response_type": "code",
+        "scope": GOOGLE_OAUTH_SCOPE,
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account",
+    }
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+
+
+def _exchange_google_code_for_tokens(code: str) -> dict[str, Any]:
+    response = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "code": code,
+            "client_id": _google_client_id(),
+            "client_secret": _google_client_secret(),
+            "redirect_uri": _google_redirect_uri(),
+            "grant_type": "authorization_code",
+        },
+        timeout=30,
+    )
+    if response.status_code != 200:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"error": response.text}
+        logger.warning(
+            "google_oauth_token_exchange_failed",
+            extra={
+                "status_code": response.status_code,
+                "response_body": _make_json_safe(payload),
+            },
+        )
+        raise http_error(400, "google_token_exchange_failed", "Google OAuth token exchange failed.")
+    return response.json()
+
+
+def _verify_google_id_token(id_token_value: str) -> dict[str, Any]:
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token as google_id_token
+
+    try:
+        payload = google_id_token.verify_oauth2_token(
+            id_token_value,
+            google_requests.Request(),
+            _google_client_id(),
+        )
+    except Exception as exc:
+        logger.warning(
+            "google_oauth_id_token_verification_failed",
+            extra={"exception_class": exc.__class__.__name__},
+        )
+        raise http_error(400, "google_id_token_invalid", "Google ID token is invalid.") from exc
+    if not isinstance(payload, dict):
+        raise http_error(400, "google_id_token_invalid", "Google ID token is invalid.")
+    return payload
+
+
+def _google_auth_redirect_response(access_token: str) -> RedirectResponse:
+    target_url = f"{_google_frontend_base_url()}/dashboard?{urlencode({'access_token': access_token, 'token_type': 'bearer'})}"
+    response = RedirectResponse(url=target_url, status_code=302)
+    secure_cookie = _auth_cookie_secure()
+    _set_auth_cookie(response, access_token)
+    logger.info(
+        "google_oauth_final_redirect",
+        extra={
+            "redirect_url": target_url,
+            "cookie_set": True,
+            "cookie_http_only": True,
+            "cookie_same_site": "lax",
+            "cookie_secure": secure_cookie,
+        },
+    )
+    return response
+
+
+def _set_auth_cookie(response: Response, access_token: str) -> None:
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=_auth_cookie_secure(),
+        samesite="lax",
+        path="/",
+        max_age=3600,
+    )
+
+
+def _clear_access_token_cookie(response: Response) -> Response:
+    secure_cookie = _auth_cookie_secure()
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        httponly=True,
+        secure=secure_cookie,
+        samesite="lax",
+    )
+    return response
+
+
+@app.post("/auth/logout")
+def logout() -> JSONResponse:
+    response = JSONResponse({"ok": True})
+    _clear_access_token_cookie(response)
+    response.headers["Cache-Control"] = "no-store"
+    logger.info(
+        "auth_logout_completed",
+        extra={
+            "cookie_cleared": True,
+            "cookie_secure": _auth_cookie_secure(),
+            "cookie_path": "/",
+            "cookie_same_site": "lax",
+        },
+    )
+    return response
+
+
+@app.delete("/account/delete", response_model=DeleteAccountOut)
+def delete_account(
+    payload: DeleteAccountIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DeleteAccountOut:
+    confirmation = str(payload.confirmation or "").strip()
+    if confirmation != "Eliminar":
+        raise http_error(400, "invalid_confirmation", 'Type "Eliminar" to confirm account deletion.')
+
+    allowed_reasons = {
+        "too_expensive",
+        "missing_features",
+        "hard_to_use",
+        "no_longer_needed",
+        "switching_tool",
+        "privacy_concerns",
+        "other",
+    }
+    reason = str(payload.reason).strip() if payload.reason is not None and str(payload.reason).strip() else None
+    if reason is not None and reason not in allowed_reasons:
+        raise http_error(400, "invalid_reason", "Please select a valid reason.")
+
+    original_email = current_user.email
+    current_time = datetime.now(timezone.utc)
+
+    feedback = AccountDeletionFeedback(
+        user_id=current_user.id,
+        email=original_email,
+        reason=reason,
+        details=str(payload.details).strip() if payload.details is not None and str(payload.details).strip() else None,
+    )
+    db.add(feedback)
+
+    db.query(EmailVerificationCode).filter(EmailVerificationCode.user_id == current_user.id).delete(
+        synchronize_session=False
+    )
+    db.query(WorkspaceMember).filter(WorkspaceMember.user_id == current_user.id).delete(synchronize_session=False)
+    db.query(AuditLog).filter(AuditLog.user_id == current_user.id).update(
+        {AuditLog.user_id: None}, synchronize_session=False
+    )
+    db.query(MetaPage).filter(MetaPage.user_id == current_user.id).update(
+        {MetaPage.user_id: None}, synchronize_session=False
+    )
+
+    current_user.email = f"deleted_{current_user.id}@deleted.measurable.local"
+    current_user.password_hash = hash_password(secrets.token_urlsafe(32))
+    current_user.full_name = None
+    current_user.logo_url = None
+    current_user.email_verified = False
+    current_user.auth_provider = "deleted"
+    current_user.google_sub = None
+    current_user.facebook_sub = None
+    current_user.onboarding_completed = False
+    current_user.user_type = None
+    current_user.goals = []
+    current_user.platforms = []
+    current_user.last_login_at = None
+    current_user.is_active = False
+    current_user.is_deleted = True
+    current_user.deleted_at = current_time
+    db.add(current_user)
+    db.commit()
+    logger.info(
+        "account_deleted",
+        extra={
+            "user_id": current_user.id,
+            "email": original_email,
+            "reason": reason,
+        },
+    )
+
+    response = JSONResponse({"ok": True})
+    _clear_access_token_cookie(response)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _is_deleted_user(user: User | None) -> bool:
+    return bool(user and (getattr(user, "is_deleted", False) or not getattr(user, "is_active", False)))
+
+
 @app.post("/auth/register", response_model=RegisterOut, status_code=201)
 def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
     email = payload.email.strip()
@@ -565,19 +1345,86 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
         )
 
     try:
-        user, workspace, subscription = register_user_with_default_workspace(
+        existing_user = load_user_by_email(db, email)
+        if existing_user and existing_user.email_verified:
+            db.rollback()
+            return RegisterOut(
+                message="If the email can be registered, verification instructions will be sent.",
+                verification_required=True,
+            )
+
+        if existing_user is None:
+            user, workspace, subscription = register_user_with_default_workspace(
+                db,
+                email=email,
+                password_hash=hash_password(payload.password),
+                full_name=full_name,
+                email_verified=False,
+                auth_provider="email",
+                last_login_at=None,
+            )
+        else:
+            user = existing_user
+            user.password_hash = hash_password(payload.password)
+            user.full_name = full_name or user.full_name
+            user.email_verified = False
+            user.auth_provider = "email"
+            db.add(user)
+            workspace = (
+                db.query(Workspace)
+                .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+                .filter(WorkspaceMember.user_id == user.id)
+                .order_by(Workspace.created_at.asc(), Workspace.id.asc())
+                .first()
+            )
+            subscription = (
+                db.query(Subscription)
+                .filter(Subscription.workspace_id == workspace.id)
+                .order_by(Subscription.created_at.desc(), Subscription.id.desc())
+                .first()
+                if workspace is not None
+                else None
+            )
+
+        verification_code = issue_auth_code(
             db,
-            email=email,
-            password_hash=hash_password(payload.password),
-            full_name=full_name,
+            user=user,
+            purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
+        )
+        send_auth_email(
+            recipient_email=user.email,
+            subject="Verify your Measurable email",
+            html_body=build_auth_email_html(
+                full_name=user.full_name,
+                code=verification_code,
+                purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
+            ),
+            text_body=build_auth_email_text(
+                full_name=user.full_name,
+                code=verification_code,
+                purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
+            ),
+        )
+        db.commit()
+        logger.info(
+            "auth_register_completed",
+            extra={
+                "user_id": user.id,
+                "workspace_id": workspace.id if workspace else None,
+                "has_existing_user": existing_user is not None,
+            },
         )
         return RegisterOut(
-            user_id=user.id,
-            email=user.email,
-            workspace_id=workspace.id,
-            plan=subscription.plan,
-            message="User registered successfully.",
+            message="If the email can be registered, verification instructions will be sent.",
+            verification_required=True,
+            user_id=user.id if existing_user is None else None,
+            email=user.email if existing_user is None else None,
+            workspace_id=workspace.id if existing_user is None else None,
+            plan=subscription.plan if existing_user is None and subscription else None,
         )
+    except HTTPException:
+        db.rollback()
+        raise
     except IntegrityError as exc:
         db.rollback()
         logger.exception(
@@ -614,23 +1461,1345 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ) -> TokenOut:
-    user = load_user_by_email(db, form_data.username)
-    if not user or not verify_password(form_data.password, user.password_hash):
+    user = load_user_by_email(db, form_data.username.strip())
+    if not user or _is_deleted_user(user) or not user.email_verified or not verify_password(form_data.password, user.password_hash):
         raise http_error(401, "invalid_credentials", "Invalid email or password.")
+    user.last_login_at = datetime.now(timezone.utc)
+    db.add(user)
+    db.commit()
     token = create_access_token(str(user.id))
     return TokenOut(access_token=token)
 
 
+@app.get("/auth/google/start")
+def google_start() -> RedirectResponse:
+    state = create_oauth_state(purpose=GOOGLE_OAUTH_STATE_PURPOSE)
+    url = _build_google_oauth_url(state)
+    logger.info(
+        "google_oauth_start",
+        extra={
+            "scope": GOOGLE_OAUTH_SCOPE,
+            "redirect_uri": _google_redirect_uri(),
+        },
+    )
+    return RedirectResponse(url=url, status_code=302)
+
+
+@app.get("/auth/google/callback")
+def google_callback(
+    code: str | None = None,
+    state: str | None = None,
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    try:
+        logger.info(
+            "google_oauth_callback_received",
+            extra={"code_received": bool(code), "state_received": bool(state)},
+        )
+        if not code or not state:
+            logger.warning(
+                "google_oauth_callback_invalid_state",
+                extra={"reason": "missing_code_or_state"},
+            )
+            raise http_error(400, "invalid_state", "Invalid Google OAuth state.")
+
+        state_payload = decode_oauth_state(state)
+        if str(state_payload.get("purpose") or "") != GOOGLE_OAUTH_STATE_PURPOSE:
+            logger.warning(
+                "google_oauth_callback_invalid_state",
+                extra={"reason": "state_purpose_mismatch", "state_payload": _make_json_safe(state_payload)},
+            )
+            raise http_error(400, "invalid_state", "Invalid Google OAuth state.")
+        logger.info("google_oauth_state_valid", extra={"purpose": state_payload.get("purpose")})
+
+        token_payload = _exchange_google_code_for_tokens(code)
+        logger.info(
+            "google_oauth_token_exchange_success",
+            extra={"token_response_keys": sorted(token_payload.keys()) if isinstance(token_payload, dict) else None},
+        )
+        id_token_value = str(token_payload.get("id_token") or "").strip()
+        if not id_token_value:
+            raise http_error(400, "google_id_token_missing", "Google ID token was not returned.")
+
+        google_profile = _verify_google_id_token(id_token_value)
+        email = str(google_profile.get("email") or "").strip().lower()
+        full_name = str(google_profile.get("name") or "").strip() or None
+        google_sub = str(google_profile.get("sub") or "").strip()
+        picture = str(google_profile.get("picture") or "").strip() or None
+        email_verified = bool(google_profile.get("email_verified"))
+
+        if not email or not google_sub:
+            raise http_error(400, "google_profile_invalid", "Google profile is incomplete.")
+        if not email_verified:
+            raise http_error(400, "google_email_unverified", "Google email is not verified.")
+
+        user = load_user_by_google_sub(db, google_sub)
+        if user is None:
+            user = load_user_by_email(db, email)
+        if _is_deleted_user(user):
+            user = None
+        is_new_user = user is None
+        if user is None:
+            user, workspace, subscription = register_user_with_default_workspace(
+                db,
+                email=email,
+                password_hash=hash_password(secrets.token_urlsafe(32)),
+                full_name=full_name,
+                email_verified=True,
+                auth_provider="google",
+                google_sub=google_sub,
+                last_login_at=datetime.now(timezone.utc),
+            )
+            if picture and not user.logo_url:
+                user.logo_url = picture
+                db.add(user)
+        else:
+            user.google_sub = google_sub
+            user.email_verified = True
+            user.auth_provider = "google"
+            if full_name:
+                user.full_name = full_name
+            if picture and not user.logo_url:
+                user.logo_url = picture
+            user.last_login_at = datetime.now(timezone.utc)
+            db.add(user)
+            workspace = (
+                db.query(Workspace)
+                .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+                .filter(WorkspaceMember.user_id == user.id)
+                .order_by(Workspace.created_at.asc(), Workspace.id.asc())
+                .first()
+            )
+            subscription = (
+                db.query(Subscription)
+                .filter(Subscription.workspace_id == workspace.id)
+                .order_by(Subscription.created_at.desc(), Subscription.id.desc())
+                .first()
+                if workspace is not None
+                else None
+            )
+        logger.info(
+            "google_oauth_user_resolved",
+            extra={
+                "user_id": user.id,
+                "is_new_user": is_new_user,
+                "auth_provider": user.auth_provider,
+                "linked_google_sub": google_sub,
+                "workspace_id": workspace.id if workspace else None,
+            },
+        )
+
+        db.commit()
+        access_token = create_access_token(str(user.id))
+        logger.info(
+            "google_oauth_jwt_created",
+            extra={"user_id": user.id, "token_length": len(access_token), "token_use": "access"},
+        )
+        logger.info(
+            "google_oauth_login_completed",
+            extra={
+                "user_id": user.id,
+                "workspace_id": workspace.id if workspace else None,
+                "is_new_user": is_new_user,
+                "auth_provider": user.auth_provider,
+            },
+        )
+        response = _google_auth_redirect_response(access_token)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except HTTPException:
+        db.rollback()
+        logger.warning("google_oauth_callback_http_error")
+        raise
+    except TokenError:
+        db.rollback()
+        logger.warning("google_oauth_callback_invalid_state", extra={"reason": "token_error"})
+        raise http_error(400, "invalid_state", "Invalid Google OAuth state.")
+    except Exception:
+        db.rollback()
+        logger.exception("google_oauth_callback_failed")
+        raise
+
+
+@app.post("/auth/verify-email", response_model=VerifyEmailOut)
+def verify_email(payload: VerifyEmailIn, db: Session = Depends(get_db)) -> JSONResponse:
+    email = payload.email.strip()
+    code = payload.code.strip()
+    if not email or not code:
+        raise http_error(400, "invalid_or_expired_code", "Invalid or expired verification code.")
+
+    user = load_user_by_email(db, email)
+    if not user:
+        raise http_error(400, "invalid_or_expired_code", "Invalid or expired verification code.")
+    if user.email_verified:
+        return AuthMessageOut(message="Email already verified.")
+
+    try:
+        validate_auth_code(
+            db,
+            user=user,
+            code=code,
+            purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
+        )
+        user.email_verified = True
+        user.last_login_at = datetime.now(timezone.utc)
+        db.add(user)
+        db.commit()
+        access_token = create_access_token(str(user.id))
+        response = JSONResponse(
+            {
+                "ok": True,
+                "access_token": access_token,
+                "token_type": "bearer",
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "full_name": user.full_name,
+                    "email_verified": user.email_verified,
+                    "onboarding_completed": bool(getattr(user, "onboarding_completed", False)),
+                },
+            }
+        )
+        _set_auth_cookie(response, access_token)
+        logger.info(
+            "auth_email_verified",
+            extra={
+                "user_id": user.id,
+                "token_length": len(access_token),
+                "cookie_set": True,
+            },
+        )
+        return response
+    except HTTPException:
+        db.rollback()
+        raise
+
+
+@app.post("/auth/resend-verification-code", response_model=AuthMessageOut)
+def resend_verification_code(
+    payload: ResendVerificationCodeIn,
+    db: Session = Depends(get_db),
+) -> AuthMessageOut:
+    email = payload.email.strip()
+    if not email:
+        return AuthMessageOut(message="If the email can be used, verification instructions will be sent.")
+
+    user = load_user_by_email(db, email)
+    if not user or user.email_verified:
+        return AuthMessageOut(message="If the email can be used, verification instructions will be sent.")
+
+    try:
+        verification_code = issue_auth_code(
+            db,
+            user=user,
+            purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
+        )
+        send_auth_email(
+            recipient_email=user.email,
+            subject="Verify your Measurable email",
+            html_body=build_auth_email_html(
+                full_name=user.full_name,
+                code=verification_code,
+                purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
+            ),
+            text_body=build_auth_email_text(
+                full_name=user.full_name,
+                code=verification_code,
+                purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
+            ),
+        )
+        db.commit()
+        logger.info("auth_verification_code_resent", extra={"user_id": user.id})
+    except HTTPException:
+        db.rollback()
+        raise
+    return AuthMessageOut(message="If the email can be used, verification instructions will be sent.")
+
+
+@app.post("/auth/forgot-password", response_model=AuthMessageOut)
+def forgot_password(payload: ForgotPasswordIn, db: Session = Depends(get_db)) -> AuthMessageOut:
+    email = payload.email.strip()
+    if not email:
+        return AuthMessageOut(message="If the email is registered, password reset instructions will be sent.")
+
+    user = load_user_by_email(db, email)
+    if not user or not user.email_verified:
+        return AuthMessageOut(message="If the email is registered, password reset instructions will be sent.")
+
+    try:
+        reset_code = issue_auth_code(
+            db,
+            user=user,
+            purpose=AUTH_CODE_PURPOSE_PASSWORD_RESET,
+        )
+        send_auth_email(
+            recipient_email=user.email,
+            subject="Reset your Measurable password",
+            html_body=build_auth_email_html(
+                full_name=user.full_name,
+                code=reset_code,
+                purpose=AUTH_CODE_PURPOSE_PASSWORD_RESET,
+            ),
+            text_body=build_auth_email_text(
+                full_name=user.full_name,
+                code=reset_code,
+                purpose=AUTH_CODE_PURPOSE_PASSWORD_RESET,
+            ),
+        )
+        db.commit()
+        logger.info("auth_password_reset_code_sent", extra={"user_id": user.id})
+    except HTTPException:
+        db.rollback()
+        raise
+    return AuthMessageOut(message="If the email is registered, password reset instructions will be sent.")
+
+
+@app.post("/auth/reset-password", response_model=AuthMessageOut)
+def reset_password(payload: ResetPasswordIn, db: Session = Depends(get_db)) -> AuthMessageOut:
+    email = payload.email.strip()
+    code = payload.code.strip()
+    new_password = payload.new_password
+    if not email or not code:
+        raise http_error(400, "invalid_or_expired_code", "Invalid or expired reset code.")
+    if not new_password or len(new_password) < 8:
+        raise http_error(400, "invalid_password", "Password must be at least 8 characters long.")
+
+    user = load_user_by_email(db, email)
+    if not user or not user.email_verified:
+        raise http_error(400, "invalid_or_expired_code", "Invalid or expired reset code.")
+
+    try:
+        validate_auth_code(
+            db,
+            user=user,
+            code=code,
+            purpose=AUTH_CODE_PURPOSE_PASSWORD_RESET,
+        )
+        user.password_hash = hash_password(new_password)
+        user.last_login_at = None
+        db.add(user)
+        db.commit()
+        logger.info("auth_password_reset_completed", extra={"user_id": user.id})
+        return AuthMessageOut(message="Password updated successfully.")
+    except HTTPException:
+        db.rollback()
+        raise
+
+
+def _user_list_value(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item or "").strip()]
+    return [str(value)]
+
+
+@app.get("/onboarding/me", response_model=OnboardingStateOut)
+def onboarding_me(current_user: User = Depends(get_current_user)) -> OnboardingStateOut:
+    if not user_onboarding_columns_available():
+        raise http_error(500, "db_schema_mismatch", "Database schema is out of date. Run migrations.")
+    return OnboardingStateOut(
+        onboarding_completed=bool(current_user.onboarding_completed),
+        user_type=str(current_user.user_type).strip() if current_user.user_type else None,
+        goals=_user_list_value(current_user.goals),
+        platforms=_user_list_value(current_user.platforms),
+    )
+
+
+@app.post("/onboarding/complete", response_model=OnboardingCompleteOut)
+def complete_onboarding(
+    payload: OnboardingUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> OnboardingCompleteOut:
+    if not user_onboarding_columns_available():
+        raise http_error(500, "db_schema_mismatch", "Database schema is out of date. Run migrations.")
+    current_user.user_type = payload.user_type
+    current_user.goals = list(payload.goals)
+    current_user.platforms = list(payload.platforms)
+    current_user.onboarding_completed = True
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    logger.info(
+        "onboarding_completed",
+        extra={
+            "user_id": current_user.id,
+            "user_type": current_user.user_type,
+            "goals_count": len(current_user.goals or []),
+            "platforms_count": len(current_user.platforms or []),
+        },
+    )
+    return OnboardingCompleteOut(ok=True, onboarding_completed=True)
+
+
 @app.get("/me", response_model=MeOut)
 def me(current_user: User = Depends(get_current_user)) -> MeOut:
+    logger.info(
+        "AUTH_ME_DEBUG",
+        extra={
+            "email": current_user.email,
+            "is_admin": bool(getattr(current_user, "is_admin", False)),
+        },
+    )
     return MeOut(
         id=current_user.id,
         email=current_user.email,
         full_name=current_user.full_name,
+        email_verified=current_user.email_verified,
+        auth_provider=current_user.auth_provider,
+        is_admin=bool(getattr(current_user, "is_admin", False)),
+        last_login_at=current_user.last_login_at,
         logo_url=(str(current_user.logo_url) if user_logo_column_available() and current_user.logo_url else None),
         branding=_user_branding(current_user),
         created_at=current_user.created_at,
         updated_at=current_user.updated_at,
+    )
+
+
+@app.get("/auth/me", response_model=MeOut)
+def auth_me(current_user: User = Depends(get_current_user)) -> MeOut:
+    return me(current_user)
+
+
+@app.get("/admin/metrics", response_model=AdminMetricsOut)
+def admin_metrics(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+    timeframe: str = Query(default="all"),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+) -> AdminMetricsOut:
+    resolved_timeframe = _resolve_admin_metrics_timeframe(timeframe, start_date, end_date)
+    selected_timeframe = str(resolved_timeframe["timeframe"])
+    period_start = resolved_timeframe["start_dt"]
+    period_end = resolved_timeframe["end_dt"]
+
+    total_users = _safe_int_scalar(
+        db,
+        db.query(func.count(User.id)).filter(User.is_deleted.is_(False)),
+    )
+
+    legacy_cutoff_7 = datetime.now(timezone.utc) - timedelta(days=7)
+    users_last_7_days = _safe_int_scalar(
+        db,
+        db.query(func.count(User.id))
+        .filter(User.is_deleted.is_(False))
+        .filter(User.created_at >= legacy_cutoff_7),
+    )
+    active_users_last_7_days = _safe_int_scalar(
+        db,
+        db.query(func.count(User.id))
+        .filter(User.is_deleted.is_(False))
+        .filter(User.last_login_at >= legacy_cutoff_7),
+    )
+    onboarding_completed_legacy = _safe_int_scalar(
+        db,
+        db.query(func.count(User.id))
+        .filter(User.is_deleted.is_(False))
+        .filter(User.onboarding_completed.is_(True)),
+    )
+    onboarding_pending = max(total_users - onboarding_completed_legacy, 0)
+
+    users_in_period = _count_users_in_range(
+        db,
+        start_dt=period_start,
+        end_dt=period_end,
+        column=User.created_at,
+    ) if period_start and period_end else total_users
+    active_users_in_period = _count_users_in_range(
+        db,
+        start_dt=period_start,
+        end_dt=period_end,
+        column=User.last_login_at,
+    ) if period_start and period_end else _safe_int_scalar(
+        db,
+        db.query(func.count(User.id))
+        .filter(User.is_deleted.is_(False))
+        .filter(User.last_login_at.is_not(None)),
+    )
+    onboarding_completed_in_period = _count_users_in_range(
+        db,
+        start_dt=period_start,
+        end_dt=period_end,
+        column=User.updated_at,
+        extra_filters=[User.onboarding_completed.is_(True)],
+    ) if period_start and period_end else onboarding_completed_legacy
+    onboarding_completion_rate = (
+        round((onboarding_completed_in_period / users_in_period) * 100.0, 2) if users_in_period else 0.0
+    )
+
+    users_growth_percent: float | None = None
+    reports_growth_percent: float | None = None
+    active_users_growth_percent: float | None = None
+    previous_users_in_period: int | None = None
+    previous_reports_in_period: int | None = None
+    previous_active_users_in_period: int | None = None
+    paid_users_in_scope: int | None = None
+    previous_paid_users_in_scope: int | None = None
+    daily_users_points: list[dict[str, Any]] = []
+    daily_reports_points: list[dict[str, Any]] = []
+    cumulative_users_points: list[dict[str, Any]] = []
+
+    if selected_timeframe == "all":
+        user_rows = []
+        report_rows = []
+        if _table_available("users"):
+            user_rows = [
+                value.date()
+                for (value,) in db.query(User.created_at)
+                .filter(User.is_deleted.is_(False))
+                .filter(User.created_at.is_not(None))
+                .all()
+                if value
+            ]
+        if _table_available("reports"):
+            report_rows = [
+                value.date()
+                for (value,) in db.query(Report.created_at)
+                .filter(Report.created_at.is_not(None))
+                .all()
+                if value
+            ]
+        all_dates = sorted(set(user_rows + report_rows))
+        if all_dates:
+            series_start = all_dates[0]
+            series_end = all_dates[-1]
+            series_dates = _date_range(series_start, series_end)
+            user_daily_counts = dict.fromkeys(series_dates, 0)
+            report_daily_counts = dict.fromkeys(series_dates, 0)
+            for day in user_rows:
+                if day in user_daily_counts:
+                    user_daily_counts[day] += 1
+            for day in report_rows:
+                if day in report_daily_counts:
+                    report_daily_counts[day] += 1
+            daily_users_points = [
+                {"date": current_day, "users": user_daily_counts.get(current_day, 0)} for current_day in series_dates
+            ]
+            daily_reports_points = [
+                {"date": current_day, "reports": report_daily_counts.get(current_day, 0)}
+                for current_day in series_dates
+            ]
+            running_total = 0
+            for current_day in series_dates:
+                running_total += user_daily_counts.get(current_day, 0)
+                cumulative_users_points.append({"date": current_day, "total_users": running_total})
+    else:
+        if period_start and period_end:
+            selected_start_date = resolved_timeframe["start_date"]
+            selected_end_date = resolved_timeframe["end_date"]
+            if isinstance(selected_start_date, date) and isinstance(selected_end_date, date):
+                selected_dates = _date_range(selected_start_date, selected_end_date)
+                user_daily_counts = _daily_counts(
+                    db,
+                    model=User,
+                    column=User.created_at,
+                    start_dt=period_start,
+                    end_dt=period_end,
+                    extra_filters=[User.is_deleted.is_(False)],
+                )
+                report_daily_counts = (
+                    _daily_counts(
+                        db,
+                        model=Report,
+                        column=Report.created_at,
+                        start_dt=period_start,
+                        end_dt=period_end,
+                    )
+                    if _table_available("reports")
+                    else {}
+                )
+                daily_users_points = [
+                    {"date": current_day, "users": user_daily_counts.get(current_day, 0)} for current_day in selected_dates
+                ]
+                daily_reports_points = [
+                    {"date": current_day, "reports": report_daily_counts.get(current_day, 0)}
+                    for current_day in selected_dates
+                ]
+                running_total = 0
+                for current_day in selected_dates:
+                    running_total += user_daily_counts.get(current_day, 0)
+                    cumulative_users_points.append({"date": current_day, "total_users": running_total})
+        else:
+            daily_users_points = []
+            daily_reports_points = []
+            cumulative_users_points = []
+
+    total_reports = 0
+    reports_last_7_days = 0
+    reports_in_period = 0
+    if _table_available("reports"):
+        total_reports = _safe_int_scalar(db, db.query(func.count(Report.id)))
+        reports_last_7_days = _safe_int_scalar(
+            db,
+            db.query(func.count(Report.id)).filter(Report.created_at >= legacy_cutoff_7),
+        )
+        reports_in_period = (
+            _safe_int_scalar(
+                db,
+                db.query(func.count(Report.id))
+                .filter(Report.created_at >= period_start)
+                .filter(Report.created_at <= period_end),
+            )
+            if period_start and period_end
+            else total_reports
+        )
+    else:
+        reports_in_period = 0
+
+    if selected_timeframe != "all" and period_start and period_end:
+        selected_start_date = resolved_timeframe["start_date"]
+        selected_end_date = resolved_timeframe["end_date"]
+        if isinstance(selected_start_date, date) and isinstance(selected_end_date, date):
+            previous_start, previous_end = _previous_equivalent_range(selected_start_date, selected_end_date)
+            if previous_start is not None and previous_end is not None:
+                previous_start_dt = _day_start(previous_start)
+                previous_end_dt = _day_end(previous_end)
+                previous_users = _count_rows_in_range(
+                    db,
+                    model=User,
+                    column=User.created_at,
+                    start_dt=previous_start_dt,
+                    end_dt=previous_end_dt,
+                    extra_filters=[User.is_deleted.is_(False)],
+                )
+                previous_active_users = _count_rows_in_range(
+                    db,
+                    model=User,
+                    column=User.last_login_at,
+                    start_dt=previous_start_dt,
+                    end_dt=previous_end_dt,
+                    extra_filters=[User.is_deleted.is_(False), User.last_login_at.is_not(None)],
+                )
+                previous_reports = (
+                    _count_rows_in_range(
+                        db,
+                        model=Report,
+                        column=Report.created_at,
+                        start_dt=previous_start_dt,
+                        end_dt=previous_end_dt,
+                    )
+                    if _table_available("reports")
+                    else 0
+                )
+                users_growth_percent = _percent_change(users_in_period, previous_users)
+                reports_growth_percent = _percent_change(reports_in_period, previous_reports)
+                active_users_growth_percent = _percent_change(active_users_in_period, previous_active_users)
+                previous_users_in_period = previous_users
+                previous_reports_in_period = previous_reports
+                previous_active_users_in_period = previous_active_users
+
+    deletions_in_period = 0
+    if _table_available("account_deletion_feedback"):
+        deletions_query = db.query(func.count(AccountDeletionFeedback.id))
+        if period_start and period_end:
+            deletions_query = (
+                deletions_query.filter(AccountDeletionFeedback.created_at >= period_start)
+                .filter(AccountDeletionFeedback.created_at <= period_end)
+            )
+        deletions_in_period = _safe_int_scalar(db, deletions_query)
+
+    paid_users = 0
+    if _table_available("subscriptions"):
+        try:
+            paid_users = _safe_int_scalar(
+                db,
+                db.query(func.count(func.distinct(WorkspaceMember.user_id)))
+                .join(Subscription, Subscription.workspace_id == WorkspaceMember.workspace_id)
+                .filter(Subscription.status == "active")
+                .filter(func.lower(Subscription.plan) != "free"),
+            )
+        except SQLAlchemyError:
+            paid_users = 0
+    free_users = max(total_users - paid_users, 0) if paid_users else total_users
+
+    if selected_timeframe == "all":
+        paid_users_in_scope = paid_users
+        previous_paid_users_in_scope = None
+    elif period_start and period_end and _table_available("subscriptions"):
+        current_paid_query = (
+            db.query(func.count(func.distinct(WorkspaceMember.user_id)))
+            .join(Subscription, Subscription.workspace_id == WorkspaceMember.workspace_id)
+            .filter(Subscription.status == "active")
+            .filter(func.lower(Subscription.plan) != "free")
+            .filter(Subscription.created_at >= period_start)
+            .filter(Subscription.created_at <= period_end)
+        )
+        paid_users_in_scope = _safe_int_scalar(db, current_paid_query)
+        if previous_users_in_period is not None:
+            previous_start_date, previous_end_date = _previous_equivalent_range(
+                resolved_timeframe["start_date"],
+                resolved_timeframe["end_date"],
+            )
+            if previous_start_date is not None and previous_end_date is not None:
+                previous_paid_users_in_scope = _safe_int_scalar(
+                    db,
+                    db.query(func.count(func.distinct(WorkspaceMember.user_id)))
+                    .join(Subscription, Subscription.workspace_id == WorkspaceMember.workspace_id)
+                    .filter(Subscription.status == "active")
+                    .filter(func.lower(Subscription.plan) != "free")
+                    .filter(Subscription.created_at >= _day_start(previous_start_date))
+                    .filter(Subscription.created_at <= _day_end(previous_end_date)),
+                )
+
+    return AdminMetricsOut(
+        timeframe=selected_timeframe,
+        start_date=resolved_timeframe["start_date"],
+        end_date=resolved_timeframe["end_date"],
+        total_users=total_users,
+        users_in_period=users_in_period,
+        active_users_in_period=active_users_in_period,
+        reports_in_period=reports_in_period,
+        onboarding_completed_in_period=onboarding_completed_in_period,
+        onboarding_completion_rate=onboarding_completion_rate,
+        deletions_in_period=deletions_in_period,
+        users_last_7_days=users_last_7_days,
+        active_users_last_7_days=active_users_last_7_days,
+        onboarding_completed=onboarding_completed_legacy,
+        onboarding_pending=onboarding_pending,
+        total_reports=total_reports,
+        reports_last_7_days=reports_last_7_days,
+        paid_users=paid_users,
+        free_users=free_users,
+        mrr=0.0,
+        daily_users=daily_users_points,
+        daily_reports=daily_reports_points,
+        cumulative_users=cumulative_users_points,
+        users_growth_percent=users_growth_percent,
+        reports_growth_percent=reports_growth_percent,
+        active_users_growth_percent=active_users_growth_percent,
+        insights=_build_admin_metric_insights(
+            timeframe=selected_timeframe,
+            users_in_period=users_in_period,
+            previous_users_in_period=previous_users_in_period,
+            reports_in_period=reports_in_period,
+            previous_reports_in_period=previous_reports_in_period,
+            active_users_in_period=active_users_in_period,
+            previous_active_users_in_period=previous_active_users_in_period,
+            onboarding_completion_rate=onboarding_completion_rate,
+            paid_users_in_scope=paid_users_in_scope,
+            previous_paid_users_in_scope=previous_paid_users_in_scope,
+        ),
+    )
+
+
+@app.get("/admin/users", response_model=AdminUsersOut)
+def admin_users(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+    search: str | None = Query(default=None),
+    auth_provider: str | None = Query(default=None),
+    onboarding_completed: bool | None = Query(default=None),
+    plan: str | None = Query(default=None),
+    is_deleted: bool | None = Query(default=None),
+    health_status: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+) -> AdminUsersOut:
+    report_counts_subq = _admin_reports_count_subquery(db)
+    report_activity_subq = _admin_reports_activity_subquery(db)
+    integrations_count_subq = _admin_integrations_count_subquery(db)
+    plan_subq = _admin_latest_plan_subquery(db)
+
+    base_query = db.query(User)
+    if report_counts_subq is not None:
+        base_query = base_query.outerjoin(report_counts_subq, report_counts_subq.c.user_id == User.id)
+    if report_activity_subq is not None:
+        base_query = base_query.outerjoin(report_activity_subq, report_activity_subq.c.user_id == User.id)
+    if integrations_count_subq is not None:
+        base_query = base_query.outerjoin(integrations_count_subq, integrations_count_subq.c.user_id == User.id)
+    if plan_subq is not None:
+        base_query = base_query.outerjoin(plan_subq, plan_subq.c.user_id == User.id)
+
+    if search:
+        search_term = f"%{search.strip()}%"
+        base_query = base_query.filter(or_(User.email.ilike(search_term), User.full_name.ilike(search_term)))
+    if auth_provider:
+        base_query = base_query.filter(func.lower(User.auth_provider) == auth_provider.strip().lower())
+    if onboarding_completed is not None:
+        base_query = base_query.filter(User.onboarding_completed.is_(onboarding_completed))
+    if is_deleted is not None:
+        base_query = base_query.filter(User.is_deleted.is_(is_deleted))
+
+    plan_expr = func.coalesce(plan_subq.c.plan, literal("free")) if plan_subq is not None else literal("free")
+    if plan:
+        plan_filter = plan.strip().lower()
+        if plan_subq is None:
+            if plan_filter != "free":
+                return AdminUsersOut(items=[], total=0, page=page, page_size=page_size)
+        else:
+            base_query = base_query.filter(func.lower(plan_expr) == plan_filter)
+
+    reports_count_expr = (
+        func.coalesce(report_counts_subq.c.reports_count, 0)
+        if report_counts_subq is not None
+        else literal(0)
+    )
+    last_report_created_at_expr = (
+        report_activity_subq.c.last_report_created_at
+        if report_activity_subq is not None
+        else literal(None)
+    )
+    reports_last_7_days_expr = (
+        func.coalesce(report_activity_subq.c.reports_last_7_days, 0)
+        if report_activity_subq is not None
+        else literal(0)
+    )
+    integrations_count_expr = (
+        func.coalesce(integrations_count_subq.c.integrations_count, 0)
+        if integrations_count_subq is not None
+        else literal(0)
+    )
+    health_score_expr = _admin_health_score_expression(
+        cutoff_7=datetime.now(timezone.utc) - timedelta(days=7),
+        reports_count_expr=reports_count_expr,
+        reports_last_7_days_expr=reports_last_7_days_expr,
+        integrations_count_expr=integrations_count_expr,
+        plan_expr=plan_expr,
+    )
+    health_status_expr = case(
+        (health_score_expr >= 80, literal("healthy")),
+        (health_score_expr >= 50, literal("active")),
+        (health_score_expr >= 25, literal("at_risk")),
+        else_=literal("dormant"),
+    )
+    health_status_filter = str(health_status or "").strip().lower()
+    if health_status_filter:
+        if health_status_filter not in {"healthy", "active", "at_risk", "dormant"}:
+            raise http_error(
+                400,
+                "invalid_health_status",
+                'Invalid health_status. Use "healthy", "active", "at_risk", or "dormant".',
+            )
+        base_query = base_query.filter(func.lower(health_status_expr) == health_status_filter)
+
+    total = _safe_int_scalar(
+        db,
+        base_query.with_entities(func.count(func.distinct(User.id))),
+    )
+    rows = (
+        base_query.add_columns(
+            reports_count_expr.label("reports_count"),
+            last_report_created_at_expr.label("last_report_created_at"),
+            reports_last_7_days_expr.label("reports_last_7_days"),
+            plan_expr.label("plan"),
+            integrations_count_expr.label("integrations_count"),
+            health_score_expr.label("health_score"),
+            health_status_expr.label("health_status"),
+        )
+        .order_by(User.created_at.desc(), User.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    items = [
+        AdminUserOut(
+            id=user.id,
+            full_name=user.full_name,
+            email=user.email,
+            auth_provider=user.auth_provider,
+            email_verified=bool(user.email_verified),
+            onboarding_completed=bool(getattr(user, "onboarding_completed", False)),
+            user_type=str(user.user_type).strip() if getattr(user, "user_type", None) else None,
+            plan=str(plan_value) if plan_value else "free",
+            reports_count=int(reports_count or 0),
+            last_report_created_at=last_report_created_at,
+            reports_last_7_days=int(reports_last_7_days or 0),
+            health_score=int(health_score or 0),
+            health_status=str(health_status_value) if health_status_value else _admin_health_status_from_score(
+                int(health_score or 0)
+            ),
+            health_reasons=_admin_health_reasons(
+                email_verified=bool(user.email_verified),
+                onboarding_completed=bool(getattr(user, "onboarding_completed", False)),
+                reports_count=int(reports_count or 0),
+                reports_last_7_days=int(reports_last_7_days or 0),
+                last_login_at=user.last_login_at,
+                integrations_count=int(integrations_count or 0),
+                plan_value=str(plan_value) if plan_value else "free",
+            ),
+            last_login_at=user.last_login_at,
+            created_at=user.created_at,
+            is_active=bool(user.is_active),
+            is_deleted=bool(getattr(user, "is_deleted", False)),
+        )
+        for (
+            user,
+            reports_count,
+            last_report_created_at,
+            reports_last_7_days,
+            plan_value,
+            integrations_count,
+            health_score,
+            health_status_value,
+        ) in rows
+    ]
+    return AdminUsersOut(items=items, total=total, page=page, page_size=page_size)
+
+
+@app.get("/admin/funnel", response_model=AdminFunnelOut)
+def admin_funnel(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+    timeframe: str = Query(default="all"),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+) -> AdminFunnelOut:
+    resolved_timeframe = _resolve_admin_metrics_timeframe(timeframe, start_date, end_date)
+    period_start = resolved_timeframe["start_dt"]
+    period_end = resolved_timeframe["end_dt"]
+
+    cohort_query = db.query(User).filter(User.is_deleted.is_(False))
+    if period_start and period_end:
+        cohort_query = cohort_query.filter(User.created_at >= period_start).filter(User.created_at <= period_end)
+    cohort_users = cohort_query.all()
+    cohort_user_ids = [user.id for user in cohort_users]
+
+    signup_count = len(cohort_users)
+    onboarding_completed_count = sum(1 for user in cohort_users if user.onboarding_completed)
+
+    report_counts_subq = _admin_reports_count_subquery(db)
+    report_activity_subq = _admin_reports_activity_subquery(db)
+    ai_usage_subq = _admin_ai_usage_subquery(db)
+    plan_subq = _admin_latest_plan_subquery(db)
+
+    report_user_ids: set[int] = set()
+    if cohort_user_ids and _table_available("reports"):
+        report_user_ids_query = (
+            db.query(func.distinct(WorkspaceMember.user_id))
+            .join(Report, Report.workspace_id == WorkspaceMember.workspace_id)
+            .filter(WorkspaceMember.user_id.in_(cohort_user_ids))
+        )
+        if period_start and period_end:
+            report_user_ids_query = report_user_ids_query.filter(Report.created_at >= period_start).filter(
+                Report.created_at <= period_end
+            )
+        report_user_ids = {
+                int(user_id)
+                for (user_id,) in report_user_ids_query.all()
+                if user_id is not None
+            }
+
+    ai_user_ids: set[int] = set()
+    if cohort_user_ids and ai_usage_subq is not None:
+        ai_user_ids_query = (
+            db.query(func.distinct(WorkspaceMember.user_id))
+            .join(Conversation, Conversation.workspace_id == WorkspaceMember.workspace_id)
+            .join(Message, Message.conversation_id == Conversation.id)
+            .filter(WorkspaceMember.user_id.in_(cohort_user_ids))
+        )
+        if period_start and period_end:
+            ai_user_ids_query = ai_user_ids_query.filter(Message.created_at >= period_start).filter(
+                Message.created_at <= period_end
+            )
+        ai_user_ids = {
+            int(user_id)
+            for (user_id,) in ai_user_ids_query.all()
+            if user_id is not None
+        }
+
+    paid_user_ids: set[int] = set()
+    if cohort_user_ids and _table_available("subscriptions"):
+        paid_user_ids_query = (
+            db.query(func.distinct(WorkspaceMember.user_id))
+            .join(Subscription, Subscription.workspace_id == WorkspaceMember.workspace_id)
+            .filter(WorkspaceMember.user_id.in_(cohort_user_ids))
+            .filter(Subscription.status == "active")
+            .filter(func.lower(Subscription.plan) != "free")
+        )
+        if period_start and period_end:
+            paid_user_ids_query = paid_user_ids_query.filter(Subscription.created_at >= period_start).filter(
+                Subscription.created_at <= period_end
+            )
+        paid_user_ids = {
+            int(user_id)
+            for (user_id,) in paid_user_ids_query.all()
+            if user_id is not None
+        }
+
+    activated_user_ids: set[int] = set()
+    if cohort_user_ids and report_activity_subq is not None:
+        activated_user_ids_query = (
+            db.query(report_activity_subq.c.user_id)
+            .filter(report_activity_subq.c.user_id.in_(cohort_user_ids))
+            .filter(report_activity_subq.c.reports_last_7_days > 0)
+        )
+        activated_user_ids = {
+            int(user_id)
+            for (user_id,) in activated_user_ids_query.all()
+            if user_id is not None
+        }
+
+    step_counts = [
+        ("Signups", signup_count),
+        ("Onboarding", onboarding_completed_count),
+        ("Reports created", len(report_user_ids)),
+        ("AI Assistant used", len(ai_user_ids)),
+        ("Activated users", len(activated_user_ids)),
+        ("Paid Users", len(paid_user_ids)),
+    ]
+    steps: list[AdminFunnelStepOut] = []
+    previous_count = 0
+    strongest_step = step_counts[0][0] if step_counts else ""
+    strongest_count = step_counts[0][1] if step_counts else 0
+    biggest_dropoff_stage = step_counts[0][0] if step_counts else ""
+    biggest_dropoff_value = 0
+
+    for index, (name, count) in enumerate(step_counts):
+        conversion_from_start = round((count / signup_count) * 100.0, 2) if signup_count else 0.0
+        conversion_from_previous = round((count / previous_count) * 100.0, 2) if previous_count else 0.0
+        dropoff = max(previous_count - count, 0) if index > 0 else 0
+        steps.append(
+            AdminFunnelStepOut(
+                name=name,
+                count=count,
+                conversion_from_previous=conversion_from_previous,
+                conversion_from_start=conversion_from_start,
+                dropoff=dropoff,
+            )
+        )
+        if index > 0 and dropoff > biggest_dropoff_value:
+            biggest_dropoff_value = dropoff
+            biggest_dropoff_stage = name
+        if count > strongest_count:
+            strongest_count = count
+            strongest_step = name
+        previous_count = count
+
+    total_conversion = round((steps[-1].count / signup_count) * 100.0, 2) if signup_count else 0.0
+
+    return AdminFunnelOut(
+        steps=steps,
+        summary={
+            "total_conversion": total_conversion,
+            "biggest_dropoff_stage": biggest_dropoff_stage,
+            "strongest_step": strongest_step,
+        },
+    )
+
+
+@app.get("/admin/product-metrics", response_model=AdminProductMetricsOut)
+def admin_product_metrics(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+    timeframe: str = Query(default="all"),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+) -> AdminProductMetricsOut:
+    resolved_timeframe = _resolve_admin_metrics_timeframe(timeframe, start_date, end_date)
+    period_start = resolved_timeframe["start_dt"]
+    period_end = resolved_timeframe["end_dt"]
+
+    cohort_query = db.query(User).filter(User.is_deleted.is_(False))
+    if period_start and period_end:
+        cohort_query = cohort_query.filter(User.created_at >= period_start).filter(User.created_at <= period_end)
+    cohort_users = cohort_query.all()
+    user_ids = [user.id for user in cohort_users if user.id is not None]
+    total_users = len(user_ids)
+
+    report_counts_by_user: dict[int, int] = {}
+    first_report_created_at_by_user: dict[int, datetime] = {}
+    if user_ids and _table_available("reports"):
+        report_query = (
+            db.query(
+                WorkspaceMember.user_id.label("user_id"),
+                func.count(func.distinct(Report.id)).label("reports_count"),
+            )
+            .join(Report, Report.workspace_id == WorkspaceMember.workspace_id)
+            .filter(WorkspaceMember.user_id.in_(user_ids))
+        )
+        if period_start and period_end:
+            report_query = report_query.filter(Report.created_at >= period_start).filter(Report.created_at <= period_end)
+        for user_id, reports_count in report_query.group_by(WorkspaceMember.user_id).all():
+            if user_id is None:
+                continue
+            report_counts_by_user[int(user_id)] = int(reports_count or 0)
+
+        first_report_rows = (
+            db.query(
+                WorkspaceMember.user_id.label("user_id"),
+                User.created_at.label("user_created_at"),
+                Report.created_at.label("report_created_at"),
+            )
+            .join(User, User.id == WorkspaceMember.user_id)
+            .join(Report, Report.workspace_id == WorkspaceMember.workspace_id)
+            .filter(WorkspaceMember.user_id.in_(user_ids))
+        )
+        if period_start and period_end:
+            first_report_rows = first_report_rows.filter(Report.created_at >= period_start).filter(
+                Report.created_at <= period_end
+            )
+        for user_id, user_created_at, report_created_at in first_report_rows.all():
+            if user_id is None or user_created_at is None or report_created_at is None:
+                continue
+            user_id_int = int(user_id)
+            signup_at = user_created_at if user_created_at.tzinfo is not None else user_created_at.replace(
+                tzinfo=timezone.utc
+            )
+            report_at = report_created_at if report_created_at.tzinfo is not None else report_created_at.replace(
+                tzinfo=timezone.utc
+            )
+            if report_at < signup_at:
+                continue
+            current_first = first_report_created_at_by_user.get(user_id_int)
+            if current_first is None or report_at < current_first:
+                first_report_created_at_by_user[user_id_int] = report_at
+
+    ai_messages_by_user: dict[int, int] = {}
+    if user_ids and _table_available("conversations") and _table_available("messages"):
+        ai_query = (
+            db.query(
+                WorkspaceMember.user_id.label("user_id"),
+                func.count(func.distinct(Message.id)).label("ai_messages_count"),
+            )
+            .join(Conversation, Conversation.workspace_id == WorkspaceMember.workspace_id)
+            .join(Message, Message.conversation_id == Conversation.id)
+            .filter(WorkspaceMember.user_id.in_(user_ids))
+        )
+        if period_start and period_end:
+            ai_query = ai_query.filter(Message.created_at >= period_start).filter(Message.created_at <= period_end)
+        for user_id, ai_messages_count in ai_query.group_by(WorkspaceMember.user_id).all():
+            if user_id is None:
+                continue
+            ai_messages_by_user[int(user_id)] = int(ai_messages_count or 0)
+
+    total_reports = sum(report_counts_by_user.values())
+    users_with_reports = sum(1 for count in report_counts_by_user.values() if count > 0)
+    users_with_2_reports = sum(1 for count in report_counts_by_user.values() if count >= 2)
+    users_used_ai = sum(1 for count in ai_messages_by_user.values() if count > 0)
+
+    time_deltas_hours: list[float] = []
+    for user in cohort_users:
+        if user.id is None or user.created_at is None:
+            continue
+        first_report_created_at = first_report_created_at_by_user.get(int(user.id))
+        if first_report_created_at is None:
+            continue
+        signup_at = user.created_at
+        if signup_at.tzinfo is None:
+            signup_at = signup_at.replace(tzinfo=timezone.utc)
+        first_report_at = first_report_created_at
+        if first_report_at.tzinfo is None:
+            first_report_at = first_report_at.replace(tzinfo=timezone.utc)
+        delta_hours = max((first_report_at - signup_at).total_seconds() / 3600.0, 0.0)
+        time_deltas_hours.append(delta_hours)
+
+    avg_time_to_first_report = round(sum(time_deltas_hours) / len(time_deltas_hours), 2) if time_deltas_hours else 0.0
+    reports_per_user = round(total_reports / total_users, 2) if total_users else 0.0
+    ai_usage_rate = round((users_used_ai / total_users) * 100.0, 2) if total_users else 0.0
+    repeat_usage_rate = round((users_with_2_reports / users_with_reports) * 100.0, 2) if users_with_reports else 0.0
+
+    return AdminProductMetricsOut(
+        avg_time_to_first_report=avg_time_to_first_report,
+        time_to_first_report_unit="hours",
+        reports_per_user=reports_per_user,
+        ai_usage_rate=ai_usage_rate,
+        repeat_usage_rate=repeat_usage_rate,
+        total_users=total_users,
+        users_with_reports=users_with_reports,
+        users_with_2_reports=users_with_2_reports,
+        users_used_ai=users_used_ai,
+    )
+
+
+@app.get("/admin/cohorts", response_model=AdminCohortsOut)
+def admin_cohorts(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+    timeframe: str = Query(default="all"),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+) -> AdminCohortsOut:
+    resolved_timeframe = _resolve_admin_metrics_timeframe(timeframe, start_date, end_date)
+    period_start = resolved_timeframe["start_dt"]
+    period_end = resolved_timeframe["end_dt"]
+
+    cohort_query = db.query(User).filter(User.is_deleted.is_(False))
+    if period_start and period_end:
+        cohort_query = cohort_query.filter(User.created_at >= period_start).filter(User.created_at <= period_end)
+    cohort_users = cohort_query.all()
+
+    cohort_dates_all = sorted({user.created_at.date() for user in cohort_users if user.created_at})
+    cohort_dates = cohort_dates_all[-10:]
+    users_by_signup_date: dict[date, list[User]] = {}
+    for user in cohort_users:
+        if not user.created_at:
+            continue
+        users_by_signup_date.setdefault(user.created_at.date(), []).append(user)
+
+    cohort_user_ids = [
+        user.id
+        for signup_date in cohort_dates
+        for user in users_by_signup_date.get(signup_date, [])
+        if user.id is not None
+    ]
+    report_dates_by_user = _report_dates_by_user(
+        db,
+        user_ids=cohort_user_ids,
+        start_dt=period_start,
+        end_dt=period_end,
+    )
+
+    offsets = [0, 1, 3, 7, 14, 30]
+    cohorts: list[AdminCohortOut] = []
+    for signup_date in cohort_dates:
+        users = users_by_signup_date.get(signup_date, [])
+        cohort_size = len(users)
+        retention = AdminCohortRetentionOut()
+        if cohort_size <= 0:
+            cohorts.append(
+                AdminCohortOut(
+                    date=signup_date,
+                    size=0,
+                    retention=retention,
+                )
+            )
+            continue
+
+        retention.day_0 = 100.0
+        for offset in offsets[1:]:
+            target_date = signup_date + timedelta(days=offset)
+            retained_users = sum(
+                1
+                for user in users
+                if target_date in report_dates_by_user.get(user.id, set())
+            )
+            setattr(retention, f"day_{offset}", round((retained_users / cohort_size) * 100.0, 2))
+
+        cohorts.append(
+            AdminCohortOut(
+                date=signup_date,
+                size=cohort_size,
+                retention=retention,
+            )
+        )
+
+    if cohorts:
+        averages = AdminCohortAveragesOut(
+            day_1=round(sum(item.retention.day_1 for item in cohorts) / len(cohorts), 2),
+            day_3=round(sum(item.retention.day_3 for item in cohorts) / len(cohorts), 2),
+            day_7=round(sum(item.retention.day_7 for item in cohorts) / len(cohorts), 2),
+            day_14=round(sum(item.retention.day_14 for item in cohorts) / len(cohorts), 2),
+            day_30=round(sum(item.retention.day_30 for item in cohorts) / len(cohorts), 2),
+        )
+    else:
+        averages = AdminCohortAveragesOut()
+
+    return AdminCohortsOut(cohorts=cohorts, averages=averages)
+
+
+@app.get("/admin/insights", response_model=AdminInsightsOut)
+def admin_insights(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> AdminInsightsOut:
+    cutoff_7 = datetime.now(timezone.utc) - timedelta(days=7)
+    onboarding_user_types = {"freelancer": 0, "agency": 0, "business": 0, "team": 0}
+    onboarding_goals = {
+        "track_growth": 0,
+        "client_reports": 0,
+        "fast_insights": 0,
+        "improve_performance": 0,
+        "understand_data": 0,
+        "export_reports": 0,
+        "automate_reports": 0,
+    }
+    onboarding_platforms = {
+        "facebook": 0,
+        "instagram": 0,
+        "tiktok": 0,
+        "google_analytics": 0,
+        "shopify": 0,
+        "meta_ads": 0,
+        "google_ads": 0,
+        "other": 0,
+    }
+    completed = 0
+    pending = 0
+
+    if user_onboarding_columns_available():
+        try:
+            users = db.query(User).filter(User.is_deleted.is_(False)).all()
+            for user in users:
+                if bool(getattr(user, "onboarding_completed", False)):
+                    completed += 1
+                else:
+                    pending += 1
+                user_type = str(getattr(user, "user_type", "") or "").strip()
+                if user_type in onboarding_user_types:
+                    onboarding_user_types[user_type] += 1
+                for goal in _user_list_value(getattr(user, "goals", [])):
+                    if goal in onboarding_goals:
+                        onboarding_goals[goal] += 1
+                for platform in _user_list_value(getattr(user, "platforms", [])):
+                    if platform in onboarding_platforms:
+                        onboarding_platforms[platform] += 1
+        except SQLAlchemyError:
+            completed = 0
+            pending = 0
+
+    completion_rate = round((completed / (completed + pending)) * 100.0, 2) if (completed + pending) else 0.0
+
+    deletion_total = 0
+    deletion_last_7_days = 0
+    deletion_reasons = {
+        "too_expensive": 0,
+        "missing_features": 0,
+        "hard_to_use": 0,
+        "no_longer_needed": 0,
+        "switching_tool": 0,
+        "privacy_concerns": 0,
+        "other": 0,
+    }
+    recent_feedback: list[AdminDeletionFeedbackOut] = []
+    if _table_available("account_deletion_feedback"):
+        try:
+            feedback_rows = (
+                db.query(AccountDeletionFeedback)
+                .order_by(AccountDeletionFeedback.created_at.desc(), AccountDeletionFeedback.id.desc())
+                .all()
+            )
+            deletion_total = len(feedback_rows)
+            for feedback in feedback_rows:
+                created_at = feedback.created_at
+                if created_at and created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                if created_at and created_at >= cutoff_7:
+                    deletion_last_7_days += 1
+                reason = str(feedback.reason or "other").strip()
+                if reason not in deletion_reasons:
+                    reason = "other"
+                deletion_reasons[reason] += 1
+            recent_feedback = [
+                AdminDeletionFeedbackOut(
+                    email=row.email,
+                    reason=row.reason,
+                    details=row.details,
+                    created_at=row.created_at,
+                )
+                for row in feedback_rows[:10]
+            ]
+        except SQLAlchemyError:
+            deletion_total = 0
+            deletion_last_7_days = 0
+
+    return AdminInsightsOut(
+        onboarding=AdminOnboardingInsightsOut(
+            user_types=AdminOnboardingCountsOut(**onboarding_user_types),
+            goals=AdminGoalCountsOut(**onboarding_goals),
+            platforms=AdminPlatformCountsOut(**onboarding_platforms),
+            completed=completed,
+            pending=pending,
+            completion_rate=completion_rate,
+        ),
+        deletions=AdminDeletionInsightsOut(
+            total=deletion_total,
+            last_7_days=deletion_last_7_days,
+            reasons=AdminDeletionReasonCountsOut(**deletion_reasons),
+            recent_feedback=recent_feedback,
+        ),
     )
 
 
@@ -657,6 +2826,9 @@ def update_me(
         id=current_user.id,
         email=current_user.email,
         full_name=current_user.full_name,
+        email_verified=current_user.email_verified,
+        auth_provider=current_user.auth_provider,
+        last_login_at=current_user.last_login_at,
         logo_url=(str(current_user.logo_url) if user_logo_column_available() and current_user.logo_url else None),
         branding=_user_branding(current_user),
         created_at=current_user.created_at,
@@ -674,7 +2846,128 @@ def ai_chat(
     if not message_text:
         raise http_error(400, "invalid_message", "Message is required.")
 
-    workspace_id = _resolve_workspace_id(db, current_user.id, None)
+    logger.info(
+        "ai_chat_request_received",
+        extra={
+            "user_id": current_user.id,
+            "workspace_id": payload.workspace_id,
+            "report_id": payload.report_id,
+            "dataset_id": payload.dataset_id,
+            "conversation_id": payload.conversation_id,
+            "current_route": payload.current_route,
+            "message_length": len(message_text),
+        },
+    )
+
+    workspace_id: int | None = None
+    report: Report | None = None
+    dataset: Dataset | None = None
+
+    if payload.report_id is not None:
+        report = db.get(Report, int(payload.report_id))
+        if report is None:
+            raise http_error(404, "report_not_found", "Report not found.")
+        _require_workspace_access(db, current_user.id, report.workspace_id)
+        workspace_id = report.workspace_id
+        if payload.workspace_id is not None and int(payload.workspace_id) != workspace_id:
+            raise http_error(403, "invalid_workspace_context", "report_id does not belong to workspace_id.")
+        if payload.dataset_id is not None and int(payload.dataset_id) != report.dataset_id:
+            raise http_error(400, "invalid_context", "dataset_id does not match report_id.")
+        dataset = db.get(Dataset, report.dataset_id)
+    elif payload.dataset_id is not None:
+        dataset = db.get(Dataset, int(payload.dataset_id))
+        if dataset is None:
+            raise http_error(404, "dataset_not_found", "Dataset not found.")
+        _require_workspace_access(db, current_user.id, dataset.workspace_id)
+        workspace_id = dataset.workspace_id
+        if payload.workspace_id is not None and int(payload.workspace_id) != workspace_id:
+            raise http_error(403, "invalid_workspace_context", "dataset_id does not belong to workspace_id.")
+        report = (
+            db.query(Report)
+            .filter(Report.workspace_id == workspace_id, Report.dataset_id == dataset.id)
+            .order_by(Report.created_at.desc(), Report.id.desc())
+            .first()
+        )
+    else:
+        accessible_workspace_ids = [
+            row[0]
+            for row in (
+                db.query(WorkspaceMember.workspace_id)
+                .filter(WorkspaceMember.user_id == current_user.id)
+                .order_by(WorkspaceMember.workspace_id.asc())
+                .all()
+            )
+        ]
+        if not accessible_workspace_ids:
+            raise http_error(404, "workspace_not_found", "No workspace found for current user.")
+
+        workspace_id = None
+        if payload.workspace_id is None:
+            report = (
+                db.query(Report)
+                .filter(Report.workspace_id.in_(accessible_workspace_ids))
+                .order_by(Report.created_at.desc(), Report.id.desc())
+                .first()
+            )
+            if report is not None:
+                workspace_id = report.workspace_id
+                dataset = db.get(Dataset, report.dataset_id)
+            else:
+                dataset = (
+                    db.query(Dataset)
+                    .filter(Dataset.workspace_id.in_(accessible_workspace_ids))
+                    .order_by(Dataset.created_at.desc(), Dataset.id.desc())
+                    .first()
+                )
+                if dataset is not None:
+                    workspace_id = dataset.workspace_id
+                else:
+                    workspace_id = int(accessible_workspace_ids[0])
+        else:
+            workspace_id = _resolve_workspace_id(db, current_user.id, payload.workspace_id)
+            _require_workspace_access(db, current_user.id, workspace_id)
+            report = (
+                db.query(Report)
+                .filter(Report.workspace_id == workspace_id)
+                .order_by(Report.created_at.desc(), Report.id.desc())
+                .first()
+            )
+            if report is not None:
+                dataset = db.get(Dataset, report.dataset_id)
+            else:
+                dataset = (
+                    db.query(Dataset)
+                    .filter(Dataset.workspace_id == workspace_id)
+                    .order_by(Dataset.created_at.desc(), Dataset.id.desc())
+                    .first()
+                )
+
+    if workspace_id is None:
+        raise http_error(404, "workspace_not_found", "No workspace found for current user.")
+
+    chat_context = build_ai_chat_context_snapshot(
+        db,
+        workspace_id=workspace_id,
+        report=report,
+        dataset=dataset,
+        current_route=payload.current_route,
+        page_context=payload.page_context,
+    )
+    logger.info(
+        "ai_chat_context_loaded",
+        extra={
+            "workspace_id": workspace_id,
+            "report_id": report.id if report else None,
+            "dataset_id": dataset.id if dataset else None,
+            "has_report": bool(report),
+            "has_dataset": bool(dataset),
+            "report_blocks_count": len(chat_context["report"]["blocks"]) if isinstance(chat_context.get("report"), dict) else 0,
+            "datasets_count": chat_context.get("workspace", {}).get("snapshot", {}).get("datasets_count")
+            if isinstance(chat_context.get("workspace"), dict)
+            else None,
+        },
+    )
+
     if payload.conversation_id is None:
         conversation = Conversation(
             workspace_id=workspace_id,
@@ -710,7 +3003,11 @@ def ai_chat(
             conversation=conversation,
             history=history,
             user_message=message_text,
+            chat_context=chat_context,
         )
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception:
         db.rollback()
         raise http_error(500, "ai_generation_failed", "AI assistant failed to generate a reply.")
