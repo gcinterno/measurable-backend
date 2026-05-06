@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 
 TEST_DB_PATH = Path("/tmp/measurable_auth_test.db")
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{TEST_DB_PATH}?check_same_thread=false")
@@ -156,6 +157,69 @@ def test_register_verify_login_flow(client):
     assert me_json["email_verified"] is True
     assert me_json["auth_provider"] == "email"
     assert me_json["is_admin"] is False
+
+
+def test_login_invalid_password_returns_401_and_logs_failure(client, caplog):
+    email = "bad-password@example.com"
+    password = "Password123!"
+
+    client.post(
+        "/auth/register",
+        json={"email": email, "password": password, "full_name": "Bad Password"},
+    )
+    client.post("/auth/verify-email", json={"email": email, "code": "123456"})
+
+    with caplog.at_level("INFO"):
+        response = client.post(
+            "/auth/login",
+            data={"username": email, "password": "wrong-password"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "invalid_credentials"
+    assert any(record.message == "auth_login_password_verify_failed" for record in caplog.records)
+
+
+def test_login_db_failure_returns_db_unavailable(client, monkeypatch, caplog):
+    def broken_lookup(*args, **kwargs):
+        raise OperationalError("select users", None, Exception("db down"))
+
+    monkeypatch.setattr("app.main.load_user_by_email", broken_lookup)
+
+    with caplog.at_level("ERROR"):
+        response = client.post(
+            "/auth/login",
+            data={"username": "db-error@example.com", "password": "Password123!"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "db_unavailable"
+    assert any(record.message == "auth_login_error" for record in caplog.records)
+
+
+def test_login_missing_jwt_secret_returns_invalid_configuration(client, monkeypatch, caplog):
+    email = "missing-secret@example.com"
+    password = "Password123!"
+
+    client.post(
+        "/auth/register",
+        json={"email": email, "password": password, "full_name": "Missing Secret"},
+    )
+    client.post("/auth/verify-email", json={"email": email, "code": "123456"})
+    monkeypatch.setattr("app.main.settings.jwt_secret", "   ")
+
+    with caplog.at_level("ERROR"):
+        response = client.post(
+            "/auth/login",
+            data={"username": email, "password": password},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "invalid_configuration"
+    assert any(record.message == "auth_login_error" for record in caplog.records)
 
 
 def test_verify_wrong_code_increments_attempts(client):

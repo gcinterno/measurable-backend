@@ -247,7 +247,7 @@ def _sqlalchemy_error_log_payload(exc: Exception, *, stage: str) -> dict[str, ob
     return {
         "stage": stage,
         "exception_type": type(exc).__name__,
-        "message": str(exc),
+        "safe_message": _safe_exception_message(exc),
         "driver_exception_type": type(orig).__name__ if orig is not None else None,
         "driver_message": str(orig) if orig is not None else None,
         "pgcode": getattr(orig, "pgcode", None),
@@ -257,6 +257,17 @@ def _sqlalchemy_error_log_payload(exc: Exception, *, stage: str) -> dict[str, ob
         "constraint_name": getattr(diag, "constraint_name", None) if diag is not None else None,
         "sqlalchemy_exception": exc.__class__.__name__,
     }
+
+
+def _safe_exception_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    if not message:
+        return exc.__class__.__name__
+    return message[:200]
+
+
+def _jwt_secret_configured() -> bool:
+    return bool((settings.jwt_secret or "").strip())
 
 
 @lru_cache(maxsize=1)
@@ -1461,14 +1472,82 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ) -> TokenOut:
-    user = load_user_by_email(db, form_data.username.strip())
-    if not user or _is_deleted_user(user) or not user.email_verified or not verify_password(form_data.password, user.password_hash):
-        raise http_error(401, "invalid_credentials", "Invalid email or password.")
-    user.last_login_at = datetime.now(timezone.utc)
-    db.add(user)
-    db.commit()
-    token = create_access_token(str(user.id))
-    return TokenOut(access_token=token)
+    email = form_data.username.strip()
+    logger.info("auth_login_start", extra={"email": email})
+
+    try:
+        user = load_user_by_email(db, email)
+        logger.info(
+            "auth_login_db_lookup_ok",
+            extra={"email": email, "user_found": bool(user)},
+        )
+        if not user or _is_deleted_user(user) or not user.email_verified:
+            logger.info("auth_login_user_not_found", extra={"email": email})
+            raise http_error(401, "invalid_credentials", "Invalid email or password.")
+
+        try:
+            password_ok = verify_password(form_data.password, user.password_hash)
+        except Exception as exc:
+            logger.exception(
+                "auth_login_error",
+                extra={
+                    "email": email,
+                    "exception_class": exc.__class__.__name__,
+                    "safe_message": _safe_exception_message(exc),
+                    "stage": "password_verify",
+                },
+            )
+            raise http_error(500, "invalid_configuration", "Authentication configuration is invalid.")
+
+        if not password_ok:
+            logger.info("auth_login_password_verify_failed", extra={"email": email, "user_id": user.id})
+            raise http_error(401, "invalid_credentials", "Invalid email or password.")
+
+        if not _jwt_secret_configured():
+            logger.error(
+                "auth_login_error",
+                extra={
+                    "email": email,
+                    "exception_class": "InvalidConfiguration",
+                    "safe_message": "JWT secret is missing.",
+                    "stage": "token_create",
+                },
+            )
+            raise http_error(500, "invalid_configuration", "Authentication configuration is invalid.")
+
+        user.last_login_at = datetime.now(timezone.utc)
+        db.add(user)
+        db.commit()
+        token = create_access_token(str(user.id))
+        logger.info("auth_login_token_created", extra={"email": email, "user_id": user.id})
+        return TokenOut(access_token=token)
+    except HTTPException:
+        db.rollback()
+        raise
+    except (OperationalError, ProgrammingError, SQLAlchemyError) as exc:
+        db.rollback()
+        logger.exception(
+            "auth_login_error",
+            extra={
+                **_sqlalchemy_error_log_payload(exc, stage="login"),
+                "email": email,
+                "exception_class": exc.__class__.__name__,
+                "safe_message": "Database unavailable during login.",
+            },
+        )
+        raise http_error(500, "db_unavailable", "Database temporarily unavailable.")
+    except Exception as exc:
+        db.rollback()
+        logger.exception(
+            "auth_login_error",
+            extra={
+                "email": email,
+                "exception_class": exc.__class__.__name__,
+                "safe_message": _safe_exception_message(exc),
+                "stage": "unexpected",
+            },
+        )
+        raise http_error(500, "internal_error", "Internal server error.")
 
 
 @app.get("/auth/google/start")
