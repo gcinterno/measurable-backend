@@ -98,8 +98,9 @@ def test_google_callback_creates_new_user_and_sets_cookie(client, monkeypatch):
         follow_redirects=False,
     )
     assert response.status_code == 302
-    assert response.headers["location"].startswith("http://localhost:3000/dashboard?")
+    assert response.headers["location"].startswith("http://localhost:3000/login#")
     assert "access_token=" in response.headers["location"]
+    assert "session=expired" not in response.headers["location"]
     assert "access_token=" in response.headers.get("set-cookie", "")
 
     user = _fetch_user("new-google@example.com")
@@ -163,7 +164,8 @@ def test_google_callback_links_existing_user_by_email(client, monkeypatch):
         follow_redirects=False,
     )
     assert response.status_code == 302
-    assert response.headers["location"].startswith("http://localhost:3000/dashboard?")
+    assert response.headers["location"].startswith("http://localhost:3000/login#")
+    assert "session=expired" not in response.headers["location"]
 
     user = _fetch_user("existing@example.com")
     assert user.google_sub == "google-sub-existing"
@@ -213,3 +215,54 @@ def test_logout_clears_access_token_cookie(client, monkeypatch):
 
     me_after = client.get("/auth/me")
     assert me_after.status_code == 401
+
+
+def test_google_callback_creates_workspace_for_existing_user_without_membership(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="orphan@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Orphan User",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(
+        "app.main._exchange_google_code_for_tokens",
+        lambda code: {"id_token": "fake-id-token"},
+    )
+    monkeypatch.setattr(
+        "app.main._verify_google_id_token",
+        lambda token: {
+            "email": "orphan@example.com",
+            "name": "Orphan User",
+            "sub": "google-sub-orphan",
+            "picture": "https://example.com/orphan-avatar.png",
+            "email_verified": True,
+        },
+    )
+
+    state = create_oauth_state(purpose="google_oauth")
+    response = client.get(
+        f"/auth/google/callback?code=google-code&state={state}",
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("http://localhost:3000/login#")
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "orphan@example.com").one()
+        membership = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == user.id).one()
+        subscription = db.query(Subscription).filter(Subscription.workspace_id == membership.workspace_id).one()
+        assert membership.role == "owner"
+        assert subscription.plan == "free"
+        assert subscription.status == "active"
+    finally:
+        db.close()

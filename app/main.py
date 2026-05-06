@@ -177,6 +177,7 @@ from .services import (
     build_ai_chat_context_snapshot,
     AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
     AUTH_CODE_PURPOSE_PASSWORD_RESET,
+    build_default_workspace_name,
     build_auth_email_html,
     build_auth_email_text,
     issue_auth_code,
@@ -1166,13 +1167,6 @@ def _exchange_google_code_for_tokens(code: str) -> dict[str, Any]:
             payload = response.json()
         except ValueError:
             payload = {"error": response.text}
-        logger.warning(
-            "google_oauth_token_exchange_failed",
-            extra={
-                "status_code": response.status_code,
-                "response_body": _make_json_safe(payload),
-            },
-        )
         raise http_error(400, "google_token_exchange_failed", "Google OAuth token exchange failed.")
     return response.json()
 
@@ -1188,10 +1182,6 @@ def _verify_google_id_token(id_token_value: str) -> dict[str, Any]:
             _google_client_id(),
         )
     except Exception as exc:
-        logger.warning(
-            "google_oauth_id_token_verification_failed",
-            extra={"exception_class": exc.__class__.__name__},
-        )
         raise http_error(400, "google_id_token_invalid", "Google ID token is invalid.") from exc
     if not isinstance(payload, dict):
         raise http_error(400, "google_id_token_invalid", "Google ID token is invalid.")
@@ -1199,21 +1189,51 @@ def _verify_google_id_token(id_token_value: str) -> dict[str, Any]:
 
 
 def _google_auth_redirect_response(access_token: str) -> RedirectResponse:
-    target_url = f"{_google_frontend_base_url()}/dashboard?{urlencode({'access_token': access_token, 'token_type': 'bearer'})}"
+    target_url = f"{_google_frontend_base_url()}/login#{urlencode({'access_token': access_token, 'token_type': 'bearer'})}"
     response = RedirectResponse(url=target_url, status_code=302)
-    secure_cookie = _auth_cookie_secure()
     _set_auth_cookie(response, access_token)
-    logger.info(
-        "google_oauth_final_redirect",
-        extra={
-            "redirect_url": target_url,
-            "cookie_set": True,
-            "cookie_http_only": True,
-            "cookie_same_site": "lax",
-            "cookie_secure": secure_cookie,
-        },
-    )
     return response
+
+
+def _find_user_workspace_and_subscription(
+    db: Session,
+    *,
+    user_id: int,
+) -> tuple[Workspace | None, Subscription | None]:
+    workspace = (
+        db.query(Workspace)
+        .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+        .filter(WorkspaceMember.user_id == user_id)
+        .order_by(Workspace.created_at.asc(), Workspace.id.asc())
+        .first()
+    )
+    subscription = (
+        db.query(Subscription)
+        .filter(Subscription.workspace_id == workspace.id)
+        .order_by(Subscription.created_at.desc(), Subscription.id.desc())
+        .first()
+        if workspace is not None
+        else None
+    )
+    return workspace, subscription
+
+
+def _ensure_user_workspace_and_subscription(
+    db: Session,
+    *,
+    user: User,
+) -> tuple[Workspace, Subscription]:
+    workspace, subscription = _find_user_workspace_and_subscription(db, user_id=user.id)
+    if workspace is None:
+        workspace = Workspace(name=build_default_workspace_name(user.full_name))
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+    if subscription is None:
+        subscription = Subscription(workspace_id=workspace.id, plan="free", status="active")
+        db.add(subscription)
+        db.flush()
+    return workspace, subscription
 
 
 def _set_auth_cookie(response: Response, access_token: str) -> None:
@@ -1435,6 +1455,14 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
         )
     except HTTPException:
         db.rollback()
+        logger.warning(
+            "google_oauth_error",
+            extra={
+                "email": email,
+                "exception_class": "HTTPException",
+                "safe_message": "Google OAuth callback failed.",
+            },
+        )
         raise
     except IntegrityError as exc:
         db.rollback()
@@ -1570,32 +1598,20 @@ def google_callback(
     state: str | None = None,
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
+    email: str | None = None
     try:
         logger.info(
             "google_oauth_callback_received",
             extra={"code_received": bool(code), "state_received": bool(state)},
         )
         if not code or not state:
-            logger.warning(
-                "google_oauth_callback_invalid_state",
-                extra={"reason": "missing_code_or_state"},
-            )
             raise http_error(400, "invalid_state", "Invalid Google OAuth state.")
 
         state_payload = decode_oauth_state(state)
         if str(state_payload.get("purpose") or "") != GOOGLE_OAUTH_STATE_PURPOSE:
-            logger.warning(
-                "google_oauth_callback_invalid_state",
-                extra={"reason": "state_purpose_mismatch", "state_payload": _make_json_safe(state_payload)},
-            )
             raise http_error(400, "invalid_state", "Invalid Google OAuth state.")
-        logger.info("google_oauth_state_valid", extra={"purpose": state_payload.get("purpose")})
 
         token_payload = _exchange_google_code_for_tokens(code)
-        logger.info(
-            "google_oauth_token_exchange_success",
-            extra={"token_response_keys": sorted(token_payload.keys()) if isinstance(token_payload, dict) else None},
-        )
         id_token_value = str(token_payload.get("id_token") or "").strip()
         if not id_token_value:
             raise http_error(400, "google_id_token_missing", "Google ID token was not returned.")
@@ -1615,8 +1631,16 @@ def google_callback(
         user = load_user_by_google_sub(db, google_sub)
         if user is None:
             user = load_user_by_email(db, email)
+        logger.info(
+            "google_oauth_user_loaded",
+            extra={
+                "email": email,
+                "user_found": bool(user),
+                "matched_by_google_sub": bool(user and getattr(user, "google_sub", None) == google_sub),
+            },
+        )
         if _is_deleted_user(user):
-            user = None
+            raise http_error(403, "account_unavailable", "User account is unavailable.")
         is_new_user = user is None
         if user is None:
             user, workspace, subscription = register_user_with_default_workspace(
@@ -1634,69 +1658,71 @@ def google_callback(
                 db.add(user)
         else:
             user.google_sub = google_sub
-            user.email_verified = True
-            user.auth_provider = "google"
+            if email_verified:
+                user.email_verified = True
+            if user.auth_provider in {"email", "google"}:
+                user.auth_provider = "google"
             if full_name:
                 user.full_name = full_name
             if picture and not user.logo_url:
                 user.logo_url = picture
             user.last_login_at = datetime.now(timezone.utc)
             db.add(user)
-            workspace = (
-                db.query(Workspace)
-                .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
-                .filter(WorkspaceMember.user_id == user.id)
-                .order_by(Workspace.created_at.asc(), Workspace.id.asc())
-                .first()
-            )
-            subscription = (
-                db.query(Subscription)
-                .filter(Subscription.workspace_id == workspace.id)
-                .order_by(Subscription.created_at.desc(), Subscription.id.desc())
-                .first()
-                if workspace is not None
-                else None
-            )
+            workspace, subscription = _ensure_user_workspace_and_subscription(db, user=user)
         logger.info(
-            "google_oauth_user_resolved",
+            "google_oauth_user_created_or_loaded",
             extra={
                 "user_id": user.id,
                 "is_new_user": is_new_user,
                 "auth_provider": user.auth_provider,
-                "linked_google_sub": google_sub,
                 "workspace_id": workspace.id if workspace else None,
+                "has_subscription": bool(subscription),
             },
         )
 
+        if not _jwt_secret_configured():
+            raise http_error(500, "invalid_configuration", "Authentication configuration is invalid.")
         db.commit()
         access_token = create_access_token(str(user.id))
         logger.info(
-            "google_oauth_jwt_created",
-            extra={"user_id": user.id, "token_length": len(access_token), "token_use": "access"},
-        )
-        logger.info(
-            "google_oauth_login_completed",
-            extra={
-                "user_id": user.id,
-                "workspace_id": workspace.id if workspace else None,
-                "is_new_user": is_new_user,
-                "auth_provider": user.auth_provider,
-            },
+            "google_oauth_token_created",
+            extra={"user_id": user.id, "token_type": "bearer"},
         )
         response = _google_auth_redirect_response(access_token)
         response.headers["Cache-Control"] = "no-store"
+        logger.info(
+            "google_oauth_redirect_success",
+            extra={
+                "user_id": user.id,
+                "frontend_base_url": _google_frontend_base_url(),
+                "redirect_path": "/login",
+            },
+        )
         return response
     except HTTPException:
         db.rollback()
-        logger.warning("google_oauth_callback_http_error")
         raise
     except TokenError:
         db.rollback()
-        logger.warning("google_oauth_callback_invalid_state", extra={"reason": "token_error"})
+        logger.warning(
+            "google_oauth_error",
+            extra={
+                "email": email,
+                "exception_class": "TokenError",
+                "safe_message": "Invalid Google OAuth state.",
+            },
+        )
         raise http_error(400, "invalid_state", "Invalid Google OAuth state.")
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        logger.exception("google_oauth_callback_failed")
+        logger.exception(
+            "google_oauth_error",
+            extra={
+                "email": email,
+                "exception_class": exc.__class__.__name__,
+                "safe_message": _safe_exception_message(exc),
+            },
+        )
         raise
 
 
