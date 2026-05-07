@@ -3227,17 +3227,21 @@ def _require_workspace_access(db: Session, user_id: int, workspace_id: int) -> N
         raise http_error(403, "forbidden", "Workspace access denied.")
 
 
-def _resolve_workspace_id(db: Session, user_id: int, workspace_id: int | None) -> int:
-    if workspace_id is not None:
-        return workspace_id
-
+def _workspace_ids_for_user(db: Session, user_id: int) -> list[int]:
     memberships = (
         db.query(WorkspaceMember.workspace_id)
         .filter(WorkspaceMember.user_id == user_id)
         .order_by(WorkspaceMember.workspace_id.asc())
         .all()
     )
-    workspace_ids = [row[0] for row in memberships]
+    return [int(row[0]) for row in memberships]
+
+
+def _resolve_workspace_id(db: Session, user_id: int, workspace_id: int | None) -> int:
+    if workspace_id is not None:
+        return workspace_id
+
+    workspace_ids = _workspace_ids_for_user(db, user_id)
 
     if not workspace_ids:
         raise http_error(404, "workspace_not_found", "No workspace found for current user.")
@@ -3248,6 +3252,76 @@ def _resolve_workspace_id(db: Session, user_id: int, workspace_id: int | None) -
             "workspace_id is required when the user belongs to multiple workspaces.",
         )
     return int(workspace_ids[0])
+
+
+def _resolve_meta_connect_workspace_id(
+    db: Session,
+    *,
+    user_id: int,
+    requested_workspace_id: int | None,
+) -> int:
+    workspace_ids = _workspace_ids_for_user(db, user_id)
+
+    if not workspace_ids:
+        logger.warning(
+            "meta_connect_pages_workspace_access_denied",
+            extra={
+                "user_id": user_id,
+                "workspace_id_received": requested_workspace_id,
+                "workspace_ids_available": workspace_ids,
+                "reason": "user_has_no_workspaces",
+            },
+        )
+        raise http_error(404, "workspace_not_found", "No workspace found for current user.")
+
+    if requested_workspace_id is None:
+        if len(workspace_ids) == 1:
+            return workspace_ids[0]
+        logger.warning(
+            "meta_connect_pages_workspace_access_denied",
+            extra={
+                "user_id": user_id,
+                "workspace_id_received": requested_workspace_id,
+                "workspace_ids_available": workspace_ids,
+                "reason": "workspace_id_missing_with_multiple_workspaces",
+            },
+        )
+        raise http_error(
+            403,
+            "workspace_access_denied",
+            "workspace_id is required when the user belongs to multiple workspaces.",
+        )
+
+    if requested_workspace_id in workspace_ids:
+        return requested_workspace_id
+
+    if len(workspace_ids) == 1:
+        logger.info(
+            "meta_connect_pages_workspace_fallback",
+            extra={
+                "user_id": user_id,
+                "workspace_id_received": requested_workspace_id,
+                "workspace_ids_available": workspace_ids,
+                "reason": "requested_workspace_not_accessible_using_single_available_workspace",
+                "resolved_workspace_id": workspace_ids[0],
+            },
+        )
+        return workspace_ids[0]
+
+    logger.warning(
+        "meta_connect_pages_workspace_access_denied",
+        extra={
+            "user_id": user_id,
+            "workspace_id_received": requested_workspace_id,
+            "workspace_ids_available": workspace_ids,
+            "reason": "requested_workspace_not_accessible",
+        },
+    )
+    raise http_error(
+        403,
+        "workspace_access_denied",
+        "Requested workspace does not belong to the authenticated user.",
+    )
 
 
 def _require_pro_plan(db: Session, workspace_id: int) -> None:
@@ -9869,17 +9943,30 @@ def meta_connect(
 
 @app.get("/integrations/meta/connect-pages")
 def meta_connect_pages(
-    workspace_id: int,
+    workspace_id: int | None = Query(default=None),
     integration_type: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_workspace_access(db, current_user.id, workspace_id)
-    integration = _get_or_create_meta_integration_for_workspace(db, workspace_id)
+    resolved_workspace_id = _resolve_meta_connect_workspace_id(
+        db,
+        user_id=current_user.id,
+        requested_workspace_id=workspace_id,
+    )
+    logger.info(
+        "meta_connect_pages_workspace_resolved",
+        extra={
+            "user_id": current_user.id,
+            "workspace_id_received": workspace_id,
+            "workspace_ids_available": _workspace_ids_for_user(db, current_user.id),
+            "resolved_workspace_id": resolved_workspace_id,
+        },
+    )
+    integration = _get_or_create_meta_integration_for_workspace(db, resolved_workspace_id)
     selected_integration_type = str(integration_type or "").strip() or None
     state = encode_state(
         {
-            "workspace_id": workspace_id,
+            "workspace_id": resolved_workspace_id,
             "user_id": current_user.id,
             "integration_id": integration.id,
             "integration_type": selected_integration_type,
@@ -9890,7 +9977,7 @@ def meta_connect_pages(
     redirect_uri = _meta_pages_redirect_uri()
     logger.warning(
         "Meta Pages OAuth connect workspace_id=%s user_id=%s integration_id=%s auth_redirect_uri=%s scope=%s selected_integration_type=%s",
-        workspace_id,
+        resolved_workspace_id,
         current_user.id,
         integration.id,
         redirect_uri,

@@ -22,8 +22,8 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 from app.deps import get_db
 from app.db import Base, SessionLocal, engine
 from app.main import app
-from app.models import EmailVerificationCode, Subscription, User, Workspace, WorkspaceMember
-from app.security import create_oauth_state
+from app.models import EmailVerificationCode, Integration, Subscription, User, Workspace, WorkspaceMember
+from app.security import create_access_token, create_oauth_state
 from app.security import hash_password
 
 
@@ -33,6 +33,7 @@ AUTH_TABLES = [
     WorkspaceMember.__table__,
     Subscription.__table__,
     EmailVerificationCode.__table__,
+    Integration.__table__,
 ]
 
 
@@ -65,6 +66,12 @@ def _fetch_user(email: str) -> User:
         return db.query(User).filter(User.email == email).one()
     finally:
         db.close()
+
+
+def _auth_headers_for(email: str) -> dict[str, str]:
+    user = _fetch_user(email)
+    token = create_access_token(str(user.id))
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_google_start_redirects_to_consent(client):
@@ -232,6 +239,95 @@ def test_google_callback_creates_workspace_for_existing_user_without_membership(
         db.commit()
     finally:
         db.close()
+
+
+def test_meta_connect_pages_uses_single_available_workspace_when_request_is_stale(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="meta-single@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Meta Single",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace = Workspace(name="Meta Single Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="free", status="active"))
+        db.commit()
+        real_workspace_id = workspace.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr("app.main._meta_pages_redirect_uri", lambda: "https://backend.example.com/callback")
+    monkeypatch.setattr(
+        "app.main.oauth_connect_pages_url",
+        lambda state, redirect_uri=None: f"https://facebook.example.com/oauth?state={state}&redirect_uri={redirect_uri}",
+    )
+
+    response = client.get(
+        "/integrations/meta/connect-pages?workspace_id=1",
+        headers=_auth_headers_for("meta-single@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["auth_url"].startswith("https://facebook.example.com/oauth?")
+    assert payload["integration_id"]
+
+    db = SessionLocal()
+    try:
+        integration = db.query(Integration).filter(Integration.workspace_id == real_workspace_id).one()
+        assert integration.provider == "meta"
+    finally:
+        db.close()
+
+
+def test_meta_connect_pages_rejects_invalid_workspace_when_user_has_multiple_workspaces(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="meta-multi@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Meta Multi",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace_a = Workspace(name="Workspace A")
+        workspace_b = Workspace(name="Workspace B")
+        db.add(workspace_a)
+        db.add(workspace_b)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace_a.id, user_id=user.id, role="owner"))
+        db.add(WorkspaceMember(workspace_id=workspace_b.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace_a.id, plan="free", status="active"))
+        db.add(Subscription(workspace_id=workspace_b.id, plan="free", status="active"))
+        db.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr("app.main._meta_pages_redirect_uri", lambda: "https://backend.example.com/callback")
+    monkeypatch.setattr(
+        "app.main.oauth_connect_pages_url",
+        lambda state, redirect_uri=None: f"https://facebook.example.com/oauth?state={state}&redirect_uri={redirect_uri}",
+    )
+
+    response = client.get(
+        "/integrations/meta/connect-pages?workspace_id=99999",
+        headers=_auth_headers_for("meta-multi@example.com"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "workspace_access_denied"
+    assert response.json()["detail"]["message"] == "Requested workspace does not belong to the authenticated user."
 
     monkeypatch.setattr(
         "app.main._exchange_google_code_for_tokens",
