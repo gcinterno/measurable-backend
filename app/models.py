@@ -393,6 +393,12 @@ class Report(Base):
     versions: Mapped[list[ReportVersion]] = relationship(
         back_populates="report", cascade="all, delete-orphan"
     )
+    exports: Mapped[list[Export]] = relationship(
+        back_populates="report", cascade="all, delete-orphan", passive_deletes=True
+    )
+    schedules: Mapped[list[Schedule]] = relationship(
+        back_populates="report", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class ReportVersion(Base):
@@ -403,7 +409,7 @@ class ReportVersion(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id"), nullable=False)
+    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -424,7 +430,7 @@ class ReportBlock(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     report_version_id: Mapped[int] = mapped_column(
-        ForeignKey("report_versions.id"), nullable=False
+        ForeignKey("report_versions.id", ondelete="CASCADE"), nullable=False
     )
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -449,7 +455,7 @@ class Export(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
-    report_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reports.id"))
+    report_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     output_s3_key: Mapped[Optional[str]] = mapped_column(String(1024))
     download_key: Mapped[Optional[str]] = mapped_column(String(1024))
@@ -461,7 +467,7 @@ class Export(Base):
     )
 
     workspace: Mapped[Workspace] = relationship(back_populates="exports")
-    report: Mapped[Optional[Report]] = relationship()
+    report: Mapped[Optional[Report]] = relationship(back_populates="exports")
 
 
 class Schedule(Base):
@@ -474,7 +480,7 @@ class Schedule(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
-    report_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reports.id"))
+    report_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"))
     integration_id: Mapped[Optional[int]] = mapped_column(ForeignKey("integrations.id"))
     freq: Mapped[str] = mapped_column(String(50), nullable=False, default="monthly")
     day_of_month: Mapped[Optional[int]] = mapped_column(Integer)
@@ -489,7 +495,7 @@ class Schedule(Base):
     )
 
     workspace: Mapped[Workspace] = relationship(back_populates="schedules")
-    report: Mapped[Report] = relationship()
+    report: Mapped[Optional[Report]] = relationship(back_populates="schedules")
 
 
 class Job(Base):
@@ -503,8 +509,8 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
-    schedule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schedules.id"))
-    export_id: Mapped[Optional[int]] = mapped_column(ForeignKey("exports.id"))
+    schedule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schedules.id", ondelete="SET NULL"))
+    export_id: Mapped[Optional[int]] = mapped_column(ForeignKey("exports.id", ondelete="SET NULL"))
     type: Mapped[str] = mapped_column(String(50), nullable=False, default="sync_integration")
     payload_json: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="queued")

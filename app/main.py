@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.security import OAuth2PasswordRequestForm
-from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
+from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, PartialCredentialsError
 from sqlalchemy import and_, case, func, inspect, literal, or_
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -72,6 +72,7 @@ from .models import (
     EmailVerificationCode,
     MetaPage,
     IntegrationToken,
+    Job,
     Message,
     Report,
     ReportBlock,
@@ -139,6 +140,7 @@ from .schemas import (
     ReportListItemOut,
     ReportBlockUpdateIn,
     ReportCreateIn,
+    ReportDeleteOut,
     ReportOut,
     ReportVersionOut,
     ScheduleCreateIn,
@@ -3227,6 +3229,17 @@ def _require_workspace_access(db: Session, user_id: int, workspace_id: int) -> N
         raise http_error(403, "forbidden", "Workspace access denied.")
 
 
+def _require_workspace_owner(db: Session, user_id: int, workspace_id: int) -> WorkspaceMember:
+    membership = (
+        db.query(WorkspaceMember)
+        .filter(WorkspaceMember.user_id == user_id, WorkspaceMember.workspace_id == workspace_id)
+        .first()
+    )
+    if not membership or str(membership.role or "").strip().lower() != "owner":
+        raise http_error(403, "forbidden", "Only workspace owners can delete reports.")
+    return membership
+
+
 def _workspace_ids_for_user(db: Session, user_id: int) -> list[int]:
     memberships = (
         db.query(WorkspaceMember.workspace_id)
@@ -3252,6 +3265,37 @@ def _resolve_workspace_id(db: Session, user_id: int, workspace_id: int | None) -
             "workspace_id is required when the user belongs to multiple workspaces.",
         )
     return int(workspace_ids[0])
+
+
+def _report_delete_asset_keys(report: Report, exports: list[Export]) -> list[str]:
+    metadata = _report_metadata(report)
+    keys: list[str] = []
+    thumbnail_key = metadata.get("thumbnail_s3_key") if isinstance(metadata, dict) else None
+    if thumbnail_key:
+        keys.append(str(thumbnail_key))
+    for export in exports:
+        for candidate in (export.output_s3_key, export.download_key):
+            if candidate:
+                keys.append(str(candidate))
+    return list(dict.fromkeys(keys))
+
+
+def _cleanup_report_assets(report_id: int, asset_keys: list[str]) -> None:
+    if not asset_keys:
+        return
+    s3 = boto3.client("s3", region_name=settings.aws_region)
+    for key in asset_keys:
+        try:
+            s3.delete_object(Bucket=settings.s3_outputs_bucket, Key=key)
+            logger.info(
+                "report_delete_asset_removed",
+                extra={"report_id": report_id, "bucket": settings.s3_outputs_bucket, "s3_key": key},
+            )
+        except (NoCredentialsError, PartialCredentialsError, BotoCoreError, ClientError):
+            logger.exception(
+                "report_delete_asset_cleanup_failed",
+                extra={"report_id": report_id, "bucket": settings.s3_outputs_bucket, "s3_key": key},
+            )
 
 
 def _resolve_meta_connect_workspace_id(
@@ -9341,6 +9385,126 @@ def get_report(
         created_at=report.created_at,
         updated_at=report.updated_at,
     )
+
+
+@app.delete("/reports/{report_id}", response_model=ReportDeleteOut)
+def delete_report(
+    report_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReportDeleteOut:
+    report = db.get(Report, report_id)
+    if not report:
+        logger.warning("report_delete_not_found", extra={"report_id": report_id, "user_id": current_user.id})
+        raise http_error(404, "report_not_found", "Report not found.")
+
+    try:
+        _require_workspace_owner(db, current_user.id, report.workspace_id)
+    except HTTPException:
+        logger.warning(
+            "report_delete_forbidden",
+            extra={
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "user_id": current_user.id,
+            },
+        )
+        raise
+
+    exports = (
+        db.query(Export)
+        .filter(Export.report_id == report.id)
+        .order_by(Export.id.asc())
+        .all()
+    )
+    schedules = (
+        db.query(Schedule)
+        .filter(Schedule.report_id == report.id)
+        .order_by(Schedule.id.asc())
+        .all()
+    )
+    export_ids = [export.id for export in exports]
+    schedule_ids = [schedule.id for schedule in schedules]
+    asset_keys = _report_delete_asset_keys(report, exports)
+
+    logger.info(
+        "report_delete_started",
+        extra={
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "user_id": current_user.id,
+            "report_version_count": len(report.versions),
+            "export_count": len(export_ids),
+            "schedule_count": len(schedule_ids),
+            "asset_key_count": len(asset_keys),
+        },
+    )
+
+    try:
+        if schedule_ids:
+            db.query(Job).filter(Job.schedule_id.in_(schedule_ids)).update(
+                {Job.schedule_id: None},
+                synchronize_session=False,
+            )
+            db.query(Schedule).filter(Schedule.id.in_(schedule_ids)).delete(synchronize_session=False)
+        if export_ids:
+            db.query(Job).filter(Job.export_id.in_(export_ids)).update(
+                {Job.export_id: None},
+                synchronize_session=False,
+            )
+            db.query(Export).filter(Export.id.in_(export_ids)).delete(synchronize_session=False)
+        db.delete(report)
+        db.flush()
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception(
+            "report_delete_database_failed",
+            extra={
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "user_id": current_user.id,
+                "export_ids": export_ids,
+                "schedule_ids": schedule_ids,
+                **_sqlalchemy_error_log_payload(exc, stage="report_delete"),
+            },
+        )
+        raise http_error(
+            500,
+            "report_delete_failed",
+            "We could not delete the report right now. Please try again.",
+        )
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "report_delete_unexpected_failed",
+            extra={
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "user_id": current_user.id,
+                "export_ids": export_ids,
+                "schedule_ids": schedule_ids,
+            },
+        )
+        raise http_error(
+            500,
+            "report_delete_failed",
+            "We could not delete the report right now. Please try again.",
+        )
+
+    _cleanup_report_assets(report.id, asset_keys)
+    logger.info(
+        "report_delete_succeeded",
+        extra={
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "user_id": current_user.id,
+            "deleted_export_count": len(export_ids),
+            "deleted_schedule_count": len(schedule_ids),
+            "deleted_asset_key_count": len(asset_keys),
+        },
+    )
+    return ReportDeleteOut(success=True)
 
 
 @app.get("/reports/{report_id}/versions", response_model=list[ReportVersionOut])

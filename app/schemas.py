@@ -743,6 +743,10 @@ class ReportListItemOut(BaseModel):
     created_at: datetime
 
 
+class ReportDeleteOut(BaseModel):
+    success: bool = True
+
+
 class MetaPagesReportCreateOut(BaseModel):
     report_id: int
     version_id: Optional[int] = None
