@@ -60,6 +60,7 @@ PLAN_LIMITS = {
         "allow_pdf_export": True,
         "allow_pptx_export": False,
         "allow_ai_agents": False,
+        "allow_custom_branding": False,
     },
     "starter": {
         "reports_per_month": 10,
@@ -69,6 +70,7 @@ PLAN_LIMITS = {
         "allow_pdf_export": True,
         "allow_pptx_export": False,
         "allow_ai_agents": False,
+        "allow_custom_branding": True,
     },
     "core": {
         "reports_per_month": 30,
@@ -78,6 +80,7 @@ PLAN_LIMITS = {
         "allow_pdf_export": True,
         "allow_pptx_export": True,
         "allow_ai_agents": True,
+        "allow_custom_branding": True,
     },
     "advanced": {
         "reports_per_month": None,
@@ -87,8 +90,13 @@ PLAN_LIMITS = {
         "allow_pdf_export": True,
         "allow_pptx_export": True,
         "allow_ai_agents": True,
+        "allow_custom_branding": True,
     },
 }
+
+MEASURABLE_BRANDING_NAME = "Measurable"
+# Replace this with the canonical Measurable logo asset URL once it is defined centrally.
+MEASURABLE_BRANDING_LOGO_URL: str | None = None
 
 
 def normalize_workspace_plan(plan: Any) -> str:
@@ -133,6 +141,7 @@ def get_plan_capabilities(plan: str) -> dict[str, Any]:
         "allow_pdf_export": bool(limits["allow_pdf_export"]),
         "allow_pptx_export": bool(limits["allow_pptx_export"]),
         "allow_ai_agents": bool(limits["allow_ai_agents"]),
+        "allow_custom_branding": bool(limits["allow_custom_branding"]),
     }
 
 
@@ -914,24 +923,78 @@ def workspace_logo_column_available() -> bool:
     return any(str(column.get("name")) == "logo_url" for column in columns)
 
 
+def measurable_branding() -> dict[str, Optional[str]]:
+    return {
+        "name": MEASURABLE_BRANDING_NAME,
+        "display_name": MEASURABLE_BRANDING_NAME,
+        "brand_name": MEASURABLE_BRANDING_NAME,
+        "logo_url": MEASURABLE_BRANDING_LOGO_URL,
+    }
+
+
+def normalize_branding_payload(branding: Any) -> dict[str, Optional[str]]:
+    if not isinstance(branding, dict):
+        return {
+            "name": None,
+            "display_name": None,
+            "brand_name": None,
+            "logo_url": None,
+        }
+    name = str(
+        branding.get("brand_name") or branding.get("display_name") or branding.get("name") or ""
+    ).strip() or None
+    logo_url = str(branding.get("logo_url") or "").strip() or None
+    return {
+        "name": name,
+        "display_name": name,
+        "brand_name": name,
+        "logo_url": logo_url,
+    }
+
+
 def resolve_workspace_branding(workspace_id: int | None) -> dict[str, Optional[str]]:
     if not workspace_id or not workspace_logo_column_available():
-        return {"logo_url": None}
+        return normalize_branding_payload({})
 
     try:
         with engine.connect() as connection:
             result = connection.execute(
-                text("SELECT logo_url FROM workspaces WHERE id = :workspace_id"),
+                text("SELECT name, logo_url FROM workspaces WHERE id = :workspace_id"),
                 {"workspace_id": int(workspace_id)},
             ).first()
     except SQLAlchemyError:
-        return {"logo_url": None}
+        return normalize_branding_payload({})
 
     if not result:
-        return {"logo_url": None}
+        return normalize_branding_payload({})
 
-    logo_url = result[0]
-    return {"logo_url": str(logo_url) if logo_url else None}
+    workspace_name, logo_url = result
+    return normalize_branding_payload(
+        {
+            "name": str(workspace_name) if workspace_name else None,
+            "logo_url": str(logo_url) if logo_url else None,
+        }
+    )
+
+
+def workspace_allows_custom_branding(db: Session, workspace_id: int) -> bool:
+    plan = get_workspace_plan(db, workspace_id)
+    capabilities = get_plan_capabilities(plan)
+    return bool(capabilities["allow_custom_branding"])
+
+
+def resolve_report_branding_for_workspace(
+    db: Session,
+    workspace_id: int,
+    preferred_branding: dict[str, Any] | None = None,
+) -> dict[str, Optional[str]]:
+    if not workspace_allows_custom_branding(db, workspace_id):
+        return measurable_branding()
+
+    normalized_preferred = normalize_branding_payload(preferred_branding)
+    if any(normalized_preferred.get(key) for key in ("logo_url", "brand_name", "display_name", "name")):
+        return normalized_preferred
+    return resolve_workspace_branding(workspace_id)
 
 
 def _load_json(raw: str | None, default: Any) -> Any:
@@ -1727,7 +1790,11 @@ def build_meta_pages_claude_payload(report_inputs: dict[str, Any]) -> dict[str, 
 
 
 def build_export_payload(
-    export: Export, report: Report, report_version: ReportVersion, blocks: list[ReportBlock]
+    db: Session,
+    export: Export,
+    report: Report,
+    report_version: ReportVersion,
+    blocks: list[ReportBlock],
 ) -> dict[str, Any]:
     report_metadata = _load_json(report.description, {}) if report.description else {}
     report_locale = normalize_report_locale(
@@ -1738,10 +1805,10 @@ def build_export_payload(
         if isinstance(report_metadata, dict) and isinstance(report_metadata.get("branding"), dict)
         else None
     )
-    branding = (
-        {"logo_url": str(metadata_branding.get("logo_url")) if metadata_branding.get("logo_url") else None}
-        if metadata_branding is not None
-        else resolve_workspace_branding(report.workspace_id)
+    branding = resolve_report_branding_for_workspace(
+        db,
+        report.workspace_id,
+        preferred_branding=metadata_branding,
     )
     report_timeframe = (
         report_metadata.get("timeframe")

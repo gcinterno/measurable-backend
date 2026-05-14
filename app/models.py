@@ -393,6 +393,9 @@ class Report(Base):
     versions: Mapped[list[ReportVersion]] = relationship(
         back_populates="report", cascade="all, delete-orphan"
     )
+    report_sources: Mapped[list[ReportSource]] = relationship(
+        back_populates="report", cascade="all, delete-orphan", passive_deletes=True
+    )
     exports: Mapped[list[Export]] = relationship(
         back_populates="report", cascade="all, delete-orphan", passive_deletes=True
     )
@@ -422,6 +425,41 @@ class ReportVersion(Base):
     blocks: Mapped[list[ReportBlock]] = relationship(
         back_populates="report_version", cascade="all, delete-orphan"
     )
+
+
+class ReportSource(Base):
+    __tablename__ = "report_sources"
+    __table_args__ = (
+        Index("ix_report_sources_report_id", "report_id"),
+        Index("ix_report_sources_workspace_id", "workspace_id"),
+        Index("ix_report_sources_integration_id", "integration_id"),
+        Index("ix_report_sources_dataset_id", "dataset_id"),
+        UniqueConstraint("report_id", "position", name="uq_report_sources_report_position"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    integration_id: Mapped[int] = mapped_column(ForeignKey("integrations.id"), nullable=False)
+    integration_account_id: Mapped[Optional[int]] = mapped_column(ForeignKey("integration_accounts.id"))
+    dataset_id: Mapped[Optional[int]] = mapped_column(ForeignKey("datasets.id"))
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    label: Mapped[Optional[str]] = mapped_column(String(255))
+    config_json: Mapped[Optional[dict]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    report: Mapped[Report] = relationship(back_populates="report_sources")
+    workspace: Mapped[Workspace] = relationship()
+    integration: Mapped[Integration] = relationship()
+    integration_account: Mapped[Optional[IntegrationAccount]] = relationship()
+    dataset: Mapped[Optional[Dataset]] = relationship()
 
 
 class ReportBlock(Base):

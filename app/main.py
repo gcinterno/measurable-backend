@@ -76,6 +76,7 @@ from .models import (
     Message,
     Report,
     ReportBlock,
+    ReportSource,
     ReportVersion,
     Subscription,
     Schedule,
@@ -111,6 +112,8 @@ from .schemas import (
     DatasetDetailOut,
     DatasetUploadOut,
     InstagramBusinessReportCreateIn,
+    InstagramBusinessSyncIn,
+    InstagramBusinessSyncOut,
     OnboardingCompleteOut,
     OnboardingStateOut,
     OnboardingUpdate,
@@ -128,6 +131,7 @@ from .schemas import (
     MetaSetTokenManualIn,
     MessageOut,
     PlanLimitsOut,
+    MultiSourceReportCreateRequest,
     RegisterIn,
     RegisterOut,
     ResendVerificationCodeIn,
@@ -142,6 +146,7 @@ from .schemas import (
     ReportCreateIn,
     ReportDeleteOut,
     ReportOut,
+    ReportSourceRead,
     ReportVersionOut,
     ScheduleCreateIn,
     ScheduleSchema,
@@ -196,6 +201,7 @@ from .services import (
     get_workspace_plan,
     get_plan_limits,
     resolve_report_slide_limits,
+    resolve_report_branding_for_workspace,
     resolve_meta_pages_timeframe,
     register_user_with_default_workspace,
     generate_pdf_from_export_page,
@@ -779,12 +785,14 @@ def _report_locale(report: Report) -> str:
     return normalize_report_locale(_report_metadata(report).get("locale"))
 
 
-def _report_branding(report: Report) -> dict[str, object]:
+def _report_branding(db: Session, report: Report) -> dict[str, object]:
     metadata = _report_metadata(report)
     branding = metadata.get("branding") if isinstance(metadata.get("branding"), dict) else None
-    if branding is not None:
-        return {"logo_url": str(branding.get("logo_url")) if branding.get("logo_url") else None}
-    return resolve_workspace_branding(report.workspace_id)
+    return resolve_report_branding_for_workspace(
+        db,
+        report.workspace_id,
+        preferred_branding=branding,
+    )
 
 
 def _user_branding(user: User | None) -> dict[str, object]:
@@ -809,6 +817,22 @@ def _report_timeframe(report: Report) -> dict[str, object] | None:
     metadata = _report_metadata(report)
     timeframe = metadata.get("timeframe") if isinstance(metadata, dict) else None
     return timeframe if isinstance(timeframe, dict) else None
+
+
+def _report_status(report: Report) -> str | None:
+    metadata = _report_metadata(report)
+    status = metadata.get("report_status") if isinstance(metadata, dict) else None
+    return str(status) if isinstance(status, str) and status.strip() else None
+
+
+def _report_sources_out(db: Session, *, report_id: int) -> list[ReportSourceRead]:
+    report_sources = (
+        db.query(ReportSource)
+        .filter(ReportSource.report_id == report_id)
+        .order_by(ReportSource.position.asc(), ReportSource.id.asc())
+        .all()
+    )
+    return [ReportSourceRead.model_validate(source) for source in report_sources]
 
 
 def _timeframe_log_payload(
@@ -867,10 +891,11 @@ def _report_version_out(
         version_id=report_version.id,
         report_id=report_version.report_id,
         version=report_version.version,
+        report_sources=_report_sources_out(db, report_id=report.id),
         description=metadata,
         timeframe=_report_timeframe(report),
         locale=_report_locale(report),
-        branding=_report_branding(report),
+        branding=_report_branding(db, report),
         thumbnail_url=_report_thumbnail_url(report),
         created_at=report_version.created_at,
         updated_at=report_version.updated_at,
@@ -921,21 +946,43 @@ def _generate_and_store_report_thumbnail(
     user_id: int,
     sync_branding_from_user: bool = False,
 ) -> str | None:
-    report_branding = _report_branding(report)
+    report_metadata = _report_metadata(report)
+    persisted_branding = (
+        report_metadata.get("branding")
+        if isinstance(report_metadata, dict) and isinstance(report_metadata.get("branding"), dict)
+        else None
+    )
+    report_branding = _report_branding(db, report)
     report_logo_url = str(report_branding.get("logo_url")) if report_branding.get("logo_url") else None
     report_version_logo_url = report_logo_url
     user = db.get(User, user_id)
     user_logo_url = str(user.logo_url) if user and user.logo_url else None
     final_branding_source = "report_metadata"
+    workspace_branding = resolve_workspace_branding(report.workspace_id)
+    workspace_logo_url = str(workspace_branding.get("logo_url")) if workspace_branding.get("logo_url") else None
+    custom_branding_allowed = bool(
+        get_plan_limits(get_workspace_plan(db, report.workspace_id)).get("allow_custom_branding")
+    )
 
-    if sync_branding_from_user and user_logo_url and not report_logo_url:
-        report = _update_report_metadata(db, report, {"branding": {"logo_url": user_logo_url}})
-        report_branding = _report_branding(report)
+    if sync_branding_from_user and custom_branding_allowed and user_logo_url and not persisted_branding:
+        synced_branding = resolve_report_branding_for_workspace(
+            db,
+            report.workspace_id,
+            preferred_branding=_user_branding(user),
+        )
+        report = _update_report_metadata(db, report, {"branding": synced_branding})
+        report_branding = _report_branding(db, report)
         report_logo_url = (
             str(report_branding.get("logo_url")) if report_branding.get("logo_url") else None
         )
         report_version_logo_url = report_logo_url
         final_branding_source = "user_profile_sync"
+    elif not custom_branding_allowed:
+        final_branding_source = "measurable_default"
+    elif persisted_branding:
+        final_branding_source = "report_metadata"
+    elif workspace_logo_url:
+        final_branding_source = "workspace_fallback"
     elif not report_logo_url and user_logo_url:
         final_branding_source = "user_profile_available_but_not_persisted"
     elif not report_logo_url:
@@ -964,6 +1011,7 @@ def _generate_and_store_report_thumbnail(
             "resolved_report_branding_logo_url": report_logo_url,
             "resolved_report_version_branding_logo_url": report_version_logo_url,
             "resolved_user_logo_url": user_logo_url,
+            "resolved_workspace_logo_url": workspace_logo_url,
             "final_branding_source_used": final_branding_source,
             "report_version": report_version.version,
         },
@@ -991,6 +1039,7 @@ def _generate_and_store_report_thumbnail(
             "resolved_report_branding_logo_url": report_logo_url,
             "resolved_report_version_branding_logo_url": report_version_logo_url,
             "resolved_user_logo_url": user_logo_url,
+            "resolved_workspace_logo_url": workspace_logo_url,
             "final_branding_source_used": final_branding_source,
         },
     )
@@ -5092,6 +5141,71 @@ def _meta_page_out_from_cache(meta_page: MetaPage) -> MetaPageOut:
     )
 
 
+def _resolve_instagram_account_record_for_sync(
+    db: Session,
+    *,
+    integration: Integration,
+    current_user: User,
+    instagram_account_id: str,
+) -> MetaPage:
+    requested_account_id = str(instagram_account_id or "").strip()
+    if not requested_account_id:
+        raise http_error(
+            400,
+            "missing_instagram_account_id",
+            "instagram_account_id is required.",
+        )
+
+    stored_record = (
+        db.query(MetaPage)
+        .filter(
+            MetaPage.integration_id == integration.id,
+            MetaPage.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+            MetaPage.page_id == requested_account_id,
+        )
+        .order_by(MetaPage.updated_at.desc(), MetaPage.id.desc())
+        .first()
+    )
+    if stored_record:
+        return stored_record
+
+    access_token = _get_meta_access_token(db, integration)
+    cached_pages, diagnostics, _ = _refresh_meta_pages_from_live_graph(
+        db,
+        integration,
+        access_token=access_token,
+        user_id=current_user.id,
+        selected_integration_type="instagram_accounts",
+        context="sync_instagram_business",
+        return_empty_on_error=True,
+    )
+    instagram_records = _filter_meta_records(
+        cached_pages,
+        record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+    )
+    for record in instagram_records:
+        if str(record.page_id or "").strip() == requested_account_id:
+            return record
+
+    logger.warning(
+        "Meta Instagram sync requested account not found",
+        extra={
+            "integration_id": integration.id,
+            "requested_instagram_account_id": requested_account_id,
+            "instagram_accounts_found_count": len(instagram_records),
+            "instagram_usernames_found": [
+                record.instagram_username for record in instagram_records if record.instagram_username
+            ],
+            "diagnostics_pages_checked": len(diagnostics),
+        },
+    )
+    raise http_error(
+        404,
+        "instagram_account_not_found",
+        "Instagram Business account not found for this integration.",
+    )
+
+
 def _safe_meta_callback_payload(
     *,
     success: bool,
@@ -6112,6 +6226,473 @@ def _meta_series_stats(points) -> dict:
         "last": last,
         "delta": float(last["value"]) - float(first["value"]),
     }
+
+
+def _multi_source_source_label(source_type: str) -> str:
+    normalized = str(source_type or "").strip().lower()
+    return {
+        "facebook_pages": "Facebook",
+        "instagram_business": "Instagram",
+    }.get(normalized, normalized.replace("_", " ").title() or "Source")
+
+
+def _multi_source_total(points: Any) -> int:
+    normalized_points = _meta_series_points(points)
+    total = 0
+    for point in normalized_points:
+        value = _meta_number(point.get("value"))
+        if value is None:
+            continue
+        total += int(round(value))
+    return total
+
+
+def _multi_source_merge_series(sources: list[dict[str, Any]], metric: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    aggregate: dict[str, dict[str, Any]] = {}
+    series_payload: list[dict[str, Any]] = []
+    for source in sources:
+        raw_points = source.get("timeseries", {}).get(metric)
+        points = _meta_series_points(raw_points)
+        series_payload.append(
+            {
+                "source_type": source.get("source_type"),
+                "provider": source.get("provider"),
+                "label": source.get("label"),
+                "account_name": source.get("account_name"),
+                "metric": metric,
+                "points": points,
+            }
+        )
+        for point in points:
+            point_date = str(point.get("date") or point.get("label") or "").strip()
+            if not point_date:
+                continue
+            item = aggregate.setdefault(
+                point_date,
+                {
+                    "date": point_date,
+                    "label": point.get("label") or _meta_point_label(point_date),
+                    "value": 0,
+                },
+            )
+            point_value = _meta_number(point.get("value"))
+            if point_value is not None:
+                item["value"] = int(item["value"]) + int(round(point_value))
+    aggregate_points = [aggregate[key] for key in sorted(aggregate.keys())]
+    return aggregate_points, series_payload
+
+
+def _multi_source_metric_sum(sources: list[dict[str, Any]], metric: str) -> int:
+    total = 0
+    for source in sources:
+        value = _meta_number(source.get("metrics", {}).get(metric))
+        if value is not None:
+            total += int(round(value))
+    return total
+
+
+def _multi_source_engagement_rate(source: dict[str, Any]) -> float | None:
+    reach_value = _meta_number(source.get("metrics", {}).get("reach"))
+    engagement_value = _meta_number(source.get("metrics", {}).get("engagement"))
+    if reach_value is None or reach_value <= 0 or engagement_value is None:
+        return None
+    return (engagement_value / reach_value) * 100.0
+
+
+def _multi_source_format_rate(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}%"
+
+
+def _multi_source_account_name(source: dict[str, Any], report_inputs: dict[str, Any]) -> str:
+    config_json = source.get("config_json") if isinstance(source.get("config_json"), dict) else {}
+    return str(
+        report_inputs.get("account_name")
+        or report_inputs.get("page_name")
+        or config_json.get("account_name")
+        or source.get("label")
+        or _multi_source_source_label(str(source.get("source_type") or ""))
+    )
+
+
+def _multi_source_normalize_source(source: dict[str, Any], *, dataset: Dataset, locale: str) -> dict[str, Any]:
+    dataset_data = dataset.data if isinstance(dataset.data, dict) else {}
+    report_inputs = extract_meta_pages_report_inputs(dataset_data)
+    source_type = str(source.get("source_type") or "").strip()
+    default_label = _multi_source_source_label(source_type)
+    account_name = _multi_source_account_name(source, report_inputs)
+    label = str(source.get("label") or "").strip() or account_name or default_label
+    metrics = {
+        "followers": report_inputs.get("followers"),
+        "reach": report_inputs.get("reach"),
+        "impressions": report_inputs.get("impressions"),
+        "engagement": report_inputs.get("engagement"),
+        "profile_visits": report_inputs.get("profile_visits"),
+        "link_clicks": report_inputs.get("link_clicks"),
+        "views": report_inputs.get("views"),
+        "content_interactions": report_inputs.get("content_interactions"),
+    }
+    timeseries = {
+        "followers_growth": report_inputs.get("followers_growth_daily") or [],
+        "reach": report_inputs.get("reach_daily") or [],
+        "impressions": report_inputs.get("impressions_daily") or [],
+        "engagement": report_inputs.get("daily_engagement") or report_inputs.get("engagement_daily") or [],
+    }
+    posts = normalize_meta_recent_posts(report_inputs.get("recent_posts"))
+    raw_summary_parts = [build_meta_pages_summary(report_inputs, locale)]
+    posts_summary = build_meta_pages_recent_posts_summary(report_inputs, locale)
+    if posts_summary:
+        raw_summary_parts.append(posts_summary)
+    return {
+        "dataset_id": dataset.id,
+        "source_type": source_type,
+        "provider": str(source.get("provider") or "").strip(),
+        "label": label,
+        "account_name": account_name,
+        "metrics": metrics,
+        "timeseries": timeseries,
+        "content": posts,
+        "raw_summary": " ".join(part.strip() for part in raw_summary_parts if str(part or "").strip()),
+        "report_inputs": report_inputs,
+    }
+
+
+def _multi_source_top_content(sources: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    for source in sources:
+        for post in source.get("content") or []:
+            if not isinstance(post, dict):
+                continue
+            candidate = dict(post)
+            candidate["_source_label"] = source.get("label")
+            candidate["_account_name"] = source.get("account_name")
+            candidates.append(candidate)
+    if not candidates:
+        return None
+    return max(candidates, key=_meta_post_score)
+
+
+def _multi_source_build_context(
+    *,
+    title: str,
+    locale: str,
+    timeframe: dict[str, Any],
+    branding: dict[str, Any],
+    normalized_sources: list[dict[str, Any]],
+) -> dict[str, Any]:
+    strongest_source = None
+    strongest_sort_key: tuple[float, float, float] | None = None
+    engagement_rates: list[float] = []
+    for source in normalized_sources:
+        rate = _multi_source_engagement_rate(source)
+        if rate is not None:
+            engagement_rates.append(rate)
+        sort_key = (
+            rate if rate is not None else -1.0,
+            _meta_number(source.get("metrics", {}).get("engagement")) or -1.0,
+            _meta_number(source.get("metrics", {}).get("reach")) or -1.0,
+        )
+        if strongest_sort_key is None or sort_key > strongest_sort_key:
+            strongest_sort_key = sort_key
+            strongest_source = source
+    top_content = _multi_source_top_content(normalized_sources)
+    total_reach = _multi_source_metric_sum(normalized_sources, "reach")
+    total_impressions = _multi_source_metric_sum(normalized_sources, "impressions")
+    total_engagement = _multi_source_metric_sum(normalized_sources, "engagement")
+    average_engagement_rate = sum(engagement_rates) / len(engagement_rates) if engagement_rates else None
+    key_insights = [
+        f"Combined reach reached {_meta_format_number(total_reach)} across {len(normalized_sources)} sources.",
+        (
+            f"{strongest_source.get('label')} led performance with an engagement rate of "
+            f"{_multi_source_format_rate(_multi_source_engagement_rate(strongest_source))}."
+            if strongest_source is not None
+            else "No strongest source could be identified from the available metrics."
+        ),
+        (
+            f"Top content came from {top_content.get('_source_label')} and generated "
+            f"{_meta_format_number(_meta_post_score(top_content))} combined engagement signals."
+            if top_content is not None
+            else "No cross-platform post-level content was available for this period."
+        ),
+    ]
+    return {
+        "report_kind": "multi_source",
+        "title": title,
+        "locale": locale,
+        "report_timeframe": timeframe,
+        "branding": branding,
+        "sources": normalized_sources,
+        "combined": {
+            "total_reach": total_reach,
+            "total_impressions": total_impressions,
+            "total_engagement": total_engagement,
+            "average_engagement_rate": average_engagement_rate,
+            "strongest_source": {
+                "label": strongest_source.get("label"),
+                "account_name": strongest_source.get("account_name"),
+                "source_type": strongest_source.get("source_type"),
+                "metrics": strongest_source.get("metrics"),
+                "engagement_rate": _multi_source_engagement_rate(strongest_source),
+            }
+            if strongest_source is not None
+            else None,
+            "top_content": top_content,
+            "key_insights": key_insights,
+        },
+    }
+
+
+def _multi_source_block_text_lines(items: list[str]) -> str:
+    return "\n".join(f"- {item}" for item in items if str(item or "").strip())
+
+
+def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = list(context.get("sources") or [])
+    report_timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
+    combined = context.get("combined") if isinstance(context.get("combined"), dict) else {}
+    period_label = str(report_timeframe.get("label") or "Selected period")
+    source_labels = [str(source.get("label") or source.get("account_name") or "Source") for source in sources[:2]]
+    subtitle = f"{' + '.join(source_labels)} performance report · {period_label}"
+    top_content = combined.get("top_content") if isinstance(combined.get("top_content"), dict) else None
+    top_content_title = (
+        top_content.get("title")
+        or top_content.get("message")
+        or top_content.get("caption")
+        or "Top cross-platform content"
+        if top_content
+        else "Top cross-platform content"
+    )
+    top_content_text = (
+        f"{top_content.get('_source_label')} led with \"{top_content_title[:120]}\" and generated "
+        f"{_meta_format_number(_meta_post_score(top_content))} engagement signals."
+        if top_content
+        else "No post-level content was available across the selected sources."
+    )
+    summary_lines = [
+        f"Total reach: {_meta_format_number(combined.get('total_reach'))}",
+        f"Total impressions: {_meta_format_number(combined.get('total_impressions'))}",
+        f"Total engagement: {_meta_format_number(combined.get('total_engagement'))}",
+        f"Average engagement rate: {_multi_source_format_rate(combined.get('average_engagement_rate'))}",
+    ]
+    strongest_source = combined.get("strongest_source") if isinstance(combined.get("strongest_source"), dict) else None
+    if strongest_source:
+        summary_lines.append(
+            f"Strongest source: {strongest_source.get('label')} at "
+            f"{_multi_source_format_rate(_meta_number(strongest_source.get('engagement_rate')))} engagement rate"
+        )
+    audience_breakdown = [
+        f"{source.get('label')}: {_meta_format_number(source.get('metrics', {}).get('followers'))} followers"
+        for source in sources
+    ]
+    reach_points, reach_series = _multi_source_merge_series(sources, "reach")
+    impressions_points, impressions_series = _multi_source_merge_series(sources, "impressions")
+    engagement_points, engagement_series = _multi_source_merge_series(sources, "engagement")
+    return [
+        _meta_report_block(
+            "title",
+            1,
+            {
+                "text": context.get("title") or "Multi-source report",
+                "subtitle": subtitle,
+                "timeframe": report_timeframe,
+                "period_label": report_timeframe.get("label"),
+                "period_since": report_timeframe.get("since"),
+                "period_until": report_timeframe.get("until"),
+                "branding": context.get("branding") or {},
+                "semantic_name": "cover",
+            },
+            ["text", "subtitle"],
+        ),
+        _meta_report_block(
+            "text",
+            2,
+            {
+                "title": "Executive Summary",
+                "text": _multi_source_block_text_lines(summary_lines + list(combined.get("key_insights") or [])),
+                "metrics": {
+                    "reach": combined.get("total_reach"),
+                    "impressions": combined.get("total_impressions"),
+                    "engagement": combined.get("total_engagement"),
+                },
+                "semantic_name": "executive_summary",
+            },
+            ["text"],
+        ),
+        _meta_report_block(
+            "stat",
+            3,
+            {
+                "title": f"{sources[0].get('label')} Overview",
+                "label": f"{sources[0].get('label')} Overview",
+                "value": sources[0].get("metrics", {}).get("reach"),
+                "current_value": sources[0].get("metrics", {}).get("reach"),
+                "secondary_text": (
+                    f"Impressions {_meta_format_number(sources[0].get('metrics', {}).get('impressions'))} · "
+                    f"Engagement {_meta_format_number(sources[0].get('metrics', {}).get('engagement'))} · "
+                    f"Followers {_meta_format_number(sources[0].get('metrics', {}).get('followers'))}"
+                ),
+                "metrics": sources[0].get("metrics"),
+                "account_name": sources[0].get("account_name"),
+                "provider": sources[0].get("provider"),
+                "source_type": sources[0].get("source_type"),
+                "summary": sources[0].get("raw_summary"),
+                "text": sources[0].get("raw_summary"),
+                "semantic_name": "key_metrics_overview",
+            },
+        ),
+        _meta_report_block(
+            "stat",
+            4,
+            {
+                "title": f"{sources[1].get('label')} Overview",
+                "label": f"{sources[1].get('label')} Overview",
+                "value": sources[1].get("metrics", {}).get("reach"),
+                "current_value": sources[1].get("metrics", {}).get("reach"),
+                "secondary_text": (
+                    f"Impressions {_meta_format_number(sources[1].get('metrics', {}).get('impressions'))} · "
+                    f"Engagement {_meta_format_number(sources[1].get('metrics', {}).get('engagement'))} · "
+                    f"Followers {_meta_format_number(sources[1].get('metrics', {}).get('followers'))}"
+                ),
+                "metrics": sources[1].get("metrics"),
+                "account_name": sources[1].get("account_name"),
+                "provider": sources[1].get("provider"),
+                "source_type": sources[1].get("source_type"),
+                "summary": sources[1].get("raw_summary"),
+                "text": sources[1].get("raw_summary"),
+                "semantic_name": "key_metrics_overview",
+            },
+        ),
+        _meta_report_block(
+            "stat",
+            5,
+            {
+                "title": "Audience / Followers Comparison",
+                "label": "Audience / Followers Comparison",
+                "value": _multi_source_metric_sum(sources, "followers"),
+                "current_value": _multi_source_metric_sum(sources, "followers"),
+                "secondary_text": " · ".join(audience_breakdown) if audience_breakdown else "No follower data available.",
+                "metrics": {
+                    "total_followers": _multi_source_metric_sum(sources, "followers"),
+                    "sources": [
+                        {
+                            "label": source.get("label"),
+                            "followers": source.get("metrics", {}).get("followers"),
+                            "followers_growth_total": _multi_source_total(
+                                source.get("timeseries", {}).get("followers_growth") or []
+                            ),
+                        }
+                        for source in sources
+                    ],
+                },
+                "semantic_name": "audience_growth",
+            },
+        ),
+        _meta_report_block(
+            "chart",
+            6,
+            {
+                "title": "Reach & Impressions Comparison",
+                "label": f"Reach & Impressions Comparison — {period_label}",
+                "metric": "reach",
+                "points": reach_points,
+                "series": reach_series + impressions_series,
+                "comparison_metrics": {
+                    "reach": {source.get("label"): source.get("metrics", {}).get("reach") for source in sources},
+                    "impressions": {
+                        source.get("label"): source.get("metrics", {}).get("impressions") for source in sources
+                    },
+                },
+                "timeframe": report_timeframe,
+                "chart_data": {
+                    "reach_points": reach_points,
+                    "reach_series": reach_series,
+                    "impressions_points": impressions_points,
+                    "impressions_series": impressions_series,
+                },
+                "insight": (
+                    f"Combined reach totaled {_meta_format_number(combined.get('total_reach'))} while impressions "
+                    f"reached {_meta_format_number(combined.get('total_impressions'))} during {period_label}."
+                ),
+                "semantic_name": "reach_overview",
+            },
+        ),
+        _meta_report_block(
+            "chart",
+            7,
+            {
+                "title": "Engagement Comparison",
+                "label": f"Engagement Comparison — {period_label}",
+                "metric": "engagement",
+                "points": engagement_points,
+                "series": engagement_series,
+                "timeframe": report_timeframe,
+                "chart_data": {
+                    "engagement_points": engagement_points,
+                    "engagement_series": engagement_series,
+                },
+                "metrics": {
+                    source.get("label"): {
+                        "engagement": source.get("metrics", {}).get("engagement"),
+                        "engagement_rate": _multi_source_engagement_rate(source),
+                    }
+                    for source in sources
+                },
+                "insight": (
+                    f"Average engagement rate across sources was "
+                    f"{_multi_source_format_rate(combined.get('average_engagement_rate'))}."
+                ),
+                "text": (
+                    f"Average engagement rate across sources was "
+                    f"{_multi_source_format_rate(combined.get('average_engagement_rate'))}."
+                ),
+                "semantic_name": "engagement_overview",
+            },
+        ),
+        _meta_report_block(
+            "text",
+            8,
+            {
+                "title": "Top Performing Content",
+                "text": top_content_text,
+                "top_content": top_content,
+                "semantic_name": "top_performing_post",
+            },
+            ["text"],
+        ),
+        _meta_report_block(
+            "text",
+            9,
+            {
+                "title": "Cross-platform AI Insights",
+                "text": _multi_source_block_text_lines(list(combined.get("key_insights") or [])),
+                "insights": list(combined.get("key_insights") or []),
+                "semantic_name": "insights",
+            },
+            ["text"],
+        ),
+        _meta_report_block(
+            "text",
+            10,
+            {
+                "title": "Recommendations / Next Steps",
+                "text": _multi_source_block_text_lines(
+                    [
+                        "Replicate the creative and publishing patterns from the strongest source across the weaker source.",
+                        "Track the next reporting window with the same two-source configuration to validate cross-platform lift.",
+                        "Use the top-performing content theme as the baseline for the next campaign cycle.",
+                    ]
+                ),
+                "recommendations": [
+                    "Replicate the strongest source pattern.",
+                    "Measure the next period with the same source mix.",
+                    "Build the next content plan around the top-performing theme.",
+                ],
+                "semantic_name": "recommendations",
+            },
+            ["text"],
+        ),
+    ]
 
 
 def _meta_trend_copy(metric: str, stats: dict, period_label: str) -> str:
@@ -8299,13 +8880,18 @@ def create_report(
             403,
             "plan_restricted",
             "AI agents are not available for current plan.",
-        )
+    )
     ai_agent_metadata = build_ai_agent_metadata(
         ai_mode=ai_mode,
         allow_ai_agents=bool(ai_plan_context["allow_ai_agents"]),
     )
 
     locale = normalize_report_locale(payload.locale)
+    report_branding = resolve_report_branding_for_workspace(
+        db,
+        dataset.workspace_id,
+        preferred_branding=_user_branding(current_user),
+    )
     report = Report(
         workspace_id=dataset.workspace_id,
         dataset_id=dataset.id,
@@ -8313,7 +8899,7 @@ def create_report(
         description=json.dumps(
             {
                 "locale": locale,
-                "branding": _user_branding(current_user),
+                "branding": report_branding,
                 "requested_slides": slide_limits["requested_slides"],
                 "effective_slide_limit": slide_limits["effective_slide_limit"],
                 "plan_at_generation": slide_limits["plan"],
@@ -8362,10 +8948,12 @@ def create_report(
         workspace_id=dataset.workspace_id,
         dataset_id=dataset.id,
         title=payload.title,
+        status=None,
         description=_report_metadata(report),
         timeframe=_report_timeframe(report),
+        report_sources=_report_sources_out(db, report_id=report.id),
         locale=locale,
-        branding=_report_branding(report),
+        branding=_report_branding(db, report),
         thumbnail_url=_report_thumbnail_url(report),
         created_at=report.created_at,
         updated_at=report.updated_at,
@@ -8434,6 +9022,319 @@ def _resolve_instagram_business_report_dataset(
         404,
         "instagram_dataset_not_found",
         "Instagram Business dataset not found for selected account.",
+    )
+
+
+def _resolve_report_source_integration_account(
+    db: Session,
+    *,
+    integration: Integration,
+    source_workspace_id: int,
+    raw_integration_account_id: int | str | None,
+    config_json: dict[str, Any] | None,
+) -> IntegrationAccount | None:
+    if raw_integration_account_id is None and not isinstance(config_json, dict):
+        return None
+
+    external_candidates: list[str] = []
+    internal_candidate: int | None = None
+
+    if raw_integration_account_id is not None:
+        raw_value = str(raw_integration_account_id).strip()
+        if raw_value:
+            if raw_value.isdigit():
+                internal_candidate = int(raw_value)
+            external_candidates.append(raw_value)
+
+    if isinstance(config_json, dict):
+        for key in ("external_account_id", "account_id"):
+            candidate = str(config_json.get(key) or "").strip()
+            if candidate:
+                external_candidates.append(candidate)
+        internal_from_config = config_json.get("integration_account_id")
+        if internal_candidate is None and internal_from_config is not None:
+            internal_raw = str(internal_from_config).strip()
+            if internal_raw.isdigit():
+                internal_candidate = int(internal_raw)
+
+    integration_account: IntegrationAccount | None = None
+    if internal_candidate is not None:
+        candidate = db.get(IntegrationAccount, internal_candidate)
+        if candidate and candidate.integration_id == integration.id:
+            integration_account = candidate
+
+    if integration_account is None:
+        deduped_external_candidates = [
+            candidate for candidate in dict.fromkeys(external_candidates) if candidate
+        ]
+        if deduped_external_candidates:
+            integration_account = (
+                db.query(IntegrationAccount)
+                .filter(
+                    IntegrationAccount.integration_id == integration.id,
+                    IntegrationAccount.external_account_id.in_(deduped_external_candidates),
+                )
+                .order_by(IntegrationAccount.updated_at.desc(), IntegrationAccount.id.desc())
+                .first()
+            )
+
+    if integration_account is None:
+        return None
+    if integration_account.workspace_id != source_workspace_id:
+        raise http_error(
+            400,
+            "source_workspace_mismatch",
+            "Source integration account must belong to the same workspace.",
+        )
+    return integration_account
+
+
+@app.post("/reports/multi-source", response_model=ReportOut)
+def create_multi_source_report(
+    payload: MultiSourceReportCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReportOut:
+    if not (1 <= len(payload.sources) <= 2):
+        raise http_error(
+            400,
+            "invalid_sources_count",
+            "sources length must be between 1 and 2.",
+        )
+    requested_slides = (
+        payload.requested_slides if payload.requested_slides is not None else payload.slide_count
+    )
+    if len(payload.sources) >= 2 and requested_slides != 10:
+        raise http_error(
+            400,
+            "invalid_multi_source_slide_count",
+            "Multi-source reports require the 10-slide format.",
+        )
+
+    seen_positions: set[int] = set()
+    resolved_workspace_id: int | None = None
+    first_dataset: Dataset | None = None
+    resolved_sources: list[dict[str, Any]] = []
+    multi_source_normalized_sources: list[dict[str, Any]] = []
+
+    for index, source in enumerate(payload.sources):
+        if not str(source.provider or "").strip():
+            raise http_error(400, "invalid_source_provider", "provider is required for each source.")
+        if not str(source.source_type or "").strip():
+            raise http_error(400, "invalid_source_type", "source_type is required for each source.")
+        if source.integration_id is None:
+            raise http_error(400, "invalid_source_integration", "integration_id is required for each source.")
+        if source.dataset_id is None and source.integration_account_id is None:
+            raise http_error(
+                400,
+                "invalid_source_reference",
+                "Each source must include dataset_id or integration_account_id.",
+            )
+        if source.position in seen_positions:
+            raise http_error(400, "duplicate_source_position", "Each source position must be unique.")
+        seen_positions.add(int(source.position))
+
+        integration = db.get(Integration, int(source.integration_id))
+        if not integration:
+            raise http_error(404, "integration_not_found", "Integration not found.")
+        _require_workspace_access(db, current_user.id, integration.workspace_id)
+
+        source_workspace_id = integration.workspace_id
+        dataset: Dataset | None = None
+        if source.dataset_id is not None:
+            dataset = db.get(Dataset, int(source.dataset_id))
+            if not dataset:
+                raise http_error(404, "dataset_not_found", "Dataset not found.")
+            _require_workspace_access(db, current_user.id, dataset.workspace_id)
+            if dataset.workspace_id != integration.workspace_id:
+                raise http_error(
+                    400,
+                    "source_workspace_mismatch",
+                    "Source dataset and integration must belong to the same workspace.",
+                )
+            source_workspace_id = dataset.workspace_id
+
+        integration_account = _resolve_report_source_integration_account(
+            db,
+            integration=integration,
+            source_workspace_id=source_workspace_id,
+            raw_integration_account_id=source.integration_account_id,
+            config_json=source.config_json,
+        )
+        if dataset is None and integration_account is None:
+            raise http_error(404, "integration_account_not_found", "Integration account not found.")
+
+        if resolved_workspace_id is None:
+            resolved_workspace_id = source_workspace_id
+        elif resolved_workspace_id != source_workspace_id:
+            raise http_error(
+                400,
+                "source_workspace_mismatch",
+                "All sources must belong to the same workspace.",
+            )
+
+        if index == 0:
+            first_dataset = dataset
+        source_config_json = dict(source.config_json) if isinstance(source.config_json, dict) else {}
+        source_config_json.setdefault("provider", str(source.provider).strip())
+        source_config_json.setdefault("source_type", str(source.source_type).strip())
+        if integration_account is not None:
+            source_config_json.setdefault("external_account_id", integration_account.external_account_id)
+            source_config_json.setdefault("account_name", integration_account.display_name)
+        if dataset is not None and isinstance(dataset.data, dict):
+            dataset_account_name = (
+                dataset.data.get("account_name")
+                or dataset.data.get("page_name")
+                or dataset.data.get("username")
+            )
+            dataset_external_account_id = dataset.data.get("account_id") or dataset.data.get("page_id")
+            if dataset_external_account_id:
+                source_config_json.setdefault("external_account_id", str(dataset_external_account_id))
+            if dataset_account_name:
+                source_config_json.setdefault("account_name", str(dataset_account_name))
+        resolved_sources.append(
+            {
+                "provider": str(source.provider).strip(),
+                "source_type": str(source.source_type).strip(),
+                "integration_id": integration.id,
+                "integration_account_id": integration_account.id if integration_account is not None else None,
+                "dataset_id": dataset.id if dataset is not None else None,
+                "position": int(source.position),
+                "label": str(source.label).strip() if source.label else None,
+                "config_json": source_config_json or None,
+                "dataset": dataset,
+            }
+        )
+
+    if first_dataset is None:
+        raise http_error(
+            400,
+            "first_source_dataset_required",
+            "The first source must include dataset_id for backwards-compatible report creation.",
+        )
+
+    locale = normalize_report_locale(payload.locale)
+    ai_mode = normalize_ai_mode(payload.ai_mode)
+    report_title = payload.title or first_dataset.name or "Multi-source report"
+    timeframe = resolve_meta_pages_timeframe(
+        payload.timeframe,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+    )
+    branding = resolve_report_branding_for_workspace(
+        db,
+        first_dataset.workspace_id,
+        preferred_branding=_user_branding(current_user),
+    )
+    generate_multi_source_blocks = (
+        len(resolved_sources) == 2
+        and requested_slides == 10
+        and all(isinstance(source.get("dataset"), Dataset) for source in resolved_sources)
+    )
+    if generate_multi_source_blocks:
+        multi_source_normalized_sources = [
+            _multi_source_normalize_source(source, dataset=source["dataset"], locale=locale)
+            for source in resolved_sources
+            if isinstance(source.get("dataset"), Dataset)
+        ]
+    metadata = {
+        "source": "multi_source_v1",
+        "kind": "multi_source",
+        "locale": locale,
+        "timeframe": timeframe,
+        "branding": branding,
+        "requested_slides": requested_slides,
+        "generation_mode": "multi_source_visual_v1" if generate_multi_source_blocks else "multi_source_config_only",
+        "ai_mode": ai_mode,
+        "sources_count": len(resolved_sources),
+        "report_status": "sources_configured",
+        "visual_generation_pending": not generate_multi_source_blocks,
+    }
+    try:
+        report = Report(
+            workspace_id=first_dataset.workspace_id,
+            dataset_id=first_dataset.id,
+            name=report_title,
+            description=json.dumps(metadata),
+        )
+        db.add(report)
+        db.commit()
+        db.refresh(report)
+
+        report_sources = [
+            ReportSource(
+                report_id=report.id,
+                workspace_id=report.workspace_id,
+                provider=source["provider"],
+                source_type=source["source_type"],
+                integration_id=source["integration_id"],
+                integration_account_id=source["integration_account_id"],
+                dataset_id=source["dataset_id"],
+                position=source["position"],
+                label=source["label"],
+                config_json=source["config_json"],
+            )
+            for source in resolved_sources
+        ]
+        db.add_all(report_sources)
+        db.commit()
+
+        report_version = ReportVersion(report_id=report.id, version=1)
+        db.add(report_version)
+        db.commit()
+        db.refresh(report_version)
+
+        if generate_multi_source_blocks and len(multi_source_normalized_sources) == 2:
+            block_context = _multi_source_build_context(
+                title=report_title,
+                locale=locale,
+                timeframe=timeframe,
+                branding=branding,
+                normalized_sources=multi_source_normalized_sources,
+            )
+            block_specs = _multi_source_build_10_blocks(block_context)
+            blocks = [
+                ReportBlock(
+                    report_version_id=report_version.id,
+                    type=str(block_spec["type"]),
+                    order=int(block_spec["order"]),
+                    data_json=str(block_spec["data_json"]),
+                    editable_fields_json=str(block_spec["editable_fields_json"]),
+                )
+                for block_spec in block_specs
+            ]
+            for block in blocks:
+                db.add(block)
+            db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "multi_source_report_create_failed",
+            extra={
+                "workspace_id": first_dataset.workspace_id if first_dataset else None,
+                "integration_ids": [source["integration_id"] for source in resolved_sources],
+                "dataset_ids": [source["dataset_id"] for source in resolved_sources],
+                "sources_count": len(resolved_sources),
+            },
+        )
+        raise
+
+    return ReportOut(
+        id=report.id,
+        workspace_id=report.workspace_id,
+        dataset_id=report.dataset_id,
+        title=report.name,
+        status="sources_configured",
+        description=_report_metadata(report),
+        timeframe=_report_timeframe(report),
+        report_sources=_report_sources_out(db, report_id=report.id),
+        version_id=report_version.id,
+        version=report_version.version,
+        locale=_report_locale(report),
+        branding=_report_branding(db, report),
+        thumbnail_url=_report_thumbnail_url(report),
+        created_at=report.created_at,
+        updated_at=report.updated_at,
     )
 
 
@@ -8593,6 +9494,11 @@ def _create_meta_dataset_report(
     ai_source = {"data": report_row}
     claude_payload = build_meta_pages_ai_payload(ai_source)
     ai_summary = generate_meta_pages_ai_summary(claude_payload, locale)
+    report_branding = resolve_report_branding_for_workspace(
+        db,
+        dataset.workspace_id,
+        preferred_branding=_user_branding(current_user),
+    )
     ai_plan_context = build_ai_agent_plan_context(
         plan=slide_limits["plan"],
         effective_slide_limit=slide_limits["effective_slide_limit"],
@@ -8643,7 +9549,7 @@ def _create_meta_dataset_report(
         "general_insights_slide_payload": general_insights_slide_payload,
         "impressions_slide_payload": impressions_slide_payload,
         "report_inputs": report_inputs_for_blocks,
-        "branding": _user_branding(current_user),
+        "branding": report_branding,
         "requested_slides": slide_limits["requested_slides"],
     }
     block_specs = build_blocks(int(slide_limits["requested_slides"]), block_build_context)
@@ -8705,7 +9611,7 @@ def _create_meta_dataset_report(
                 "ai_mode": ai_mode,
                 "locale": locale,
                 "title": title,
-                "branding": _user_branding(current_user),
+                "branding": report_branding,
             },
         )
         agent_block_specs = list(ai_agent_pipeline_result.get("blocks") or [])
@@ -8827,7 +9733,7 @@ def _create_meta_dataset_report(
                 "locale": locale,
                 "timeframe": report_timeframe,
                 "claude_payload": claude_payload,
-                "branding": _user_branding(current_user),
+                "branding": report_branding,
                 "requested_slides": slide_limits["requested_slides"],
                 "effective_slide_limit": slide_limits["effective_slide_limit"],
                 "plan_at_generation": slide_limits["plan"],
@@ -9375,12 +10281,14 @@ def get_report(
         workspace_id=report.workspace_id,
         dataset_id=report.dataset_id,
         title=report.name,
+        status=_report_status(report),
         description=metadata,
         timeframe=_report_timeframe(report),
+        report_sources=_report_sources_out(db, report_id=report.id),
         version_id=latest_version.id if latest_version else None,
         version=latest_version.version if latest_version else None,
         locale=_report_locale(report),
-        branding=_report_branding(report),
+        branding=_report_branding(db, report),
         thumbnail_url=_report_thumbnail_url(report),
         created_at=report.created_at,
         updated_at=report.updated_at,
@@ -9441,6 +10349,7 @@ def delete_report(
     )
 
     try:
+        db.query(ReportSource).filter(ReportSource.report_id == report.id).delete(synchronize_session=False)
         if schedule_ids:
             db.query(Job).filter(Job.schedule_id.in_(schedule_ids)).update(
                 {Job.schedule_id: None},
@@ -9687,7 +10596,7 @@ def export_report(
     db.commit()
     db.refresh(export)
 
-    payload = build_export_payload(export, report, report_version, blocks)
+    payload = build_export_payload(db, export, report, report_version, blocks)
     payload_summary = {
         "export_id": payload.get("export_id"),
         "format": payload.get("format"),
@@ -11611,6 +12520,62 @@ def _sync_meta_instagram_account(
         page_name=account_name,
         status="uploaded",
         timeframe=dataset_data["timeframe"],
+    )
+
+
+@app.post("/integrations/meta/sync-instagram-business", response_model=InstagramBusinessSyncOut)
+def sync_instagram_business(
+    payload: InstagramBusinessSyncIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramBusinessSyncOut:
+    integration = _get_meta_integration(db, current_user, payload.integration_id)
+    if payload.workspace_id is not None and int(payload.workspace_id) != int(integration.workspace_id):
+        raise http_error(
+            400,
+            "workspace_mismatch",
+            "workspace_id does not match the integration workspace.",
+        )
+
+    selected_meta_record = _resolve_instagram_account_record_for_sync(
+        db,
+        integration=integration,
+        current_user=current_user,
+        instagram_account_id=payload.instagram_account_id,
+    )
+    timeframe_config = resolve_meta_pages_timeframe(
+        payload.timeframe,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+    )
+
+    parent_page_id = str(
+        selected_meta_record.parent_page_id or selected_meta_record.page_id or payload.instagram_account_id
+    ).strip()
+    selected_page = IntegrationAccount(
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+        external_account_id=_meta_page_account_external_id(parent_page_id),
+        display_name=selected_meta_record.business_name or selected_meta_record.name,
+    )
+    sync_result = _sync_meta_instagram_account(
+        db=db,
+        integration=integration,
+        selected_page=selected_page,
+        selected_meta_record=selected_meta_record,
+        timeframe_config=timeframe_config,
+        current_user=current_user,
+    )
+    return InstagramBusinessSyncOut(
+        integration_id=integration.id,
+        dataset_id=sync_result.dataset_id,
+        dataset_file_id=sync_result.dataset_file_id,
+        source_type="instagram_business",
+        record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+        account_id=selected_meta_record.page_id,
+        account_name=sync_result.page_name,
+        status="synced",
+        timeframe=sync_result.timeframe,
     )
 
 

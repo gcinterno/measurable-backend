@@ -22,7 +22,7 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 from app.deps import get_db
 from app.db import Base, SessionLocal, engine
 from app.main import app
-from app.models import Dataset, Export, Job, Report, ReportBlock, ReportVersion, Schedule, Subscription, User, Workspace, WorkspaceMember
+from app.models import Dataset, Export, Integration, Job, Report, ReportBlock, ReportSource, ReportVersion, Schedule, Subscription, User, Workspace, WorkspaceMember
 from app.security import create_access_token, hash_password
 
 
@@ -37,7 +37,9 @@ REPORT_DELETE_TABLES = [
     WorkspaceMember.__table__,
     Subscription.__table__,
     Dataset.__table__,
+    Integration.__table__,
     Report.__table__,
+    ReportSource.__table__,
     ReportVersion.__table__,
     ReportBlock.__table__,
     Export.__table__,
@@ -105,7 +107,8 @@ def _seed_report_graph(*, owner_role: str = "owner") -> dict[str, int]:
         )
 
         dataset = Dataset(workspace_id=workspace.id, name="Dataset", description="Test", data={})
-        db.add(dataset)
+        integration = Integration(workspace_id=workspace.id, provider="meta", name="Meta", status="connected")
+        db.add_all([dataset, integration])
         db.flush()
 
         report = Report(
@@ -121,6 +124,16 @@ def _seed_report_graph(*, owner_role: str = "owner") -> dict[str, int]:
         db.add(version)
         db.flush()
 
+        report_source = ReportSource(
+            report_id=report.id,
+            workspace_id=workspace.id,
+            provider="meta",
+            source_type="facebook_pages",
+            integration_id=integration.id,
+            dataset_id=dataset.id,
+            position=0,
+            label="Primary source",
+        )
         block = ReportBlock(
             report_version_id=version.id,
             type="title",
@@ -144,7 +157,7 @@ def _seed_report_graph(*, owner_role: str = "owner") -> dict[str, int]:
             timezone="UTC",
             enabled=True,
         )
-        db.add_all([block, export, schedule])
+        db.add_all([report_source, block, export, schedule])
         db.flush()
 
         db.add_all(
@@ -184,6 +197,7 @@ def test_delete_report_success_deletes_related_rows_and_cleans_job_refs(client, 
     db = SessionLocal()
     try:
         assert db.get(Report, refs["report_id"]) is None
+        assert db.query(ReportSource).filter(ReportSource.report_id == refs["report_id"]).count() == 0
         assert db.query(ReportVersion).filter(ReportVersion.report_id == refs["report_id"]).count() == 0
         assert db.query(ReportBlock).count() == 0
         assert db.query(Export).filter(Export.id == refs["export_id"]).count() == 0

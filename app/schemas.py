@@ -589,6 +589,7 @@ class PlanLimitsOut(BaseModel):
     allow_pdf_export: bool = False
     allow_pptx_export: bool = False
     allow_ai_agents: bool = False
+    allow_custom_branding: bool = False
 
 
 class WorkspaceOut(BaseSchema):
@@ -654,6 +655,27 @@ class MetaPagesSyncOut(BaseModel):
     timeframe: Optional[dict] = None
 
 
+class InstagramBusinessSyncIn(BaseModel):
+    integration_id: int
+    instagram_account_id: str
+    workspace_id: Optional[int] = None
+    timeframe: str = "last_28_days"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+class InstagramBusinessSyncOut(BaseModel):
+    integration_id: int
+    dataset_id: int
+    dataset_file_id: int
+    source_type: str = "instagram_business"
+    record_type: str = "instagram_account"
+    account_id: str
+    account_name: str
+    status: str
+    timeframe: Optional[dict] = None
+
+
 class DatasetDetailOut(BaseModel):
     id: int
     workspace_id: int
@@ -680,6 +702,45 @@ class AuditLogSchema(BaseSchema):
 class DatasetUploadOut(BaseModel):
     dataset_id: int
     status: str
+
+
+class ReportSourceCreate(BaseModel):
+    provider: str
+    source_type: str
+    integration_id: int
+    integration_account_id: Optional[int | str] = None
+    dataset_id: Optional[int] = None
+    position: int = 0
+    label: Optional[str] = None
+    config_json: Optional[dict] = None
+
+
+class ReportSourceRead(BaseSchema):
+    id: int
+    report_id: int
+    workspace_id: int
+    provider: str
+    source_type: str
+    integration_id: int
+    integration_account_id: Optional[int] = None
+    dataset_id: Optional[int] = None
+    position: int
+    label: Optional[str] = None
+    config_json: Optional[dict] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MultiSourceReportCreateRequest(BaseModel):
+    sources: list[ReportSourceCreate]
+    timeframe: str = "last_28_days"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    requested_slides: Optional[int] = None
+    slide_count: Optional[int] = None
+    ai_mode: Literal["standard", "agents"] = "standard"
+    locale: str = "en"
+    title: Optional[str] = None
 
 
 class ReportCreateIn(BaseModel):
@@ -724,8 +785,10 @@ class ReportOut(BaseSchema):
     workspace_id: int
     dataset_id: int
     title: str
+    status: Optional[str] = None
     description: Optional[dict] = None
     timeframe: Optional[dict] = None
+    report_sources: list[ReportSourceRead] = Field(default_factory=list)
     version_id: Optional[int] = None
     version: Optional[int] = None
     locale: str = "en"
@@ -773,6 +836,7 @@ class ReportVersionOut(BaseSchema):
     version_id: Optional[int] = None
     report_id: int
     version: int
+    report_sources: list[ReportSourceRead] = Field(default_factory=list)
     description: Optional[dict] = None
     timeframe: Optional[dict] = None
     locale: str = "en"
