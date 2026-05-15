@@ -24,7 +24,7 @@ from app.deps import get_db
 from app.main import app
 from app.models import Dataset, DatasetFile, Export, Job, Report, ReportBlock, ReportSource, ReportVersion, Subscription, User, Workspace, WorkspaceMember
 from app.security import create_access_token, hash_password
-from app.services import build_export_payload
+from app.services import MEASURABLE_BRANDING_LOGO_URL, build_export_payload
 
 
 @compiles(JSONB, "sqlite")
@@ -138,7 +138,7 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
     )
     assert create_response.status_code == 200
     payload = create_response.json()
-    assert payload["branding"]["logo_url"] is None
+    assert payload["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
 
     db = SessionLocal()
     try:
@@ -146,7 +146,7 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
         assert report is not None
         metadata = json.loads(report.description or "{}")
         assert metadata["branding"]["brand_name"] == "Measurable"
-        assert metadata["branding"]["logo_url"] is None
+        assert metadata["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
 
         metadata["branding"] = {
             "brand_name": "Acme",
@@ -174,7 +174,7 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
         db.refresh(export)
 
         export_payload = build_export_payload(db, export, report, report_version, [])
-        assert export_payload["report"]["branding"]["logo_url"] is None
+        assert export_payload["report"]["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
         assert export_payload["report"]["branding"]["brand_name"] == "Measurable"
     finally:
         db.close()
@@ -184,14 +184,14 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
         headers=_auth_headers(refs["user_id"]),
     )
     assert get_response.status_code == 200
-    assert get_response.json()["branding"]["logo_url"] is None
+    assert get_response.json()["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
 
     version_response = client.get(
         f"/reports/{payload['id']}/versions/1",
         headers=_auth_headers(refs["user_id"]),
     )
     assert version_response.status_code == 200
-    assert version_response.json()["branding"]["logo_url"] is None
+    assert version_response.json()["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
 
 
 def test_paid_workspace_reports_keep_custom_branding(client):

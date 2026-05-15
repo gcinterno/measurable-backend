@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import os
 import secrets
 from functools import lru_cache
 from datetime import date, datetime, timedelta, timezone
@@ -95,8 +96,9 @@ PLAN_LIMITS = {
 }
 
 MEASURABLE_BRANDING_NAME = "Measurable"
-# Replace this with the canonical Measurable logo asset URL once it is defined centrally.
-MEASURABLE_BRANDING_LOGO_URL: str | None = None
+MEASURABLE_BRANDING_LOGO_URL: str = str(
+    os.getenv("MEASURABLE_BRANDING_LOGO_URL") or "http://localhost:3000/brand/measurable-logo.svg"
+).strip()
 
 
 def normalize_workspace_plan(plan: Any) -> str:
