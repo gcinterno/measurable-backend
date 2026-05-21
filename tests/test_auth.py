@@ -25,8 +25,10 @@ from app.models import (
     AuditLog,
     EmailVerificationCode,
     MetaPage,
+    ReferralConversion,
     Subscription,
     User,
+    UserAttribution,
     Workspace,
     WorkspaceMember,
 )
@@ -41,6 +43,8 @@ AUTH_TABLES = [
     EmailVerificationCode.__table__,
     AuditLog.__table__,
     MetaPage.__table__,
+    UserAttribution.__table__,
+    ReferralConversion.__table__,
     AccountDeletionFeedback.__table__,
 ]
 

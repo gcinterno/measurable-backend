@@ -22,7 +22,7 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 from app.deps import get_db
 from app.db import Base, SessionLocal, engine
 from app.main import app
-from app.models import EmailVerificationCode, Integration, Subscription, User, Workspace, WorkspaceMember
+from app.models import EmailVerificationCode, Integration, ReferralConversion, Subscription, User, UserAttribution, Workspace, WorkspaceMember
 from app.security import create_access_token, create_oauth_state
 from app.security import hash_password
 
@@ -34,6 +34,8 @@ AUTH_TABLES = [
     Subscription.__table__,
     EmailVerificationCode.__table__,
     Integration.__table__,
+    UserAttribution.__table__,
+    ReferralConversion.__table__,
 ]
 
 

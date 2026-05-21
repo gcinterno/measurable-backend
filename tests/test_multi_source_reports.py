@@ -21,7 +21,7 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 from app.db import Base, SessionLocal, engine
 from app.deps import get_db
 from app.main import app
-from app.models import Dataset, Integration, IntegrationAccount, Report, ReportBlock, ReportSource, ReportVersion, Subscription, User, Workspace, WorkspaceMember
+from app.models import Dataset, Integration, IntegrationAccount, ReferralConversion, Report, ReportBlock, ReportSource, ReportVersion, Subscription, User, UserAttribution, Workspace, WorkspaceMember
 from app.security import create_access_token, hash_password
 
 
@@ -38,6 +38,8 @@ MULTI_SOURCE_TABLES = [
     Dataset.__table__,
     Integration.__table__,
     IntegrationAccount.__table__,
+    UserAttribution.__table__,
+    ReferralConversion.__table__,
     Report.__table__,
     ReportBlock.__table__,
     ReportSource.__table__,

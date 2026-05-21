@@ -1,8 +1,10 @@
 import base64
+import hashlib
 import json
 import logging
 import os
 import secrets
+from decimal import Decimal, ROUND_HALF_UP
 from functools import lru_cache
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -14,7 +16,7 @@ from fastapi import HTTPException
 import requests
 from requests import RequestException
 from sqlalchemy import func, inspect, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -29,11 +31,15 @@ from .models import (
     Export,
     Job,
     Message,
+    ReferralClick,
+    ReferralConversion,
+    ReferralPartner,
     Report,
     ReportBlock,
     ReportVersion,
     Subscription,
     User,
+    UserAttribution,
     Workspace,
     WorkspaceMember,
 )
@@ -42,6 +48,14 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_REPORT_LOCALES = {"en", "es"}
 DEFAULT_WORKSPACE_PLAN = "free"
+OPTIONAL_REFERRAL_TABLES = frozenset(
+    {
+        "user_attributions",
+        "referral_conversions",
+        "referral_clicks",
+        "referral_partners",
+    }
+)
 
 
 def _truncate_log_value(value: Any, limit: int = 4000) -> str | None:
@@ -51,6 +65,41 @@ def _truncate_log_value(value: Any, limit: int = 4000) -> str | None:
     if len(text) <= limit:
         return text
     return text[:limit] + f"...[truncated {len(text) - limit} chars]"
+
+
+def _is_missing_optional_referral_table_error(exc: Exception) -> bool:
+    if not isinstance(exc, DBAPIError):
+        return False
+    error_text = str(getattr(exc, "orig", exc)).lower()
+    if "undefinedtable" in error_text:
+        return True
+    return any(
+        marker in error_text
+        for table_name in OPTIONAL_REFERRAL_TABLES
+        for marker in (
+            f'relation "{table_name}" does not exist',
+            f"no such table: {table_name}",
+        )
+    )
+
+
+def _log_optional_referral_table_unavailable(
+    exc: Exception,
+    *,
+    operation: str,
+    user_id: int | None = None,
+) -> None:
+    logger.warning(
+        "optional_referral_table_unavailable",
+        extra={
+            "operation": operation,
+            "user_id": user_id,
+            "error": _truncate_log_value(getattr(exc, "orig", exc)),
+            "tables": sorted(OPTIONAL_REFERRAL_TABLES),
+        },
+    )
+
+
 PLAN_ALIASES = {"pro": "advanced"}
 PLAN_LIMITS = {
     "free": {
@@ -352,6 +401,349 @@ def register_user_with_default_workspace(
     )
     db.add(subscription)
     return user, workspace, subscription
+
+
+REFERRAL_PAID_CONVERSION_TYPES = {"paid_subscription", "upgrade", "renewal"}
+
+
+def normalize_referral_code(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def hash_client_ip(ip_address: str | None) -> str | None:
+    normalized_ip = str(ip_address or "").strip()
+    if not normalized_ip:
+        return None
+    salt = str(settings.jwt_secret or "measurable").strip()
+    return hashlib.sha256(f"{salt}:{normalized_ip}".encode("utf-8")).hexdigest()
+
+
+def calculate_referral_commission(
+    *,
+    partner: ReferralPartner | None,
+    amount: Any,
+) -> Decimal | None:
+    if partner is None or partner.commission_type in {None, "", "none"}:
+        return None
+    commission_type = str(partner.commission_type or "").strip().lower()
+    commission_value = partner.commission_value
+    if commission_value is None:
+        return None
+    commission_decimal = Decimal(str(commission_value))
+    if commission_type == "fixed":
+        return commission_decimal.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if commission_type != "percentage" or amount is None:
+        return None
+    amount_decimal = Decimal(str(amount))
+    return ((amount_decimal * commission_decimal) / Decimal("100")).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
+
+
+def create_referral_click(
+    db: Session,
+    *,
+    referral_code: str | None,
+    utm_source: str | None,
+    utm_medium: str | None,
+    utm_campaign: str | None,
+    utm_term: str | None,
+    utm_content: str | None,
+    landing_page: str | None,
+    ip_hash: str | None,
+    user_agent: str | None,
+) -> ReferralClick:
+    click = ReferralClick(
+        referral_code=normalize_referral_code(referral_code),
+        utm_source=str(utm_source or "").strip() or None,
+        utm_medium=str(utm_medium or "").strip() or None,
+        utm_campaign=str(utm_campaign or "").strip() or None,
+        utm_term=str(utm_term or "").strip() or None,
+        utm_content=str(utm_content or "").strip() or None,
+        landing_page=str(landing_page or "").strip() or None,
+        ip_hash=str(ip_hash or "").strip() or None,
+        user_agent=str(user_agent or "").strip() or None,
+    )
+    db.add(click)
+    db.commit()
+    db.refresh(click)
+    return click
+
+
+def create_or_update_user_attribution(
+    db: Session,
+    *,
+    user_id: int,
+    referral_code: str | None,
+    utm_source: str | None,
+    utm_medium: str | None,
+    utm_campaign: str | None,
+    utm_term: str | None,
+    utm_content: str | None,
+    signup_at: datetime | None = None,
+) -> UserAttribution:
+    normalized_referral_code = normalize_referral_code(referral_code)
+    normalized_utm_source = str(utm_source or "").strip() or None
+    normalized_utm_medium = str(utm_medium or "").strip() or None
+    normalized_utm_campaign = str(utm_campaign or "").strip() or None
+    normalized_utm_term = str(utm_term or "").strip() or None
+    normalized_utm_content = str(utm_content or "").strip() or None
+    now = signup_at or datetime.now(timezone.utc)
+
+    attribution = (
+        db.query(UserAttribution)
+        .filter(UserAttribution.user_id == user_id)
+        .first()
+    )
+    if attribution is None:
+        attribution = UserAttribution(
+            user_id=user_id,
+            first_referral_code=normalized_referral_code,
+            last_referral_code=normalized_referral_code,
+            utm_source=normalized_utm_source,
+            utm_medium=normalized_utm_medium,
+            utm_campaign=normalized_utm_campaign,
+            utm_term=normalized_utm_term,
+            utm_content=normalized_utm_content,
+            first_touch_at=now if any(
+                [
+                    normalized_referral_code,
+                    normalized_utm_source,
+                    normalized_utm_medium,
+                    normalized_utm_campaign,
+                    normalized_utm_term,
+                    normalized_utm_content,
+                ]
+            ) else None,
+            signup_at=signup_at,
+        )
+        db.add(attribution)
+        db.flush()
+        return attribution
+
+    if attribution.first_referral_code is None and normalized_referral_code is not None:
+        attribution.first_referral_code = normalized_referral_code
+    if normalized_referral_code is not None:
+        attribution.last_referral_code = normalized_referral_code
+    if attribution.utm_source is None and normalized_utm_source is not None:
+        attribution.utm_source = normalized_utm_source
+    if attribution.utm_medium is None and normalized_utm_medium is not None:
+        attribution.utm_medium = normalized_utm_medium
+    if attribution.utm_campaign is None and normalized_utm_campaign is not None:
+        attribution.utm_campaign = normalized_utm_campaign
+    if attribution.utm_term is None and normalized_utm_term is not None:
+        attribution.utm_term = normalized_utm_term
+    if attribution.utm_content is None and normalized_utm_content is not None:
+        attribution.utm_content = normalized_utm_content
+    if attribution.first_touch_at is None and any(
+        [
+            normalized_referral_code,
+            normalized_utm_source,
+            normalized_utm_medium,
+            normalized_utm_campaign,
+            normalized_utm_term,
+            normalized_utm_content,
+        ]
+    ):
+        attribution.first_touch_at = now
+    if attribution.signup_at is None and signup_at is not None:
+        attribution.signup_at = signup_at
+    db.add(attribution)
+    db.flush()
+    return attribution
+
+
+def create_referral_conversion(
+    db: Session,
+    *,
+    user_id: int,
+    referral_code: str | None,
+    conversion_type: str,
+    plan: str | None = None,
+    amount: Any = None,
+    currency: str | None = "USD",
+    commission_amount: Any = None,
+    status: str = "pending",
+    allow_duplicate: bool = True,
+) -> ReferralConversion:
+    normalized_referral_code = normalize_referral_code(referral_code)
+    normalized_type = str(conversion_type or "").strip()
+    if not allow_duplicate:
+        existing = (
+            db.query(ReferralConversion)
+            .filter(
+                ReferralConversion.user_id == user_id,
+                ReferralConversion.conversion_type == normalized_type,
+            )
+            .order_by(ReferralConversion.created_at.desc(), ReferralConversion.id.desc())
+            .first()
+        )
+        if existing is not None:
+            return existing
+    conversion = ReferralConversion(
+        user_id=user_id,
+        referral_code=normalized_referral_code,
+        conversion_type=normalized_type,
+        plan=str(plan or "").strip() or None,
+        amount=Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if amount is not None
+        else None,
+        currency=str(currency or "USD").strip() or "USD",
+        commission_amount=Decimal(str(commission_amount)).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        if commission_amount is not None
+        else None,
+        status=str(status or "pending").strip() or "pending",
+    )
+    db.add(conversion)
+    db.flush()
+    return conversion
+
+
+def record_signup_attribution(
+    db: Session,
+    *,
+    user: User,
+    referral_code: str | None,
+    utm_source: str | None,
+    utm_medium: str | None,
+    utm_campaign: str | None,
+    utm_term: str | None,
+    utm_content: str | None,
+) -> tuple[UserAttribution | None, ReferralConversion | None]:
+    signup_timestamp = datetime.now(timezone.utc)
+    try:
+        attribution = create_or_update_user_attribution(
+            db,
+            user_id=user.id,
+            referral_code=referral_code,
+            utm_source=utm_source,
+            utm_medium=utm_medium,
+            utm_campaign=utm_campaign,
+            utm_term=utm_term,
+            utm_content=utm_content,
+            signup_at=signup_timestamp,
+        )
+        conversion = create_referral_conversion(
+            db,
+            user_id=user.id,
+            referral_code=attribution.first_referral_code,
+            conversion_type="signup",
+            status="approved",
+            allow_duplicate=False,
+        )
+        return attribution, conversion
+    except Exception as exc:
+        if not _is_missing_optional_referral_table_error(exc):
+            raise
+        db.rollback()
+        _log_optional_referral_table_unavailable(
+            exc,
+            operation="record_signup_attribution",
+            user_id=user.id,
+        )
+        return None, None
+
+
+def record_first_report_conversion(
+    db: Session,
+    *,
+    user_id: int,
+) -> ReferralConversion | None:
+    try:
+        attribution = (
+            db.query(UserAttribution)
+            .filter(UserAttribution.user_id == user_id)
+            .first()
+        )
+        referral_code = attribution.first_referral_code if attribution is not None else None
+        if referral_code is None:
+            existing = (
+                db.query(ReferralConversion)
+                .filter(
+                    ReferralConversion.user_id == user_id,
+                    ReferralConversion.conversion_type == "first_report",
+                )
+                .first()
+            )
+            return existing
+        return create_referral_conversion(
+            db,
+            user_id=user_id,
+            referral_code=referral_code,
+            conversion_type="first_report",
+            status="approved",
+            allow_duplicate=False,
+        )
+    except Exception as exc:
+        if not _is_missing_optional_referral_table_error(exc):
+            raise
+        db.rollback()
+        _log_optional_referral_table_unavailable(
+            exc,
+            operation="record_first_report_conversion",
+            user_id=user_id,
+        )
+        return None
+
+
+def create_manual_referral_conversion(
+    db: Session,
+    *,
+    user_id: int,
+    conversion_type: str,
+    plan: str | None,
+    amount: Any,
+    currency: str | None,
+) -> ReferralConversion:
+    try:
+        attribution = (
+            db.query(UserAttribution)
+            .filter(UserAttribution.user_id == user_id)
+            .first()
+        )
+        referral_code = attribution.first_referral_code if attribution is not None else None
+        partner = None
+        if referral_code is not None:
+            partner = (
+                db.query(ReferralPartner)
+                .filter(ReferralPartner.code == referral_code)
+                .first()
+            )
+        commission_amount = calculate_referral_commission(partner=partner, amount=amount)
+        conversion = create_referral_conversion(
+            db,
+            user_id=user_id,
+            referral_code=referral_code,
+            conversion_type=conversion_type,
+            plan=plan,
+            amount=amount,
+            currency=currency,
+            commission_amount=commission_amount,
+            status="approved",
+            allow_duplicate=True,
+        )
+        db.commit()
+        db.refresh(conversion)
+        return conversion
+    except Exception as exc:
+        if not _is_missing_optional_referral_table_error(exc):
+            raise
+        db.rollback()
+        _log_optional_referral_table_unavailable(
+            exc,
+            operation="create_manual_referral_conversion",
+            user_id=user_id,
+        )
+        raise http_error(
+            503,
+            "referral_tracking_unavailable",
+            "Referral tracking is temporarily unavailable.",
+        )
 
 
 AUTH_CODE_PURPOSE_EMAIL_VERIFICATION = "email_verification"

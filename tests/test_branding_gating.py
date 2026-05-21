@@ -22,7 +22,7 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 from app.db import Base, SessionLocal, engine
 from app.deps import get_db
 from app.main import app
-from app.models import Dataset, DatasetFile, Export, Job, Report, ReportBlock, ReportSource, ReportVersion, Subscription, User, Workspace, WorkspaceMember
+from app.models import Dataset, DatasetFile, Export, Job, ReferralConversion, Report, ReportBlock, ReportSource, ReportVersion, Subscription, User, UserAttribution, Workspace, WorkspaceMember
 from app.security import create_access_token, hash_password
 from app.services import MEASURABLE_BRANDING_LOGO_URL, build_export_payload
 
@@ -39,6 +39,8 @@ BRANDING_TABLES = [
     Subscription.__table__,
     Dataset.__table__,
     DatasetFile.__table__,
+    UserAttribution.__table__,
+    ReferralConversion.__table__,
     Report.__table__,
     ReportVersion.__table__,
     ReportBlock.__table__,

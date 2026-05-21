@@ -31,6 +31,12 @@ class RegisterIn(BaseModel):
     email: str
     password: str
     full_name: Optional[str] = None
+    referral_code: Optional[str] = None
+    utm_source: Optional[str] = None
+    utm_medium: Optional[str] = None
+    utm_campaign: Optional[str] = None
+    utm_term: Optional[str] = None
+    utm_content: Optional[str] = None
 
 
 class RegisterOut(BaseModel):
@@ -78,6 +84,75 @@ class ResetPasswordIn(BaseModel):
 
 class AuthMessageOut(BaseModel):
     message: str
+
+
+class ReferralPartnerCreateIn(BaseModel):
+    name: str
+    code: str
+    type: Optional[str] = None
+    commission_type: Optional[str] = None
+    commission_value: Optional[float] = None
+    status: str = "active"
+
+
+class ReferralPartnerOut(BaseModel):
+    id: int
+    name: str
+    code: str
+    type: Optional[str] = None
+    commission_type: Optional[str] = None
+    commission_value: Optional[float] = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReferralClickIn(BaseModel):
+    referral_code: Optional[str] = None
+    utm_source: Optional[str] = None
+    utm_medium: Optional[str] = None
+    utm_campaign: Optional[str] = None
+    utm_term: Optional[str] = None
+    utm_content: Optional[str] = None
+    landing_page: Optional[str] = None
+
+
+class ReferralClickOut(BaseModel):
+    id: int
+    referral_code: Optional[str] = None
+    created_at: datetime
+
+
+class ReferralSummaryOut(BaseModel):
+    referral_code: Optional[str] = None
+    partner_name: Optional[str] = None
+    clicks: int = 0
+    signups: int = 0
+    first_reports: int = 0
+    paid_conversions: int = 0
+    revenue: float = 0.0
+    estimated_commission: float = 0.0
+
+
+class ReferralManualConversionIn(BaseModel):
+    user_id: int
+    conversion_type: str
+    plan: Optional[str] = None
+    amount: Optional[float] = None
+    currency: str = "USD"
+
+
+class ReferralConversionOut(BaseModel):
+    id: int
+    user_id: int
+    referral_code: Optional[str] = None
+    conversion_type: str
+    plan: Optional[str] = None
+    amount: Optional[float] = None
+    currency: str = "USD"
+    commission_amount: Optional[float] = None
+    status: str
+    created_at: datetime
 
 
 class DeleteAccountIn(BaseModel):
@@ -653,6 +728,40 @@ class MetaPagesSyncOut(BaseModel):
     page_name: str
     status: str
     timeframe: Optional[dict] = None
+
+
+class MetaSyncAllTimeframeIn(BaseModel):
+    preset: str = "last_28_days"
+    since: Optional[str] = None
+    until: Optional[str] = None
+
+
+class MetaSyncAllIn(BaseModel):
+    integration_id: Optional[int] = None
+    workspace_id: Optional[int] = None
+    facebook_page_id: Optional[str] = None
+    instagram_business_account_id: Optional[str] = None
+    timeframe: MetaSyncAllTimeframeIn = Field(default_factory=MetaSyncAllTimeframeIn)
+
+
+class MetaSyncSourceResultOut(BaseModel):
+    success: bool
+    dataset_id: Optional[int] = None
+    dataset_file_id: Optional[int] = None
+    message: str
+    error_code: Optional[str] = None
+    error: Optional[str] = None
+    timeframe: Optional[dict] = None
+
+
+class MetaSyncAllResultsOut(BaseModel):
+    facebook_pages: Optional[MetaSyncSourceResultOut] = None
+    instagram_business: Optional[MetaSyncSourceResultOut] = None
+
+
+class MetaSyncAllOut(BaseModel):
+    success: bool
+    results: MetaSyncAllResultsOut
 
 
 class InstagramBusinessSyncIn(BaseModel):

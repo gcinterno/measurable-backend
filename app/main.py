@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 import requests
+from decimal import Decimal
 from urllib.parse import urlencode
 from datetime import date, timedelta, datetime, timezone, time
 from time import perf_counter
@@ -35,7 +36,7 @@ from .errors import http_error
 import boto3
 
 from .config import settings
-from .db import engine
+from .db import SessionLocal, engine
 from .integrations.meta_ads import (
     META_ADS_OAUTH_SCOPE,
     META_PAGES_OAUTH_SCOPE,
@@ -66,21 +67,25 @@ from .models import (
     Conversation,
     Dataset,
     DatasetFile,
+    EmailVerificationCode,
     Export,
     Integration,
     IntegrationAccount,
-    EmailVerificationCode,
-    MetaPage,
     IntegrationToken,
     Job,
     Message,
+    MetaPage,
+    ReferralClick,
+    ReferralConversion,
+    ReferralPartner,
     Report,
     ReportBlock,
     ReportSource,
     ReportVersion,
-    Subscription,
     Schedule,
+    Subscription,
     User,
+    UserAttribution,
     Workspace,
     WorkspaceMember,
 )
@@ -124,6 +129,10 @@ from .schemas import (
     MetaPageOut,
     MetaPagesReportCreateIn,
     MetaPagesReportCreateOut,
+    MetaSyncAllIn,
+    MetaSyncAllOut,
+    MetaSyncAllResultsOut,
+    MetaSyncSourceResultOut,
     MetaPagesSyncOut,
     MetaSelectAccountIn,
     MetaSelectAccountManualIn,
@@ -134,6 +143,13 @@ from .schemas import (
     MultiSourceReportCreateRequest,
     RegisterIn,
     RegisterOut,
+    ReferralClickIn,
+    ReferralClickOut,
+    ReferralConversionOut,
+    ReferralManualConversionIn,
+    ReferralPartnerCreateIn,
+    ReferralPartnerOut,
+    ReferralSummaryOut,
     ResendVerificationCodeIn,
     ForgotPasswordIn,
     ResetPasswordIn,
@@ -187,6 +203,8 @@ from .services import (
     build_default_workspace_name,
     build_auth_email_html,
     build_auth_email_text,
+    create_manual_referral_conversion,
+    create_referral_click,
     issue_auth_code,
     send_auth_email,
     validate_auth_code,
@@ -200,9 +218,12 @@ from .services import (
     generate_workspace_ai_reply,
     get_workspace_plan,
     get_plan_limits,
+    hash_client_ip,
     resolve_report_slide_limits,
     resolve_report_branding_for_workspace,
     resolve_meta_pages_timeframe,
+    record_first_report_conversion,
+    record_signup_attribution,
     register_user_with_default_workspace,
     generate_pdf_from_export_page,
     normalize_report_locale,
@@ -273,6 +294,135 @@ def _safe_exception_message(exc: Exception) -> str:
     if not message:
         return exc.__class__.__name__
     return message[:200]
+
+
+def _decimal_to_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, Decimal):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _create_referral_partner(
+    db: Session,
+    *,
+    name: str,
+    code: str,
+    partner_type: str | None,
+    commission_type: str | None,
+    commission_value: float | None,
+    status: str,
+) -> ReferralPartner:
+    normalized_code = str(code or "").strip()
+    if not normalized_code:
+        raise http_error(400, "invalid_referral_code", "code is required.")
+    existing = (
+        db.query(ReferralPartner)
+        .filter(func.lower(ReferralPartner.code) == normalized_code.lower())
+        .first()
+    )
+    if existing is not None:
+        raise http_error(409, "referral_partner_exists", "Referral partner code already exists.")
+    partner = ReferralPartner(
+        name=str(name or "").strip() or normalized_code,
+        code=normalized_code,
+        type=str(partner_type or "").strip() or None,
+        commission_type=str(commission_type or "").strip() or None,
+        commission_value=commission_value,
+        status=str(status or "active").strip() or "active",
+    )
+    db.add(partner)
+    db.commit()
+    db.refresh(partner)
+    return partner
+
+
+def _build_referral_summary_rows(db: Session) -> list[ReferralSummaryOut]:
+    partner_by_code = {
+        str(partner.code): partner
+        for partner in db.query(ReferralPartner).order_by(ReferralPartner.code.asc()).all()
+    }
+
+    summary_by_code: dict[str | None, dict[str, Any]] = {}
+
+    def ensure_row(referral_code: str | None) -> dict[str, Any]:
+        key = str(referral_code).strip() if referral_code is not None else None
+        if key == "":
+            key = None
+        if key not in summary_by_code:
+            partner = partner_by_code.get(key) if key is not None else None
+            summary_by_code[key] = {
+                "referral_code": key,
+                "partner_name": partner.name if partner is not None else None,
+                "clicks": 0,
+                "signups": 0,
+                "first_reports": 0,
+                "paid_conversions": 0,
+                "revenue": 0.0,
+                "estimated_commission": 0.0,
+            }
+        return summary_by_code[key]
+
+    for partner_code in partner_by_code:
+        ensure_row(partner_code)
+
+    click_rows = (
+        db.query(
+            ReferralClick.referral_code,
+            func.count(ReferralClick.id),
+        )
+        .group_by(ReferralClick.referral_code)
+        .all()
+    )
+    for referral_code, clicks in click_rows:
+        row = ensure_row(referral_code)
+        row["clicks"] = int(clicks or 0)
+
+    conversion_rows = (
+        db.query(
+            ReferralConversion.referral_code,
+            ReferralConversion.conversion_type,
+            func.count(ReferralConversion.id),
+            func.coalesce(func.sum(ReferralConversion.amount), 0),
+            func.coalesce(func.sum(ReferralConversion.commission_amount), 0),
+        )
+        .group_by(
+            ReferralConversion.referral_code,
+            ReferralConversion.conversion_type,
+        )
+        .all()
+    )
+    for referral_code, conversion_type, count_value, revenue_value, commission_value in conversion_rows:
+        row = ensure_row(referral_code)
+        normalized_type = str(conversion_type or "").strip()
+        if normalized_type == "signup":
+            row["signups"] += int(count_value or 0)
+        elif normalized_type == "first_report":
+            row["first_reports"] += int(count_value or 0)
+        if normalized_type in {"paid_subscription", "upgrade", "renewal"}:
+            row["paid_conversions"] += int(count_value or 0)
+            row["revenue"] += _decimal_to_float(revenue_value)
+            row["estimated_commission"] += _decimal_to_float(commission_value)
+
+    rows = [
+        ReferralSummaryOut(
+            referral_code=summary["referral_code"],
+            partner_name=summary["partner_name"],
+            clicks=int(summary["clicks"]),
+            signups=int(summary["signups"]),
+            first_reports=int(summary["first_reports"]),
+            paid_conversions=int(summary["paid_conversions"]),
+            revenue=round(float(summary["revenue"]), 2),
+            estimated_commission=round(float(summary["estimated_commission"]), 2),
+        )
+        for summary in summary_by_code.values()
+    ]
+    rows.sort(key=lambda item: ((item.referral_code or "~").lower(), item.partner_name or ""))
+    return rows
 
 
 def _jwt_secret_configured() -> bool:
@@ -1328,6 +1478,32 @@ def logout() -> JSONResponse:
     return response
 
 
+@app.post("/referrals/click", response_model=ReferralClickOut, status_code=201)
+def create_public_referral_click(
+    payload: ReferralClickIn,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ReferralClickOut:
+    client_ip = request.client.host if request.client is not None else None
+    click = create_referral_click(
+        db,
+        referral_code=payload.referral_code,
+        utm_source=payload.utm_source,
+        utm_medium=payload.utm_medium,
+        utm_campaign=payload.utm_campaign,
+        utm_term=payload.utm_term,
+        utm_content=payload.utm_content,
+        landing_page=payload.landing_page,
+        ip_hash=hash_client_ip(client_ip),
+        user_agent=request.headers.get("user-agent"),
+    )
+    return ReferralClickOut(
+        id=click.id,
+        referral_code=click.referral_code,
+        created_at=click.created_at,
+    )
+
+
 @app.delete("/account/delete", response_model=DeleteAccountOut)
 def delete_account(
     payload: DeleteAccountIn,
@@ -1445,6 +1621,16 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
                 auth_provider="email",
                 last_login_at=None,
             )
+            record_signup_attribution(
+                db,
+                user=user,
+                referral_code=payload.referral_code,
+                utm_source=payload.utm_source,
+                utm_medium=payload.utm_medium,
+                utm_campaign=payload.utm_campaign,
+                utm_term=payload.utm_term,
+                utm_content=payload.utm_content,
+            )
         else:
             user = existing_user
             user.password_hash = hash_password(payload.password)
@@ -1466,6 +1652,16 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
                 .first()
                 if workspace is not None
                 else None
+            )
+            record_signup_attribution(
+                db,
+                user=user,
+                referral_code=payload.referral_code,
+                utm_source=payload.utm_source,
+                utm_medium=payload.utm_medium,
+                utm_campaign=payload.utm_campaign,
+                utm_term=payload.utm_term,
+                utm_content=payload.utm_content,
             )
 
         verification_code = issue_auth_code(
@@ -2757,6 +2953,105 @@ def admin_product_metrics(
         users_with_reports=users_with_reports,
         users_with_2_reports=users_with_2_reports,
         users_used_ai=users_used_ai,
+    )
+
+
+@app.get("/admin/referrals/partners", response_model=list[ReferralPartnerOut])
+def admin_list_referral_partners(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> list[ReferralPartnerOut]:
+    partners = (
+        db.query(ReferralPartner)
+        .order_by(ReferralPartner.created_at.desc(), ReferralPartner.id.desc())
+        .all()
+    )
+    return [
+        ReferralPartnerOut(
+            id=partner.id,
+            name=partner.name,
+            code=partner.code,
+            type=partner.type,
+            commission_type=partner.commission_type,
+            commission_value=_decimal_to_float(partner.commission_value)
+            if partner.commission_value is not None
+            else None,
+            status=partner.status,
+            created_at=partner.created_at,
+            updated_at=partner.updated_at,
+        )
+        for partner in partners
+    ]
+
+
+@app.post("/admin/referrals/partners", response_model=ReferralPartnerOut, status_code=201)
+def admin_create_referral_partner(
+    payload: ReferralPartnerCreateIn,
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> ReferralPartnerOut:
+    partner = _create_referral_partner(
+        db,
+        name=payload.name,
+        code=payload.code,
+        partner_type=payload.type,
+        commission_type=payload.commission_type,
+        commission_value=payload.commission_value,
+        status=payload.status,
+    )
+    return ReferralPartnerOut(
+        id=partner.id,
+        name=partner.name,
+        code=partner.code,
+        type=partner.type,
+        commission_type=partner.commission_type,
+        commission_value=_decimal_to_float(partner.commission_value)
+        if partner.commission_value is not None
+        else None,
+        status=partner.status,
+        created_at=partner.created_at,
+        updated_at=partner.updated_at,
+    )
+
+
+@app.get("/admin/referrals/summary", response_model=list[ReferralSummaryOut])
+def admin_referrals_summary(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> list[ReferralSummaryOut]:
+    return _build_referral_summary_rows(db)
+
+
+@app.post("/admin/referrals/manual-conversion", response_model=ReferralConversionOut, status_code=201)
+def admin_create_manual_referral_conversion_endpoint(
+    payload: ReferralManualConversionIn,
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> ReferralConversionOut:
+    user = db.get(User, int(payload.user_id))
+    if user is None:
+        raise http_error(404, "user_not_found", "User not found.")
+    conversion = create_manual_referral_conversion(
+        db,
+        user_id=user.id,
+        conversion_type=payload.conversion_type,
+        plan=payload.plan,
+        amount=payload.amount,
+        currency=payload.currency,
+    )
+    return ReferralConversionOut(
+        id=conversion.id,
+        user_id=conversion.user_id,
+        referral_code=conversion.referral_code,
+        conversion_type=conversion.conversion_type,
+        plan=conversion.plan,
+        amount=_decimal_to_float(conversion.amount) if conversion.amount is not None else None,
+        currency=conversion.currency,
+        commission_amount=_decimal_to_float(conversion.commission_amount)
+        if conversion.commission_amount is not None
+        else None,
+        status=conversion.status,
+        created_at=conversion.created_at,
     )
 
 
@@ -8912,6 +9207,8 @@ def create_report(
     db.add(report)
     db.commit()
     db.refresh(report)
+    record_first_report_conversion(db, user_id=current_user.id)
+    db.commit()
     logger.info(
         "[AIAgents][pipeline.final]",
         extra={
@@ -9260,6 +9557,8 @@ def create_multi_source_report(
         db.add(report)
         db.commit()
         db.refresh(report)
+        record_first_report_conversion(db, user_id=current_user.id)
+        db.commit()
 
         report_sources = [
             ReportSource(
@@ -9746,6 +10045,8 @@ def _create_meta_dataset_report(
     db.add(report)
     db.commit()
     db.refresh(report)
+    record_first_report_conversion(db, user_id=current_user.id)
+    db.commit()
     logger.info(
         "[MetaTimeframeBackend][report.created]",
         extra={
@@ -12523,14 +12824,19 @@ def _sync_meta_instagram_account(
     )
 
 
-@app.post("/integrations/meta/sync-instagram-business", response_model=InstagramBusinessSyncOut)
-def sync_instagram_business(
-    payload: InstagramBusinessSyncIn,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+def _run_instagram_business_sync(
+    *,
+    db: Session,
+    current_user: User,
+    integration_id: int,
+    instagram_account_id: str,
+    workspace_id: int | None = None,
+    timeframe: str = "last_28_days",
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> InstagramBusinessSyncOut:
-    integration = _get_meta_integration(db, current_user, payload.integration_id)
-    if payload.workspace_id is not None and int(payload.workspace_id) != int(integration.workspace_id):
+    integration = _get_meta_integration(db, current_user, integration_id)
+    if workspace_id is not None and int(workspace_id) != int(integration.workspace_id):
         raise http_error(
             400,
             "workspace_mismatch",
@@ -12541,16 +12847,16 @@ def sync_instagram_business(
         db,
         integration=integration,
         current_user=current_user,
-        instagram_account_id=payload.instagram_account_id,
+        instagram_account_id=instagram_account_id,
     )
     timeframe_config = resolve_meta_pages_timeframe(
-        payload.timeframe,
-        start_date=payload.start_date,
-        end_date=payload.end_date,
+        timeframe,
+        start_date=start_date,
+        end_date=end_date,
     )
 
     parent_page_id = str(
-        selected_meta_record.parent_page_id or selected_meta_record.page_id or payload.instagram_account_id
+        selected_meta_record.parent_page_id or selected_meta_record.page_id or instagram_account_id
     ).strip()
     selected_page = IntegrationAccount(
         integration_id=integration.id,
@@ -12579,83 +12885,27 @@ def sync_instagram_business(
     )
 
 
-@app.post("/integrations/meta/sync-pages", response_model=MetaPagesSyncOut)
-def meta_sync_pages(
-    request: Request,
-    integration_id: int | None = None,
-    timeframe: str | None = None,
+def _run_meta_pages_sync(
+    *,
+    db: Session,
+    current_user: User,
+    integration_id: int,
+    page_id: str | None = None,
+    timeframe: str = "last_28_days",
     start_date: str | None = None,
     end_date: str | None = None,
-    payload: dict | None = Body(default=None),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    raw_query_params: dict[str, Any] | None = None,
+    raw_body: dict[str, Any] | None = None,
 ) -> MetaPagesSyncOut:
-    raw_body = payload if isinstance(payload, dict) else {}
-    raw_query_params = dict(request.query_params)
-    body_timeframe_selection = raw_body.get("timeframe_selection")
-    if not isinstance(body_timeframe_selection, dict):
-        body_timeframe_selection = raw_body.get("timeframeSelection")
-    if not isinstance(body_timeframe_selection, dict):
-        body_timeframe_selection = {}
-
-    def _body_timeframe_key(value: object) -> object:
-        if isinstance(value, dict):
-            return (
-                value.get("key")
-                or value.get("timeframe")
-                or value.get("value")
-                or value.get("preset")
-            )
-        return value
-
-    body_integration_id = raw_body.get("integration_id") or raw_body.get("integrationId")
-    body_page_id = raw_body.get("page_id") or raw_body.get("pageId")
-    body_timeframe = (
-        _body_timeframe_key(raw_body.get("timeframe"))
-        or _body_timeframe_key(body_timeframe_selection)
-    )
-    body_start_date = (
-        raw_body.get("start_date")
-        or raw_body.get("startDate")
-        or body_timeframe_selection.get("start_date")
-        or body_timeframe_selection.get("startDate")
-    )
-    body_end_date = (
-        raw_body.get("end_date")
-        or raw_body.get("endDate")
-        or body_timeframe_selection.get("end_date")
-        or body_timeframe_selection.get("endDate")
-    )
-    final_integration_id = body_integration_id if body_integration_id is not None else integration_id
-    if final_integration_id is None:
-        raise http_error(422, "missing_integration_id", "integration_id is required.")
     try:
-        final_integration_id = int(final_integration_id)
-    except (TypeError, ValueError):
-        raise http_error(422, "invalid_integration_id", "integration_id must be an integer.")
-
-    final_timeframe = str(body_timeframe or timeframe or "last_28_days").strip()
-    if not final_timeframe:
-        final_timeframe = "last_28_days"
-    final_start_date = (
-        str(body_start_date)
-        if body_start_date is not None
-        else start_date
-    )
-    final_end_date = (
-        str(body_end_date)
-        if body_end_date is not None
-        else end_date
-    )
-    try:
-        integration = _get_meta_integration(db, current_user, final_integration_id)
+        integration = _get_meta_integration(db, current_user, integration_id)
         selected_page = None
-        if body_page_id:
+        if page_id:
             selected_page = (
                 db.query(IntegrationAccount)
                 .filter(
                     IntegrationAccount.integration_id == integration.id,
-                    IntegrationAccount.external_account_id == _meta_page_account_external_id(str(body_page_id)),
+                    IntegrationAccount.external_account_id == _meta_page_account_external_id(str(page_id)),
                 )
                 .first()
             )
@@ -12674,13 +12924,13 @@ def meta_sync_pages(
                 "No Meta page selected. Call POST /integrations/meta/select-page first.",
             )
 
-        page_id = _get_meta_page_id(selected_page)
-        page_name = selected_page.display_name or page_id
+        resolved_page_id = _get_meta_page_id(selected_page)
+        page_name = selected_page.display_name or resolved_page_id
         selected_meta_record = (
             db.query(MetaPage)
             .filter(
                 MetaPage.integration_id == integration.id,
-                MetaPage.page_id == page_id,
+                MetaPage.page_id == resolved_page_id,
             )
             .order_by(MetaPage.updated_at.desc(), MetaPage.id.desc())
             .first()
@@ -12688,20 +12938,20 @@ def meta_sync_pages(
         logger.info(
             "[MetaTimeframeBackend][sync.entry]",
             extra={
-                "raw_query_params": raw_query_params,
-                "raw_body": raw_body,
+                "raw_query_params": raw_query_params or {},
+                "raw_body": raw_body or {},
                 "integration_id_final": integration.id,
-                "page_id_final": page_id,
+                "page_id_final": resolved_page_id,
                 "selected_record_type": selected_meta_record.record_type if selected_meta_record else None,
-                "timeframe_final_before_resolve": final_timeframe,
-                "start_date_final": final_start_date,
-                "end_date_final": final_end_date,
+                "timeframe_final_before_resolve": timeframe,
+                "start_date_final": start_date,
+                "end_date_final": end_date,
             },
         )
         timeframe_config = resolve_meta_pages_timeframe(
-            final_timeframe,
-            start_date=final_start_date,
-            end_date=final_end_date,
+            timeframe,
+            start_date=start_date,
+            end_date=end_date,
         )
         logger.info(
             "[MetaTimeframeBackend][sync.resolved]",
@@ -12733,8 +12983,8 @@ def meta_sync_pages(
             "Meta Pages sync started",
             extra={
                 "integration_id": integration.id,
-                "page_id": page_id,
-                "timeframe": final_timeframe,
+                "page_id": resolved_page_id,
+                "timeframe": timeframe,
             },
         )
         access_token: str | None = None
@@ -12748,7 +12998,7 @@ def meta_sync_pages(
             "Meta Pages sync token resolved",
             extra={
                 "integration_id": integration.id,
-                "page_id": page_id,
+                "page_id": resolved_page_id,
                 "has_page_token": bool(access_token),
             },
         )
@@ -12789,7 +13039,7 @@ def meta_sync_pages(
                 )
 
             try:
-                page_info = fetch_page_info(access_token, page_id, fields="id,name")
+                page_info = fetch_page_info(access_token, resolved_page_id, fields="id,name")
                 page_name = str(page_info.get("name") or page_name)
             except HTTPException as exc:
                 if not _is_meta_api_error(exc):
@@ -12798,7 +13048,7 @@ def meta_sync_pages(
             try:
                 page_counts = fetch_page_info(
                     access_token,
-                    page_id,
+                    resolved_page_id,
                     fields="fan_count,followers_count",
                 )
             except HTTPException as exc:
@@ -12809,7 +13059,7 @@ def meta_sync_pages(
             rejected_metrics: list[str] = []
             reach_payload = _fetch_meta_pages_reach_payload(
                 access_token,
-                page_id,
+                resolved_page_id,
                 timeframe_config,
                 integration.id,
             )
@@ -12827,7 +13077,7 @@ def meta_sync_pages(
                 until=timeframe_config["until"],
             )
             _log_meta_history_audit(
-                page_id=page_id,
+                page_id=resolved_page_id,
                 page_name=page_name,
                 metric_name=reach_metric_name or "page_reach",
                 selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
@@ -12848,14 +13098,14 @@ def meta_sync_pages(
                     "Meta Pages reach unavailable after trying all candidates",
                     extra={
                         "integration_id": integration.id,
-                        "page_id": page_id,
+                        "page_id": resolved_page_id,
                         "timeframe": timeframe_config["preset"],
                         "metric_candidates": META_PAGES_REACH_METRIC_CANDIDATES,
                     },
                 )
             impressions_payload = _fetch_meta_pages_impressions_payload(
                 access_token,
-                page_id,
+                resolved_page_id,
                 timeframe_config,
                 integration.id,
             )
@@ -12875,7 +13125,7 @@ def meta_sync_pages(
                 until=timeframe_config["until"],
             )
             _log_meta_history_audit(
-                page_id=page_id,
+                page_id=resolved_page_id,
                 page_name=page_name,
                 metric_name=impressions_metric_name or "page_impressions",
                 selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
@@ -12896,14 +13146,14 @@ def meta_sync_pages(
                     "Meta Pages impressions unavailable after trying all candidates",
                     extra={
                         "integration_id": integration.id,
-                        "page_id": page_id,
+                        "page_id": resolved_page_id,
                         "timeframe": timeframe_config["preset"],
                         "metric_candidates": META_PAGES_IMPRESSIONS_METRIC_CANDIDATES,
                     },
                 )
             views_payload = _fetch_meta_pages_metric_payload(
                 access_token,
-                page_id,
+                resolved_page_id,
                 timeframe_config,
                 integration.id,
                 metric_name="page_views_total",
@@ -12917,7 +13167,7 @@ def meta_sync_pages(
                 until=timeframe_config["until"],
             )
             _log_meta_history_audit(
-                page_id=page_id,
+                page_id=resolved_page_id,
                 page_name=page_name,
                 metric_name=views_metric_name or "page_views_total",
                 selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
@@ -12934,7 +13184,7 @@ def meta_sync_pages(
 
             interactions_payload = _fetch_meta_pages_metric_payload(
                 access_token,
-                page_id,
+                resolved_page_id,
                 timeframe_config,
                 integration.id,
                 metric_name="page_post_engagements",
@@ -12948,7 +13198,7 @@ def meta_sync_pages(
                 until=timeframe_config["until"],
             )
             _log_meta_history_audit(
-                page_id=page_id,
+                page_id=resolved_page_id,
                 page_name=page_name,
                 metric_name=interactions_metric_name or "page_post_engagements",
                 selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
@@ -12965,7 +13215,7 @@ def meta_sync_pages(
 
             link_clicks_payload = _fetch_meta_pages_metric_payload(
                 access_token,
-                page_id,
+                resolved_page_id,
                 timeframe_config,
                 integration.id,
                 metric_name="page_consumptions",
@@ -12979,7 +13229,7 @@ def meta_sync_pages(
                 until=timeframe_config["until"],
             )
             _log_meta_history_audit(
-                page_id=page_id,
+                page_id=resolved_page_id,
                 page_name=page_name,
                 metric_name=link_clicks_metric_name or "page_consumptions",
                 selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
@@ -12996,7 +13246,7 @@ def meta_sync_pages(
 
             page_visits_payload = _fetch_meta_pages_metric_payload(
                 access_token,
-                page_id,
+                resolved_page_id,
                 timeframe_config,
                 integration.id,
                 metric_name="page_profile_views",
@@ -13010,7 +13260,7 @@ def meta_sync_pages(
                 until=timeframe_config["until"],
             )
             _log_meta_history_audit(
-                page_id=page_id,
+                page_id=resolved_page_id,
                 page_name=page_name,
                 metric_name=page_visits_metric_name or "page_profile_views",
                 selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
@@ -13027,7 +13277,7 @@ def meta_sync_pages(
 
             followers_growth_payload = _fetch_meta_pages_metric_payload(
                 access_token,
-                page_id,
+                resolved_page_id,
                 timeframe_config,
                 integration.id,
                 metric_name="page_fan_adds",
@@ -13041,7 +13291,7 @@ def meta_sync_pages(
                 until=timeframe_config["until"],
             )
             _log_meta_history_audit(
-                page_id=page_id,
+                page_id=resolved_page_id,
                 page_name=page_name,
                 metric_name=followers_growth_metric_name or "page_fan_adds",
                 selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
@@ -13067,7 +13317,7 @@ def meta_sync_pages(
                 try:
                     metric_insight = fetch_page_insights(
                         access_token,
-                        page_id,
+                        resolved_page_id,
                         metrics=[metric_name],
                         since=timeframe_config["since"],
                         until=timeframe_config["until"],
@@ -13091,7 +13341,7 @@ def meta_sync_pages(
                 "Meta Pages insights fetch completed",
                 extra={
                     "integration_id": integration.id,
-                    "page_id": page_id,
+                    "page_id": resolved_page_id,
                     "accepted_metrics": accepted_metrics,
                     "rejected_metrics": rejected_metrics,
                     "reach_source_metric": reach_metric_name,
@@ -13109,7 +13359,7 @@ def meta_sync_pages(
             )
 
             try:
-                posts = fetch_page_posts(access_token, page_id, limit=5)
+                posts = fetch_page_posts(access_token, resolved_page_id, limit=5)
             except HTTPException as exc:
                 if not _is_meta_api_error(exc):
                     raise
@@ -13144,7 +13394,7 @@ def meta_sync_pages(
                 "Meta Pages posts fetch completed",
                 extra={
                     "integration_id": integration.id,
-                    "page_id": page_id,
+                    "page_id": resolved_page_id,
                     "posts_found": posts_found,
                     "posts_enriched": len(enriched_posts),
                 },
@@ -13212,7 +13462,7 @@ def meta_sync_pages(
             "Meta Pages sync normalized metrics",
             extra={
                 "integration_id": integration.id,
-                "page_id": page_id,
+                "page_id": resolved_page_id,
                 "missing_metrics": missing_metrics,
             },
         )
@@ -13220,7 +13470,7 @@ def meta_sync_pages(
         print("IMPRESSIONS:", impressions)
         writer.writerow(
             {
-                "page_id": page_id,
+                "page_id": resolved_page_id,
                 "page_name": page_name,
                 "fans": _first_non_none(page_counts.get("fan_count"), insights.get("page_fans")),
                 "followers": followers,
@@ -13246,7 +13496,7 @@ def meta_sync_pages(
         )
 
         csv_bytes = csv_output.getvalue().encode("utf-8")
-        filename = f"meta_page_{page_id}_insights.csv"
+        filename = f"meta_page_{resolved_page_id}_insights.csv"
         dataset_data = {
             "page_name": page_name,
             "followers": followers,
@@ -13375,7 +13625,7 @@ def meta_sync_pages(
             "dataset.followers_growth_daily": followers_growth_daily,
         }.items():
             _log_meta_history_audit(
-                page_id=page_id,
+                page_id=resolved_page_id,
                 page_name=page_name,
                 metric_name=metric_name,
                 selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
@@ -13388,7 +13638,7 @@ def meta_sync_pages(
                 points=metric_points,
             )
         raw_meta_data = {
-            "page_id": page_id,
+            "page_id": resolved_page_id,
             "timeframe": timeframe_config,
             "reach": {
                 "metric": reach_metric_name,
@@ -13405,7 +13655,7 @@ def meta_sync_pages(
         logger.info(
             "[MetaTimeframeBackend] sync metrics resolved",
             extra={
-                "page_id": page_id,
+                "page_id": resolved_page_id,
                 "page_name": page_name,
                 "timeframe_resolved_key": timeframe_config["key"],
                 "timeframe_resolved_since": timeframe_config["since"],
@@ -13477,7 +13727,7 @@ def meta_sync_pages(
             "[MetaTimeframeBackend] dataset created",
             extra={
                 "integration_id": integration.id,
-                "page_id": page_id,
+                "page_id": resolved_page_id,
                 "dataset_id": dataset.id,
                 "dataset_timeframe_key": dataset.data.get("timeframe", {}).get("key")
                 if isinstance(dataset.data, dict)
@@ -13554,7 +13804,7 @@ def meta_sync_pages(
             "[MetaTimeframeBackend] sync completed",
             extra={
                 "integration_id": integration.id,
-                "page_id": page_id,
+                "page_id": resolved_page_id,
                 "dataset_id": dataset.id,
                 "dataset_file_id": dataset_file.id,
                 "dataset_timeframe_key": dataset_data["timeframe"].get("key"),
@@ -13568,7 +13818,7 @@ def meta_sync_pages(
             integration_id=integration.id,
             dataset_id=dataset.id,
             dataset_file_id=dataset_file.id,
-            page_id=page_id,
+            page_id=resolved_page_id,
             page_name=page_name,
             status="uploaded",
             timeframe=dataset_data["timeframe"],
@@ -13579,11 +13829,369 @@ def meta_sync_pages(
         logger.exception(
             "Meta Pages sync failed with unhandled exception",
             extra={
-                "integration_id": final_integration_id if "final_integration_id" in locals() else integration_id,
-                "timeframe": final_timeframe if "final_timeframe" in locals() else timeframe,
+                "integration_id": integration_id,
+                "timeframe": timeframe,
+                "page_id": page_id,
             },
         )
         raise http_error(500, "meta_pages_sync_failed", f"Meta Pages sync failed: {exc}")
+
+
+def _resolve_meta_sync_all_integration(
+    db: Session,
+    *,
+    current_user: User,
+    integration_id: int | None,
+    workspace_id: int | None,
+) -> Integration:
+    if integration_id is not None:
+        integration = _get_meta_integration(db, current_user, integration_id)
+    else:
+        resolved_workspace_id = _resolve_meta_connect_workspace_id(
+            db,
+            user_id=current_user.id,
+            requested_workspace_id=workspace_id,
+        )
+        integration = (
+            db.query(Integration)
+            .filter(
+                Integration.workspace_id == resolved_workspace_id,
+                Integration.provider == "meta",
+            )
+            .order_by(Integration.id.asc())
+            .first()
+        )
+        if not integration:
+            raise http_error(
+                400,
+                "meta_not_connected",
+                "The authenticated user does not have a connected Meta account for this workspace.",
+            )
+    if workspace_id is not None and int(workspace_id) != int(integration.workspace_id):
+        raise http_error(
+            400,
+            "workspace_mismatch",
+            "workspace_id does not match the integration workspace.",
+        )
+    if str(integration.status or "").strip().lower() != "connected":
+        raise http_error(
+            400,
+            "meta_not_connected",
+            "The authenticated user does not have a connected Meta account for this workspace.",
+        )
+    return integration
+
+
+def _is_meta_permissions_error_message(message: str) -> bool:
+    normalized = str(message or "").lower()
+    permission_markers = (
+        "permission",
+        "permissions",
+        "not authorized",
+        "does not have permission",
+        "access denied",
+        "insufficient permission",
+    )
+    return any(marker in normalized for marker in permission_markers)
+
+
+def _is_meta_token_expired_error(exc: HTTPException) -> bool:
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    if detail.get("code") != "meta_api_error":
+        return False
+    error_details = _meta_api_error_details(exc)
+    error_code = error_details.get("error_code")
+    message = str(error_details.get("error_message") or "").lower()
+    return error_code == 190 or "expired" in message or "invalid oauth" in message
+
+
+def _meta_sync_all_error_result(source_label: str, exc: HTTPException) -> MetaSyncSourceResultOut:
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    error_code = str(detail.get("code") or "sync_failed")
+    message = str(detail.get("message") or f"{source_label} sync failed.")
+    if _is_meta_token_expired_error(exc):
+        message = "Meta access token expired. Reconnect Meta and try again."
+    elif _is_meta_api_error(exc) and _is_meta_permissions_error_message(message):
+        message = f"Missing required Meta permissions for {source_label}."
+    return MetaSyncSourceResultOut(
+        success=False,
+        message=message,
+        error_code=error_code,
+        error=message,
+    )
+
+
+def _meta_sync_all_success_result(
+    *,
+    message: str,
+    dataset_id: int,
+    dataset_file_id: int,
+    timeframe: dict[str, Any] | None,
+) -> MetaSyncSourceResultOut:
+    return MetaSyncSourceResultOut(
+        success=True,
+        dataset_id=dataset_id,
+        dataset_file_id=dataset_file_id,
+        message=message,
+        timeframe=timeframe,
+    )
+
+
+def _execute_meta_source_sync(
+    *,
+    integration_id: int,
+    current_user: User,
+    source_key: str,
+    run_sync,
+) -> MetaSyncSourceResultOut:
+    source_db = SessionLocal()
+    try:
+        logger.info(
+            "Meta sync-all source started",
+            extra={
+                "integration_id": integration_id,
+                "user_id": current_user.id,
+                "source": source_key,
+            },
+        )
+        result = run_sync(source_db)
+        logger.info(
+            "Meta sync-all source completed",
+            extra={
+                "integration_id": integration_id,
+                "user_id": current_user.id,
+                "source": source_key,
+                "dataset_id": result.dataset_id,
+                "dataset_file_id": result.dataset_file_id,
+            },
+        )
+        return result
+    except HTTPException as exc:
+        source_db.rollback()
+        logger.warning(
+            "Meta sync-all source failed",
+            extra={
+                "integration_id": integration_id,
+                "user_id": current_user.id,
+                "source": source_key,
+                "error": exc.detail if isinstance(exc.detail, dict) else str(exc.detail),
+            },
+        )
+        raise
+    except Exception:
+        source_db.rollback()
+        logger.exception(
+            "Meta sync-all source failed unexpectedly",
+            extra={
+                "integration_id": integration_id,
+                "user_id": current_user.id,
+                "source": source_key,
+            },
+        )
+        raise
+    finally:
+        source_db.close()
+
+
+@app.post("/integrations/meta/sync-instagram-business", response_model=InstagramBusinessSyncOut)
+def sync_instagram_business(
+    payload: InstagramBusinessSyncIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramBusinessSyncOut:
+    return _run_instagram_business_sync(
+        db=db,
+        current_user=current_user,
+        integration_id=payload.integration_id,
+        instagram_account_id=payload.instagram_account_id,
+        workspace_id=payload.workspace_id,
+        timeframe=payload.timeframe,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+    )
+
+
+@app.post("/integrations/meta/sync-pages", response_model=MetaPagesSyncOut)
+def meta_sync_pages(
+    request: Request,
+    integration_id: int | None = None,
+    timeframe: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    payload: dict | None = Body(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaPagesSyncOut:
+    raw_body = payload if isinstance(payload, dict) else {}
+    raw_query_params = dict(request.query_params)
+    body_timeframe_selection = raw_body.get("timeframe_selection")
+    if not isinstance(body_timeframe_selection, dict):
+        body_timeframe_selection = raw_body.get("timeframeSelection")
+    if not isinstance(body_timeframe_selection, dict):
+        body_timeframe_selection = {}
+
+    def _body_timeframe_key(value: object) -> object:
+        if isinstance(value, dict):
+            return (
+                value.get("key")
+                or value.get("timeframe")
+                or value.get("value")
+                or value.get("preset")
+            )
+        return value
+
+    body_integration_id = raw_body.get("integration_id") or raw_body.get("integrationId")
+    body_page_id = raw_body.get("page_id") or raw_body.get("pageId")
+    body_timeframe = (
+        _body_timeframe_key(raw_body.get("timeframe"))
+        or _body_timeframe_key(body_timeframe_selection)
+    )
+    body_start_date = (
+        raw_body.get("start_date")
+        or raw_body.get("startDate")
+        or body_timeframe_selection.get("start_date")
+        or body_timeframe_selection.get("startDate")
+    )
+    body_end_date = (
+        raw_body.get("end_date")
+        or raw_body.get("endDate")
+        or body_timeframe_selection.get("end_date")
+        or body_timeframe_selection.get("endDate")
+    )
+    final_integration_id = body_integration_id if body_integration_id is not None else integration_id
+    if final_integration_id is None:
+        raise http_error(422, "missing_integration_id", "integration_id is required.")
+    try:
+        final_integration_id = int(final_integration_id)
+    except (TypeError, ValueError):
+        raise http_error(422, "invalid_integration_id", "integration_id must be an integer.")
+
+    final_timeframe = str(body_timeframe or timeframe or "last_28_days").strip()
+    if not final_timeframe:
+        final_timeframe = "last_28_days"
+    final_start_date = (
+        str(body_start_date)
+        if body_start_date is not None
+        else start_date
+    )
+    final_end_date = (
+        str(body_end_date)
+        if body_end_date is not None
+        else end_date
+    )
+    return _run_meta_pages_sync(
+        db=db,
+        current_user=current_user,
+        integration_id=final_integration_id,
+        page_id=str(body_page_id).strip() if body_page_id is not None else None,
+        timeframe=final_timeframe,
+        start_date=final_start_date,
+        end_date=final_end_date,
+        raw_query_params=raw_query_params,
+        raw_body=raw_body,
+    )
+
+
+@app.post("/integrations/meta/sync-all", response_model=MetaSyncAllOut)
+def meta_sync_all(
+    payload: MetaSyncAllIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaSyncAllOut:
+    facebook_page_id = str(payload.facebook_page_id or "").strip() or None
+    instagram_business_account_id = str(payload.instagram_business_account_id or "").strip() or None
+    if not facebook_page_id and not instagram_business_account_id:
+        raise http_error(
+            422,
+            "missing_data_sources",
+            "At least one data source must be selected for sync.",
+        )
+
+    integration = _resolve_meta_sync_all_integration(
+        db,
+        current_user=current_user,
+        integration_id=payload.integration_id,
+        workspace_id=payload.workspace_id,
+    )
+    timeframe_preset = str(payload.timeframe.preset or "last_28_days").strip() or "last_28_days"
+    timeframe_since = payload.timeframe.since
+    timeframe_until = payload.timeframe.until
+
+    results = MetaSyncAllResultsOut()
+    source_outcomes: list[bool] = []
+
+    if facebook_page_id:
+        def run_facebook_sync(source_db: Session) -> MetaSyncSourceResultOut:
+            sync_result = _run_meta_pages_sync(
+                db=source_db,
+                current_user=current_user,
+                integration_id=integration.id,
+                page_id=facebook_page_id,
+                timeframe=timeframe_preset,
+                start_date=timeframe_since,
+                end_date=timeframe_until,
+                raw_query_params={},
+                raw_body={
+                    "facebook_page_id": facebook_page_id,
+                    "timeframe": payload.timeframe.model_dump(),
+                },
+            )
+            return _meta_sync_all_success_result(
+                message="Facebook Pages synced successfully",
+                dataset_id=sync_result.dataset_id,
+                dataset_file_id=sync_result.dataset_file_id,
+                timeframe=sync_result.timeframe,
+            )
+
+        try:
+            page_result = _execute_meta_source_sync(
+                integration_id=integration.id,
+                current_user=current_user,
+                source_key="facebook_pages",
+                run_sync=run_facebook_sync,
+            )
+            results.facebook_pages = page_result
+            source_outcomes.append(True)
+        except HTTPException as exc:
+            results.facebook_pages = _meta_sync_all_error_result("Facebook Pages", exc)
+            source_outcomes.append(False)
+
+    if instagram_business_account_id:
+        def run_instagram_sync(source_db: Session) -> MetaSyncSourceResultOut:
+            sync_result = _run_instagram_business_sync(
+                db=source_db,
+                current_user=current_user,
+                integration_id=integration.id,
+                instagram_account_id=instagram_business_account_id,
+                workspace_id=integration.workspace_id,
+                timeframe=timeframe_preset,
+                start_date=timeframe_since,
+                end_date=timeframe_until,
+            )
+            return _meta_sync_all_success_result(
+                message="Instagram Business synced successfully",
+                dataset_id=sync_result.dataset_id,
+                dataset_file_id=sync_result.dataset_file_id,
+                timeframe=sync_result.timeframe,
+            )
+
+        try:
+            instagram_result = _execute_meta_source_sync(
+                integration_id=integration.id,
+                current_user=current_user,
+                source_key="instagram_business",
+                run_sync=run_instagram_sync,
+            )
+            results.instagram_business = instagram_result
+            source_outcomes.append(True)
+        except HTTPException as exc:
+            results.instagram_business = _meta_sync_all_error_result("Instagram Business", exc)
+            source_outcomes.append(False)
+
+    return MetaSyncAllOut(
+        success=any(source_outcomes),
+        results=results,
+    )
 
 
 @app.get("/debug/meta-raw")

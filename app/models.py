@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -54,6 +55,12 @@ class User(Base):
     )
     audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="user")
     email_verification_codes: Mapped[list[EmailVerificationCode]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    attribution: Mapped[Optional[UserAttribution]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+    referral_conversions: Mapped[list[ReferralConversion]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -339,6 +346,101 @@ class MetaPage(Base):
     )
 
     integration: Mapped[Integration] = relationship(back_populates="meta_pages")
+
+
+class ReferralPartner(Base):
+    __tablename__ = "referral_partners"
+    __table_args__ = (
+        Index("ix_referral_partners_code", "code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    code: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    type: Mapped[Optional[str]] = mapped_column(String(50))
+    commission_type: Mapped[Optional[str]] = mapped_column(String(50))
+    commission_value: Mapped[Optional[float]] = mapped_column(Numeric(12, 2))
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ReferralClick(Base):
+    __tablename__ = "referral_clicks"
+    __table_args__ = (
+        Index("ix_referral_clicks_referral_code", "referral_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    referral_code: Mapped[Optional[str]] = mapped_column(String(255))
+    utm_source: Mapped[Optional[str]] = mapped_column(String(255))
+    utm_medium: Mapped[Optional[str]] = mapped_column(String(255))
+    utm_campaign: Mapped[Optional[str]] = mapped_column(String(255))
+    utm_term: Mapped[Optional[str]] = mapped_column(String(255))
+    utm_content: Mapped[Optional[str]] = mapped_column(String(255))
+    landing_page: Mapped[Optional[str]] = mapped_column(String(2048))
+    ip_hash: Mapped[Optional[str]] = mapped_column(String(255))
+    user_agent: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class UserAttribution(Base):
+    __tablename__ = "user_attributions"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_user_attributions_user_id"),
+        Index("ix_user_attributions_first_referral_code", "first_referral_code"),
+        Index("ix_user_attributions_last_referral_code", "last_referral_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    first_referral_code: Mapped[Optional[str]] = mapped_column(String(255))
+    last_referral_code: Mapped[Optional[str]] = mapped_column(String(255))
+    utm_source: Mapped[Optional[str]] = mapped_column(String(255))
+    utm_medium: Mapped[Optional[str]] = mapped_column(String(255))
+    utm_campaign: Mapped[Optional[str]] = mapped_column(String(255))
+    utm_term: Mapped[Optional[str]] = mapped_column(String(255))
+    utm_content: Mapped[Optional[str]] = mapped_column(String(255))
+    first_touch_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    signup_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    user: Mapped[User] = relationship(back_populates="attribution")
+
+
+class ReferralConversion(Base):
+    __tablename__ = "referral_conversions"
+    __table_args__ = (
+        Index("ix_referral_conversions_referral_code", "referral_code"),
+        Index("ix_referral_conversions_user_id", "user_id"),
+        Index("ix_referral_conversions_conversion_type", "conversion_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    referral_code: Mapped[Optional[str]] = mapped_column(String(255))
+    conversion_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    plan: Mapped[Optional[str]] = mapped_column(String(100))
+    amount: Mapped[Optional[float]] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(10), nullable=False, default="USD")
+    commission_amount: Mapped[Optional[float]] = mapped_column(Numeric(12, 2))
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    user: Mapped[User] = relationship(back_populates="referral_conversions")
 
 
 class Conversation(Base):

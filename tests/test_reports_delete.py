@@ -22,7 +22,7 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 from app.deps import get_db
 from app.db import Base, SessionLocal, engine
 from app.main import app
-from app.models import Dataset, Export, Integration, Job, Report, ReportBlock, ReportSource, ReportVersion, Schedule, Subscription, User, Workspace, WorkspaceMember
+from app.models import Dataset, Export, Integration, Job, ReferralConversion, Report, ReportBlock, ReportSource, ReportVersion, Schedule, Subscription, User, UserAttribution, Workspace, WorkspaceMember
 from app.security import create_access_token, hash_password
 
 
@@ -38,6 +38,8 @@ REPORT_DELETE_TABLES = [
     Subscription.__table__,
     Dataset.__table__,
     Integration.__table__,
+    UserAttribution.__table__,
+    ReferralConversion.__table__,
     Report.__table__,
     ReportSource.__table__,
     ReportVersion.__table__,
