@@ -7,7 +7,7 @@ import secrets
 from decimal import Decimal, ROUND_HALF_UP
 from functools import lru_cache
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from typing import Any, Optional
 
 import boto3
@@ -145,6 +145,7 @@ PLAN_LIMITS = {
 }
 
 MEASURABLE_BRANDING_NAME = "Measurable"
+MEASURABLE_REPORT_BRANDING_NAME = "Measurableapp.com Report Generator"
 MEASURABLE_BRANDING_LOGO_URL: str = str(
     os.getenv("MEASURABLE_BRANDING_LOGO_URL") or "http://localhost:3000/brand/measurable-logo.svg"
 ).strip()
@@ -1323,6 +1324,11 @@ def measurable_branding() -> dict[str, Optional[str]]:
         "display_name": MEASURABLE_BRANDING_NAME,
         "brand_name": MEASURABLE_BRANDING_NAME,
         "logo_url": MEASURABLE_BRANDING_LOGO_URL,
+        "brand_logo_url": MEASURABLE_BRANDING_LOGO_URL,
+        "fallback_logo_url": MEASURABLE_BRANDING_LOGO_URL,
+        "resolved_logo_url": MEASURABLE_BRANDING_LOGO_URL,
+        "resolved_brand_name": MEASURABLE_BRANDING_NAME,
+        "has_custom_branding": False,
     }
 
 
@@ -1333,16 +1339,127 @@ def normalize_branding_payload(branding: Any) -> dict[str, Optional[str]]:
             "display_name": None,
             "brand_name": None,
             "logo_url": None,
+            "brand_logo_url": None,
+            "fallback_logo_url": None,
+            "resolved_logo_url": None,
+            "resolved_brand_name": None,
+            "has_custom_branding": False,
         }
     name = str(
-        branding.get("brand_name") or branding.get("display_name") or branding.get("name") or ""
+        branding.get("resolved_brand_name")
+        or branding.get("brand_name")
+        or branding.get("display_name")
+        or branding.get("name")
+        or ""
     ).strip() or None
-    logo_url = str(branding.get("logo_url") or "").strip() or None
+    logo_url = str(
+        branding.get("resolved_logo_url")
+        or branding.get("brand_logo_url")
+        or branding.get("logo_url")
+        or ""
+    ).strip() or None
+    fallback_logo_url = str(branding.get("fallback_logo_url") or "").strip() or None
     return {
         "name": name,
         "display_name": name,
         "brand_name": name,
         "logo_url": logo_url,
+        "brand_logo_url": logo_url,
+        "fallback_logo_url": fallback_logo_url,
+        "resolved_logo_url": logo_url,
+        "resolved_brand_name": name,
+        "has_custom_branding": bool(branding.get("has_custom_branding")),
+    }
+
+
+def _normalize_public_logo_url(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return raw
+
+
+def _normalize_workspace_branding_source(workspace: Workspace | dict[str, Any] | None) -> dict[str, Optional[str]]:
+    if workspace is None:
+        return normalize_branding_payload({})
+    if isinstance(workspace, dict):
+        brand_name = workspace.get("brand_name") or workspace.get("name")
+        logo_url = workspace.get("brand_logo_url") or workspace.get("logo_url")
+    else:
+        brand_name = workspace.name
+        logo_url = workspace.logo_url
+    return normalize_branding_payload(
+        {
+            "brand_name": str(brand_name).strip() if brand_name else None,
+            "logo_url": _normalize_public_logo_url(logo_url),
+        }
+    )
+
+
+def _normalize_user_branding_source(user: User | dict[str, Any] | None) -> dict[str, Optional[str]]:
+    if user is None:
+        return normalize_branding_payload({})
+    if isinstance(user, dict):
+        brand_name = user.get("brand_name") or user.get("full_name") or user.get("name")
+        logo_url = user.get("brand_logo_url") or user.get("logo_url")
+    else:
+        brand_name = user.full_name
+        logo_url = user.logo_url
+    return normalize_branding_payload(
+        {
+            "brand_name": str(brand_name).strip() if brand_name else None,
+            "logo_url": _normalize_public_logo_url(logo_url),
+        }
+    )
+
+
+def resolve_report_branding(
+    user: User | dict[str, Any] | None,
+    workspace: Workspace | dict[str, Any] | None,
+    plan: str | None,
+    preferred_branding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    fallback_logo_url = MEASURABLE_BRANDING_LOGO_URL
+    fallback_brand_name = MEASURABLE_REPORT_BRANDING_NAME
+    custom_branding_allowed = bool(get_plan_capabilities(plan).get("allow_custom_branding"))
+
+    preferred = normalize_branding_payload(preferred_branding)
+    workspace_branding = _normalize_workspace_branding_source(workspace)
+    user_branding = _normalize_user_branding_source(user)
+
+    raw_brand_name = (
+        preferred.get("brand_name")
+        or workspace_branding.get("brand_name")
+        or user_branding.get("brand_name")
+    )
+    raw_logo_url = (
+        _normalize_public_logo_url(preferred.get("logo_url"))
+        or _normalize_public_logo_url(workspace_branding.get("logo_url"))
+        or _normalize_public_logo_url(user_branding.get("logo_url"))
+    )
+
+    if custom_branding_allowed:
+        resolved_brand_name = raw_brand_name or fallback_brand_name
+        resolved_logo_url = raw_logo_url or fallback_logo_url
+        has_custom_branding = bool(raw_brand_name or raw_logo_url)
+    else:
+        resolved_brand_name = fallback_brand_name
+        resolved_logo_url = fallback_logo_url
+        has_custom_branding = False
+
+    return {
+        "name": resolved_brand_name,
+        "display_name": resolved_brand_name,
+        "brand_name": resolved_brand_name,
+        "logo_url": resolved_logo_url,
+        "brand_logo_url": resolved_logo_url,
+        "fallback_logo_url": fallback_logo_url,
+        "resolved_logo_url": resolved_logo_url,
+        "resolved_brand_name": resolved_brand_name,
+        "has_custom_branding": has_custom_branding,
     }
 
 
@@ -1381,14 +1498,16 @@ def resolve_report_branding_for_workspace(
     db: Session,
     workspace_id: int,
     preferred_branding: dict[str, Any] | None = None,
+    user: User | dict[str, Any] | None = None,
 ) -> dict[str, Optional[str]]:
-    if not workspace_allows_custom_branding(db, workspace_id):
-        return measurable_branding()
-
-    normalized_preferred = normalize_branding_payload(preferred_branding)
-    if any(normalized_preferred.get(key) for key in ("logo_url", "brand_name", "display_name", "name")):
-        return normalized_preferred
-    return resolve_workspace_branding(workspace_id)
+    workspace = db.get(Workspace, workspace_id) if workspace_id else None
+    plan = get_workspace_plan(db, workspace_id) if workspace_id else DEFAULT_WORKSPACE_PLAN
+    return resolve_report_branding(
+        user,
+        workspace,
+        plan,
+        preferred_branding=preferred_branding,
+    )
 
 
 def _load_json(raw: str | None, default: Any) -> Any:
@@ -1926,6 +2045,9 @@ def build_meta_pages_summary(report_inputs: dict[str, Any], locale: str = "en") 
     )
 
 
+# LEGACY / candidate for removal after frontend/backend contract is stable.
+# Recommended source of truth for 5-slide daily series is extractDailyMetricSeries()
+# in app/main.py, with this helper retained for compatibility with existing report flows.
 def build_meta_pages_reach_chart_data(report_inputs: dict[str, Any]) -> dict[str, Any]:
     points = normalize_meta_timeseries(report_inputs.get("reach_daily"))
     has_points = any(point.get("value") is not None for point in points)
@@ -2209,6 +2331,25 @@ def build_export_payload(
         if isinstance(report_metadata, dict) and isinstance(report_metadata.get("timeframe"), dict)
         else None
     )
+    logger.info(
+        "[ReportBranding][resolved]",
+        extra={
+            "workspace_id": report.workspace_id,
+            "report_id": report.id,
+            "plan": get_workspace_plan(db, report.workspace_id),
+            "brand_name_original": metadata_branding.get("brand_name")
+            if isinstance(metadata_branding, dict)
+            else None,
+            "brand_logo_url_original": (
+                metadata_branding.get("brand_logo_url") or metadata_branding.get("logo_url")
+            )
+            if isinstance(metadata_branding, dict)
+            else None,
+            "resolved_brand_name": branding.get("resolved_brand_name"),
+            "resolved_logo_url": branding.get("resolved_logo_url"),
+            "has_custom_branding": branding.get("has_custom_branding"),
+        },
+    )
     return {
         "export_id": export.id,
         "format": "pptx",
@@ -2245,7 +2386,23 @@ def build_export_payload(
                 "id": block.id,
                 "type": block.type,
                 "order": block.order,
-                "data": _load_json(block.data_json, {}),
+                "data": (
+                    {
+                        **_load_json(block.data_json, {}),
+                        "semantic_name": "cover",
+                        "branding": branding,
+                        "brand_name": branding.get("resolved_brand_name"),
+                        "brand_logo_url": branding.get("resolved_logo_url"),
+                        "resolved_brand_name": branding.get("resolved_brand_name"),
+                        "resolved_logo_url": branding.get("resolved_logo_url"),
+                    }
+                    if block.type == "title"
+                    and (
+                        not str(_load_json(block.data_json, {}).get("semantic_name") or "").strip()
+                        or str(_load_json(block.data_json, {}).get("semantic_name") or "").strip() == "cover"
+                    )
+                    else _load_json(block.data_json, {})
+                ),
                 "editable_fields": _load_json(block.editable_fields_json, []),
             }
             for block in blocks

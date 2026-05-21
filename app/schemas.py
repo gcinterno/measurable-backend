@@ -453,7 +453,13 @@ class AdminInsightsOut(BaseModel):
 
 
 class BrandingOut(BaseModel):
+    brand_name: Optional[str] = None
     logo_url: Optional[str] = None
+    brand_logo_url: Optional[str] = None
+    fallback_logo_url: Optional[str] = None
+    resolved_logo_url: Optional[str] = None
+    resolved_brand_name: Optional[str] = None
+    has_custom_branding: bool = False
 
 
 class MeOut(BaseSchema):

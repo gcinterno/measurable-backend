@@ -21,10 +21,14 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 
 from app.db import Base, SessionLocal, engine
 from app.deps import get_db
-from app.main import app
+from app.main import app, build_5_blocks
 from app.models import Dataset, DatasetFile, Export, Job, ReferralConversion, Report, ReportBlock, ReportSource, ReportVersion, Subscription, User, UserAttribution, Workspace, WorkspaceMember
 from app.security import create_access_token, hash_password
-from app.services import MEASURABLE_BRANDING_LOGO_URL, build_export_payload
+from app.services import (
+    MEASURABLE_BRANDING_LOGO_URL,
+    MEASURABLE_REPORT_BRANDING_NAME,
+    build_export_payload,
+)
 
 
 @compiles(JSONB, "sqlite")
@@ -147,7 +151,7 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
         report = db.get(Report, payload["id"])
         assert report is not None
         metadata = json.loads(report.description or "{}")
-        assert metadata["branding"]["brand_name"] == "Measurable"
+        assert metadata["branding"]["brand_name"] == MEASURABLE_REPORT_BRANDING_NAME
         assert metadata["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
 
         metadata["branding"] = {
@@ -177,7 +181,9 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
 
         export_payload = build_export_payload(db, export, report, report_version, [])
         assert export_payload["report"]["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
-        assert export_payload["report"]["branding"]["brand_name"] == "Measurable"
+        assert export_payload["report"]["branding"]["brand_name"] == MEASURABLE_REPORT_BRANDING_NAME
+        assert export_payload["report"]["branding"]["resolved_brand_name"] == MEASURABLE_REPORT_BRANDING_NAME
+        assert export_payload["report"]["branding"]["resolved_logo_url"] == MEASURABLE_BRANDING_LOGO_URL
     finally:
         db.close()
 
@@ -243,7 +249,9 @@ def test_paid_workspace_reports_keep_custom_branding(client):
 
         export_payload = build_export_payload(db, export, report, report_version, [])
         assert export_payload["report"]["branding"]["logo_url"] == "https://custom.example/user-logo.png"
-        assert export_payload["report"]["branding"]["brand_name"] is None
+        assert export_payload["report"]["branding"]["brand_name"] == "Acme Workspace"
+        assert export_payload["report"]["branding"]["resolved_brand_name"] == "Acme Workspace"
+        assert export_payload["report"]["branding"]["resolved_logo_url"] == "https://custom.example/user-logo.png"
     finally:
         db.close()
 
@@ -253,3 +261,112 @@ def test_paid_workspace_reports_keep_custom_branding(client):
     )
     assert get_response.status_code == 200
     assert get_response.json()["branding"]["logo_url"] == "https://custom.example/user-logo.png"
+    assert get_response.json()["branding"]["brand_name"] == "Acme Workspace"
+
+
+def test_paid_workspace_reports_fallback_to_measurable_logo_and_default_brand_name(client):
+    refs = _seed_branding_fixture(plan="core")
+
+    db = SessionLocal()
+    try:
+        user = db.get(User, refs["user_id"])
+        workspace = db.get(Workspace, refs["workspace_id"])
+        assert user is not None
+        assert workspace is not None
+        user.logo_url = None
+        user.full_name = None
+        workspace.logo_url = None
+        workspace.name = ""
+        db.add_all([user, workspace])
+        db.commit()
+    finally:
+        db.close()
+
+    create_response = client.post(
+        "/reports",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "dataset_id": refs["dataset_id"],
+            "title": "Fallback report",
+            "requested_slides": 2,
+            "locale": "en",
+        },
+    )
+    assert create_response.status_code == 200
+    payload = create_response.json()
+    assert payload["branding"]["resolved_logo_url"] == MEASURABLE_BRANDING_LOGO_URL
+    assert payload["branding"]["resolved_brand_name"] == MEASURABLE_REPORT_BRANDING_NAME
+
+
+def test_build_5_blocks_cover_includes_branding_for_meta_pages():
+    branding = {
+        "brand_name": "Atria Marketing",
+        "brand_logo_url": "https://custom.example/logo.png",
+        "logo_url": "https://custom.example/logo.png",
+        "resolved_brand_name": "Atria Marketing",
+        "resolved_logo_url": "https://custom.example/logo.png",
+    }
+    blocks = build_5_blocks(
+        {
+            "title": "Facebook Page Overview",
+            "plan": "core",
+            "report_timeframe": {"label": "Last 28 days", "since": "2026-04-01", "until": "2026-04-28"},
+            "page_name": "Acme Page",
+            "followers": 1000,
+            "reach": 5000,
+            "engagement": 200,
+            "impressions": 9000,
+            "summary": "Summary",
+            "reach_chart_data": {"metric": "reach", "points": [], "timeframe": {"label": "Last 28 days"}},
+            "reach_insight": "Reach insight",
+            "recent_posts_summary": "Posts summary",
+            "ai_summary": "AI summary",
+            "general_insights_slide_payload": {},
+            "impressions_slide_payload": {"impressions_daily": []},
+            "report_inputs": {"integration_type": "meta_pages"},
+            "branding": branding,
+            "requested_slides": 5,
+        }
+    )
+    cover = json.loads(blocks[0]["data_json"])
+    assert cover["semantic_name"] == "cover"
+    assert cover["branding"]["resolved_logo_url"] == "https://custom.example/logo.png"
+    assert cover["branding"]["resolved_brand_name"] == "Atria Marketing"
+    assert cover["resolved_logo_url"] == "https://custom.example/logo.png"
+    assert cover["resolved_brand_name"] == "Atria Marketing"
+
+
+def test_build_5_blocks_cover_includes_branding_for_instagram_business():
+    branding = {
+        "brand_name": MEASURABLE_REPORT_BRANDING_NAME,
+        "brand_logo_url": MEASURABLE_BRANDING_LOGO_URL,
+        "logo_url": MEASURABLE_BRANDING_LOGO_URL,
+        "resolved_brand_name": MEASURABLE_REPORT_BRANDING_NAME,
+        "resolved_logo_url": MEASURABLE_BRANDING_LOGO_URL,
+    }
+    blocks = build_5_blocks(
+        {
+            "title": "Instagram Overview",
+            "plan": "free",
+            "report_timeframe": {"label": "Last 28 days", "since": "2026-04-01", "until": "2026-04-28"},
+            "page_name": "Acme IG",
+            "followers": 2500,
+            "reach": None,
+            "engagement": None,
+            "impressions": 8000,
+            "summary": "Summary",
+            "reach_chart_data": {"metric": "reach", "points": [], "timeframe": {"label": "Last 28 days"}},
+            "reach_insight": "Reach insight",
+            "recent_posts_summary": "Posts summary",
+            "ai_summary": "AI summary",
+            "general_insights_slide_payload": {},
+            "impressions_slide_payload": {"impressions_daily": []},
+            "report_inputs": {"integration_type": "instagram_business", "unavailable_metrics": {}},
+            "branding": branding,
+            "requested_slides": 5,
+        }
+    )
+    cover = json.loads(blocks[0]["data_json"])
+    assert cover["semantic_name"] == "cover"
+    assert cover["branding"]["resolved_logo_url"] == MEASURABLE_BRANDING_LOGO_URL
+    assert cover["branding"]["resolved_brand_name"] == MEASURABLE_REPORT_BRANDING_NAME

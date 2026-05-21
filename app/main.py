@@ -229,6 +229,7 @@ from .services import (
     normalize_report_locale,
     normalize_meta_recent_posts,
     build_report_pdf_export_url,
+    resolve_report_branding,
     resolve_workspace_branding,
     store_report_thumbnail,
     trigger_export_service,
@@ -935,6 +936,9 @@ def _report_locale(report: Report) -> str:
     return normalize_report_locale(_report_metadata(report).get("locale"))
 
 
+# LEGACY / candidate for removal after frontend/backend contract is stable.
+# Recommended source of truth for report branding is resolve_report_branding()
+# via resolve_report_branding_for_workspace() in app/services.py.
 def _report_branding(db: Session, report: Report) -> dict[str, object]:
     metadata = _report_metadata(report)
     branding = metadata.get("branding") if isinstance(metadata.get("branding"), dict) else None
@@ -945,10 +949,67 @@ def _report_branding(db: Session, report: Report) -> dict[str, object]:
     )
 
 
+# LEGACY / candidate for removal after frontend/backend contract is stable.
+# Recommended source of truth for report branding is resolve_report_branding() in app/services.py.
 def _user_branding(user: User | None) -> dict[str, object]:
     if not user or not user_logo_column_available():
         return {"logo_url": None}
     return {"logo_url": str(user.logo_url) if user.logo_url else None}
+
+
+# LEGACY / candidate for removal after frontend/backend contract is stable.
+# Recommended source of truth for cover branding is build_5_blocks() cover payload
+# backed by resolve_report_branding().
+def _inject_cover_branding_payload(
+    *,
+    block_type: str,
+    order: int,
+    data: dict[str, Any],
+    branding: dict[str, Any],
+) -> dict[str, Any]:
+    if block_type != "title":
+        return data
+    semantic_name = str(data.get("semantic_name") or "").strip()
+    if semantic_name and semantic_name != "cover":
+        return data
+    updated = dict(data)
+    updated["semantic_name"] = "cover"
+    updated["branding"] = branding
+    updated["brand_name"] = branding.get("resolved_brand_name")
+    updated["brand_logo_url"] = branding.get("resolved_logo_url")
+    updated["resolved_brand_name"] = branding.get("resolved_brand_name")
+    updated["resolved_logo_url"] = branding.get("resolved_logo_url")
+    if order == 1 and not updated.get("cover_branding"):
+        updated["cover_branding"] = {
+            "resolved_brand_name": branding.get("resolved_brand_name"),
+            "resolved_logo_url": branding.get("resolved_logo_url"),
+        }
+    return updated
+
+
+def _report_block_out(block: ReportBlock, branding: dict[str, Any]) -> ReportBlockOut:
+    try:
+        data = json.loads(block.data_json or "{}")
+    except json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data = _inject_cover_branding_payload(
+        block_type=str(block.type),
+        order=int(block.order),
+        data=data,
+        branding=branding,
+    )
+    return ReportBlockOut(
+        id=block.id,
+        report_version_id=block.report_version_id,
+        type=block.type,
+        order=block.order,
+        data_json=json.dumps(data),
+        editable_fields_json=block.editable_fields_json,
+        created_at=block.created_at,
+        updated_at=block.updated_at,
+    )
 
 
 def _report_thumbnail_url(report: Report) -> str | None:
@@ -1027,6 +1088,7 @@ def _report_version_out(
         .order_by(ReportBlock.order.asc())
         .all()
     )
+    report_branding = _report_branding(db, report)
     metadata = _report_metadata(report)
     logger.info(
         "[MetaTimeframeBackend][render.full]",
@@ -1045,11 +1107,11 @@ def _report_version_out(
         description=metadata,
         timeframe=_report_timeframe(report),
         locale=_report_locale(report),
-        branding=_report_branding(db, report),
+        branding=report_branding,
         thumbnail_url=_report_thumbnail_url(report),
         created_at=report_version.created_at,
         updated_at=report_version.updated_at,
-        blocks=blocks,
+        blocks=[_report_block_out(block, report_branding) for block in blocks],
     )
 
 
@@ -4613,6 +4675,9 @@ def _expand_meta_daily_series(
     since: str,
     until: str,
 ) -> list[dict[str, int | str | None]]:
+    # LEGACY / candidate for removal after frontend/backend contract is stable.
+    # Recommended source of truth for 5-slide daily series is extractDailyMetricSeries()
+    # backed by _extract_daily_metric_series_details().
     start_date = date.fromisoformat(since)
     end_date = date.fromisoformat(until)
     if end_date < start_date:
@@ -6474,6 +6539,74 @@ def _meta_point_label(value) -> str | None:
             return raw[:10]
 
 
+METRIC_ALIASES: dict[str, list[str]] = {
+    "reach": [
+        "reach",
+        "page_impressions_unique",
+        "impressions_unique",
+        "unique_reach",
+        "account_reach",
+        "profile_reach",
+    ],
+    "impressions": [
+        "impressions",
+        "page_impressions",
+        "profile_impressions",
+        "account_impressions",
+        "views",
+        "content_views",
+        "profile_views",
+    ],
+    "engagement": [
+        "engagement",
+        "engagements",
+        "interactions",
+        "total_interactions",
+        "post_engagements",
+        "content_interactions",
+        "likes",
+        "comments",
+        "shares",
+        "saves",
+        "reactions",
+        "link_clicks",
+        "profile_activity",
+    ],
+}
+
+METRIC_LABELS: dict[str, str] = {
+    "reach": "Reach",
+    "impressions": "Impressions",
+    "engagement": "Engagement",
+}
+
+METRIC_LABELS_ES: dict[str, str] = {
+    "reach": "Alcance",
+    "impressions": "Impresiones",
+    "engagement": "Engagement",
+}
+
+
+def normalizeMetricValue(value) -> float | int | None:
+    numeric = _meta_number(value)
+    if numeric is None:
+        return None
+    if float(numeric).is_integer():
+        return int(numeric)
+    return float(numeric)
+
+
+def _meta_full_date_label(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = date.fromisoformat(raw[:10])
+        return parsed.strftime("%A, %B %d, %Y").replace(" 0", " ")
+    except Exception:
+        return raw[:10]
+
+
 def _meta_series_points(points) -> list[dict]:
     if not isinstance(points, list):
         return []
@@ -6743,6 +6876,8 @@ def _multi_source_block_text_lines(items: list[str]) -> str:
 
 
 def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any]]:
+    # LEGACY / candidate for removal after frontend/backend contract is stable.
+    # Recommended source of truth for social 5-slide reports is build_5_blocks().
     sources = list(context.get("sources") or [])
     report_timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
     combined = context.get("combined") if isinstance(context.get("combined"), dict) else {}
@@ -7080,6 +7215,160 @@ def _meta_first_series(*values) -> list[dict]:
     return []
 
 
+def _metric_aliases(metric_key: str) -> list[str]:
+    aliases = METRIC_ALIASES.get(metric_key, [metric_key])
+    return list(dict.fromkeys([metric_key, *aliases]))
+
+
+def _extract_series_candidate(candidate: Any) -> list[dict]:
+    points = _meta_series_points(candidate)
+    if points:
+        return points
+    if isinstance(candidate, dict):
+        for key in (
+            "points",
+            "daily_series",
+            "daily",
+            "daily_metrics",
+            "time_series",
+            "metric_values",
+            "values",
+            "data",
+            "breakdowns",
+            "series",
+        ):
+            nested = candidate.get(key)
+            nested_points = _extract_series_candidate(nested)
+            if nested_points:
+                return nested_points
+    return []
+
+
+def _normalize_daily_series_result(points: list[dict]) -> list[dict]:
+    collapsed: dict[str, dict[str, Any]] = {}
+    for point in _meta_series_points(points):
+        point_date = str(point.get("date") or "").strip()
+        if not point_date:
+            continue
+        normalized_value = normalizeMetricValue(point.get("value"))
+        if normalized_value is None:
+            continue
+        existing = collapsed.get(point_date)
+        if existing is None:
+            collapsed[point_date] = {
+                "date": point_date,
+                "label": point.get("label") or _meta_point_label(point_date),
+                "value": normalized_value,
+            }
+        else:
+            existing["value"] = normalizeMetricValue(
+                (normalizeMetricValue(existing.get("value")) or 0) + normalized_value
+            )
+    return [collapsed[key] for key in sorted(collapsed.keys())]
+
+
+# Source of truth for 5-slide daily series resolution.
+# Use this through extractDailyMetricSeries()/extractDailyMetricsSeries() instead
+# of adding new per-platform readers.
+def _extract_daily_metric_series_details(dataset: dict, metric_key: str) -> tuple[list[dict], str | None, str | None]:
+    report_inputs = _meta_report_inputs(dataset)
+    reach_chart = dataset.get("reach_chart_data") if isinstance(dataset.get("reach_chart_data"), dict) else {}
+    impressions_payload = (
+        dataset.get("impressions_slide_payload")
+        if isinstance(dataset.get("impressions_slide_payload"), dict)
+        else {}
+    )
+    aliases = _metric_aliases(metric_key)
+    candidate_pairs: list[tuple[Any, str | None, str | None]] = []
+    if metric_key == "reach":
+        candidate_pairs.append((reach_chart.get("points"), "context.reach_chart_data.points", "reach"))
+    if metric_key == "impressions":
+        candidate_pairs.extend(
+            [
+                (impressions_payload.get("daily_series"), "context.impressions_slide_payload.daily_series", "impressions"),
+                (impressions_payload.get("impressions_daily"), "context.impressions_slide_payload.impressions_daily", "impressions"),
+                (
+                    impressions_payload.get("chart", {}).get("points")
+                    if isinstance(impressions_payload.get("chart"), dict)
+                    else None,
+                    "context.impressions_slide_payload.chart.points",
+                    "impressions",
+                ),
+            ]
+        )
+    if metric_key == "engagement":
+        candidate_pairs.extend(
+            [
+                (report_inputs.get("daily_engagement"), "report_inputs.daily_engagement", "daily_engagement"),
+                (report_inputs.get("engagement_daily"), "report_inputs.engagement_daily", "engagement"),
+                (report_inputs.get("content_interactions_daily"), "report_inputs.content_interactions_daily", "content_interactions"),
+                (report_inputs.get("interactions_daily"), "report_inputs.interactions_daily", "interactions"),
+            ]
+        )
+    for source in (dataset, report_inputs):
+        if not isinstance(source, dict):
+            continue
+        for alias in aliases:
+            source_prefix = "context" if source is dataset else "report_inputs"
+            candidate_pairs.extend(
+                [
+                    (source.get(f"{alias}_daily"), f"{source_prefix}.{alias}_daily", alias),
+                    (source.get(f"daily_{alias}"), f"{source_prefix}.daily_{alias}", alias),
+                    (source.get(f"{alias}_daily_series"), f"{source_prefix}.{alias}_daily_series", alias),
+                    (source.get(f"daily_series_{alias}"), f"{source_prefix}.daily_series_{alias}", alias),
+                    (source.get(f"{alias}_series"), f"{source_prefix}.{alias}_series", alias),
+                    (source.get(alias), f"{source_prefix}.{alias}", alias),
+                ]
+            )
+            for container_key in (
+                "daily",
+                "daily_metrics",
+                "daily_series",
+                "time_series",
+                "insights",
+                "metric_values",
+                "values",
+                "data",
+                "breakdowns",
+                "metrics",
+            ):
+                container = source.get(container_key)
+                if isinstance(container, dict):
+                    candidate_pairs.append(
+                        (
+                            container.get(alias),
+                            f"{source_prefix}.{container_key}.{alias}",
+                            alias,
+                        )
+                    )
+    blocks = dataset.get("blocks") if isinstance(dataset.get("blocks"), list) else []
+    for index, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            continue
+        candidate_pairs.extend(
+            [
+                (block.get("daily_series"), f"context.blocks[{index}].daily_series", metric_key),
+                (block.get("chart_data"), f"context.blocks[{index}].chart_data", metric_key),
+            ]
+        )
+    if metric_key == "engagement":
+        candidate_pairs.append((_meta_posts_daily_series(dataset, metric="engagement"), "context.posts_daily_series.engagement", "engagement"))
+    for candidate, source_path, matched_key in candidate_pairs:
+        points = _extract_series_candidate(candidate)
+        if points:
+            return _normalize_daily_series_result(points), source_path, matched_key
+    return [], None, None
+
+
+def extractDailyMetricSeries(dataset: dict, metric_key: str) -> list[dict]:
+    points, _source_path, _matched_key = _extract_daily_metric_series_details(dataset, metric_key)
+    return points
+
+
+def extractDailyMetricsSeries(dataset: dict, metric_key: str) -> list[dict]:
+    return extractDailyMetricSeries(dataset, metric_key)
+
+
 def _meta_post_date(post: dict) -> str | None:
     raw = post.get("date") or post.get("created_time") or post.get("published_at") or post.get("timestamp")
     if not raw:
@@ -7128,38 +7417,228 @@ def _meta_posts_daily_series(context: dict, *, metric: str) -> list[dict]:
     ]
 
 
-def _meta_metric_series(context: dict, metric: str) -> list[dict]:
+def _resolve_metric_total(context: dict, metric_key: str, points: list[dict]) -> float | int | None:
     report_inputs = _meta_report_inputs(context)
-    reach_chart = context.get("reach_chart_data") if isinstance(context.get("reach_chart_data"), dict) else {}
-    impressions_payload = (
-        context.get("impressions_slide_payload")
-        if isinstance(context.get("impressions_slide_payload"), dict)
-        else {}
-    )
-    if metric == "reach":
-        return _meta_first_series(reach_chart.get("points"), report_inputs.get("reach_daily"))
-    if metric == "impressions":
-        return _meta_first_series(
-            impressions_payload.get("impressions_daily"),
-            report_inputs.get("impressions_daily"),
-            _meta_posts_daily_series(context, metric="impressions"),
+    aliases = _metric_aliases(metric_key)
+    direct_values: list[Any] = []
+    if metric_key == "impressions":
+        impressions_payload = (
+            context.get("impressions_slide_payload")
+            if isinstance(context.get("impressions_slide_payload"), dict)
+            else {}
         )
-    if metric == "engagement":
-        if _meta_integration_type(context) == "instagram_business":
-            return _meta_first_series(
-                report_inputs.get("daily_engagement"),
-                report_inputs.get("engagement_daily"),
-                report_inputs.get("content_interactions_daily"),
-                report_inputs.get("interactions_daily"),
+        direct_values.extend(
+            [
+                impressions_payload.get("impressions_total"),
+                impressions_payload.get("total"),
+                impressions_payload.get("value"),
+            ]
+        )
+    for source in (context, report_inputs):
+        if not isinstance(source, dict):
+            continue
+        for alias in aliases:
+            direct_values.extend(
+                [
+                    source.get(alias),
+                    source.get(f"{alias}_total"),
+                    source.get(f"total_{alias}"),
+                ]
             )
-        return _meta_first_series(
-            report_inputs.get("daily_engagement"),
-            report_inputs.get("engagement_daily"),
-            report_inputs.get("content_interactions_daily"),
-            report_inputs.get("interactions_daily"),
-            _meta_posts_daily_series(context, metric="engagement"),
+            metrics = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
+            normalized = (
+                source.get("normalized_report_metrics")
+                if isinstance(source.get("normalized_report_metrics"), dict)
+                else {}
+            )
+            direct_values.extend([metrics.get(alias), normalized.get(alias), normalized.get(f"{alias}_total")])
+    if metric_key == "engagement":
+        report_inputs = _meta_report_inputs(context)
+        direct_values.extend(
+            [
+                report_inputs.get("likes"),
+                report_inputs.get("comments"),
+                report_inputs.get("shares"),
+                report_inputs.get("saves"),
+                report_inputs.get("reactions"),
+                report_inputs.get("link_clicks"),
+                report_inputs.get("profile_activity"),
+            ]
         )
+        component_values = [normalizeMetricValue(value) for value in direct_values[-7:]]
+        if any(value is not None for value in component_values):
+            return sum(value or 0 for value in component_values)
+    for value in direct_values:
+        normalized = normalizeMetricValue(value)
+        if normalized is not None:
+            return normalized
+    return _meta_metric_total_for_series(metric_key, points)
+
+
+def getHighestDay(points: list[dict]) -> dict[str, Any]:
+    normalized = _meta_series_points(points)
+    if not normalized:
+        return {}
+    highest = max(normalized, key=lambda point: float(point["value"]))
+    return {
+        "date": highest.get("date"),
+        "label": _meta_full_date_label(highest.get("date")) or highest.get("label"),
+        "value": normalizeMetricValue(highest.get("value")),
+    }
+
+
+def getLowestDay(points: list[dict]) -> dict[str, Any]:
+    normalized = _meta_series_points(points)
+    if not normalized:
+        return {}
+    lowest = min(normalized, key=lambda point: float(point["value"]))
+    return {
+        "date": lowest.get("date"),
+        "label": _meta_full_date_label(lowest.get("date")) or lowest.get("label"),
+        "value": normalizeMetricValue(lowest.get("value")),
+    }
+
+
+def truncateInsightForSlide(text: Any, *, limit: int = 280) -> tuple[str, str]:
+    full_text = " ".join(str(text or "").split())
+    if not full_text:
+        return "", ""
+    if len(full_text) <= limit:
+        return full_text, full_text
+    clipped = full_text[:limit].rstrip()
+    sentence_break = max(clipped.rfind(". "), clipped.rfind("! "), clipped.rfind("? "))
+    if sentence_break >= 120:
+        short_text = clipped[: sentence_break + 1].rstrip()
+    else:
+        word_break = clipped.rfind(" ")
+        short_text = (clipped[:word_break] if word_break > 0 else clipped).rstrip(" ,;:-") + "..."
+    return short_text, full_text
+
+
+def buildMetricSlidePayload(
+    context: dict,
+    *,
+    metric_key: str,
+    metric_label: str | None = None,
+    insight: str | None = None,
+) -> dict[str, Any]:
+    normalized_metric_key = str(metric_key or "").strip().lower()
+    label_en = metric_label or METRIC_LABELS.get(normalized_metric_key, normalized_metric_key.replace("_", " ").title())
+    label = METRIC_LABELS_ES.get(normalized_metric_key, label_en)
+    daily_series, source_path, matched_key = _extract_daily_metric_series_details(context, normalized_metric_key)
+    total = _resolve_metric_total(context, normalized_metric_key, daily_series)
+    insight_short, insight_full = truncateInsightForSlide(insight)
+    if normalized_metric_key == "engagement" and total is None:
+        total_value: Any = "N/A"
+        value = "N/A"
+    else:
+        total_value = total if total is not None else 0
+        value = total_value
+    frequency = None
+    if normalized_metric_key == "impressions":
+        viewers_total = (
+            normalizeMetricValue((context.get("impressions_slide_payload") or {}).get("viewers_total"))
+            if isinstance(context.get("impressions_slide_payload"), dict)
+            else None
+        )
+        if viewers_total in (None, 0):
+            viewers_total = normalizeMetricValue(context.get("profile_views") or context.get("views"))
+        numeric_total = normalizeMetricValue(total) if total is not None else None
+        if numeric_total is not None and viewers_total not in (None, 0):
+            frequency = round(float(numeric_total) / float(viewers_total), 2)
+    payload = {
+        "metric_key": normalized_metric_key,
+        "metric_label": label,
+        "metric_label_en": label_en,
+        "value": value,
+        "total": total_value,
+        "daily_series": daily_series,
+        "highest_day": getHighestDay(daily_series),
+        "lowest_day": getLowestDay(daily_series),
+        "insight": insight_short,
+        "insight_short": insight_short,
+        "insight_full": insight_full,
+        "frequency": frequency,
+        "daily_series_reason": "" if daily_series else "daily_series_unavailable_from_source",
+        "daily_series_source_path": source_path,
+        "daily_series_source_metric_key": matched_key,
+        "chart": {
+            "label": label_en,
+            "metric": normalized_metric_key,
+            "points": daily_series,
+            "data": daily_series,
+            "series": daily_series,
+            "is_available": bool(daily_series),
+            "timeframe": context.get("report_timeframe") or {},
+        },
+    }
+    return payload
+
+
+def _build_five_slide_summary_payload(
+    context: dict,
+    *,
+    period_label: str,
+    reach_payload: dict[str, Any],
+    impressions_payload: dict[str, Any],
+    engagement_payload: dict[str, Any],
+) -> dict[str, Any]:
+    ai_source = str(context.get("ai_summary") or _meta_overview_insight(context, _meta_overview_payload(context, period_label)["metrics"])).strip()
+    ai_summary_short, _ai_summary_full = truncateInsightForSlide(ai_source, limit=400)
+    strongest_reach_day = (reach_payload.get("highest_day") or {}).get("label") or "the strongest reach day"
+    recommendation = (
+        f"Repeat the content pattern from {strongest_reach_day} and use clearer calls to action to turn visibility into interaction."
+        if strongest_reach_day
+        else "Repeat the strongest content pattern and use clearer calls to action to turn visibility into interaction."
+    )
+    recommendation_short, _ = truncateInsightForSlide(recommendation, limit=180)
+    return {
+        "slide_number": 5,
+        "slide_type": "summary",
+        "title": "Resumen final",
+        "title_en": "Final Summary",
+        "metrics_summary": {
+            "reach": {
+                "metric_key": "reach",
+                "metric_label": reach_payload.get("metric_label"),
+                "metric_label_en": reach_payload.get("metric_label_en"),
+                "total": reach_payload.get("total"),
+                "highest_day": reach_payload.get("highest_day"),
+                "lowest_day": reach_payload.get("lowest_day"),
+            },
+            "impressions": {
+                "metric_key": "impressions",
+                "metric_label": impressions_payload.get("metric_label"),
+                "metric_label_en": impressions_payload.get("metric_label_en"),
+                "total": impressions_payload.get("total"),
+                "highest_day": impressions_payload.get("highest_day"),
+                "lowest_day": impressions_payload.get("lowest_day"),
+                "frequency": impressions_payload.get("frequency"),
+            },
+            "engagement": {
+                "metric_key": "engagement",
+                "metric_label": engagement_payload.get("metric_label"),
+                "metric_label_en": engagement_payload.get("metric_label_en"),
+                "total": engagement_payload.get("total"),
+                "highest_day": engagement_payload.get("highest_day"),
+                "lowest_day": engagement_payload.get("lowest_day"),
+            },
+        },
+        "ai_summary": ai_summary_short,
+        "recommendation": recommendation_short,
+        "semantic_name": "executive_summary",
+        "timeframe": context.get("report_timeframe") or {},
+    }
+
+
+def _meta_metric_series(context: dict, metric: str) -> list[dict]:
+    # LEGACY / candidate for removal after frontend/backend contract is stable.
+    # Recommended source of truth for 5-slide daily series is extractDailyMetricSeries()
+    # backed by _extract_daily_metric_series_details().
+    if metric in {"reach", "impressions", "engagement"}:
+        return extractDailyMetricSeries(context, metric)
     if metric == "followers":
+        report_inputs = _meta_report_inputs(context)
         return _meta_first_series(
             report_inputs.get("followers_daily"),
             report_inputs.get("fan_count_daily"),
@@ -7171,16 +7650,8 @@ def _meta_metric_series(context: dict, metric: str) -> list[dict]:
 
 
 def _meta_metric_total(context: dict, metric: str, points: list[dict]) -> float | int | None:
-    if metric == "reach":
-        return _meta_number(context.get("reach")) or (sum(point["value"] for point in points) if points else None)
-    if metric == "impressions":
-        return _meta_number(context.get("impressions")) or (sum(point["value"] for point in points) if points else None)
-    if metric == "engagement":
-        if _meta_integration_type(context) == "instagram_business":
-            return _meta_number(context.get("engagement")) or (
-                sum(point["value"] for point in points) if points else None
-            )
-        return _meta_number(context.get("engagement")) or (sum(point["value"] for point in points) if points else None)
+    if metric in {"reach", "impressions", "engagement"}:
+        return _resolve_metric_total(context, metric, points)
     if metric == "followers":
         return _meta_number(context.get("followers")) or (points[-1]["value"] if points else None)
     if metric == "posts":
@@ -7673,7 +8144,19 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
     if not isinstance(data, dict):
         data = {}
     if block.get("type") == "title":
-        return block
+        branding = data.get("branding") if isinstance(data.get("branding"), dict) else {}
+        if not branding:
+            branding = context.get("branding") if isinstance(context.get("branding"), dict) else {}
+        updated = dict(block)
+        updated["data_json"] = json.dumps(
+            _inject_cover_branding_payload(
+                block_type=str(block.get("type") or ""),
+                order=int(block.get("order") or 0),
+                data=data,
+                branding=branding,
+            )
+        )
+        return updated
     semantic_name = str(data.get("semantic_name") or "").strip()
     label = str(data.get("label") or data.get("title") or semantic_name or block.get("type") or "Metric")
     if not semantic_name:
@@ -7699,6 +8182,25 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
         metric = "followers"
     elif "post" in semantic_name or "content" in semantic_name:
         metric = "engagement"
+    if semantic_name in {"reach_overview", "impressions_trend", "engagement_overview"}:
+        report_timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
+        period_label = str(report_timeframe.get("label") or "Selected period")
+        reach_stats = _meta_series_stats(extractDailyMetricSeries(context, "reach"))
+        insight_source = (
+            _meta_reach_insight(context)
+            if semantic_name == "reach_overview"
+            else str((context.get("impressions_slide_payload") or {}).get("insight_text") or "").strip()
+            or _meta_trend_copy("Impressions", _meta_series_stats(extractDailyMetricSeries(context, "impressions")), period_label)
+            if semantic_name == "impressions_trend"
+            else _meta_engagement_text(context, period_label, reach_stats)
+        )
+        metric_payload = buildMetricSlidePayload(
+            context,
+            metric_key=metric,
+            metric_label=str(data.get("label") or label),
+            insight=insight_source,
+        )
+        data.update(metric_payload)
     chart = data.get("chart") if isinstance(data.get("chart"), dict) else _meta_chart_payload(context, metric, label)
     if not chart.get("points"):
         chart = _meta_chart_payload(context, metric, label)
@@ -7723,6 +8225,8 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             if not points
             else f"Daily {label.lower()} is available for this period."
         )
+    if semantic_name in {"reach_overview", "impressions_trend", "engagement_overview"}:
+        insight = str(data.get("insight_short") or data.get("insight") or insight)
     data.update(
         {
             "title": data.get("title") or label,
@@ -7736,6 +8240,8 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             "change_percentage": change_payload.get("change_percentage"),
             "trend": change_payload.get("trend"),
             "insight": insight,
+            "insight_short": str(data.get("insight_short") or insight),
+            "insight_full": str(data.get("insight_full") or data.get("insight") or insight),
             "summary": insight if semantic_name in {"overview", "reach_overview"} else data.get("summary"),
             "content": insight if semantic_name in {"overview", "reach_overview"} else data.get("content"),
             "text": insight,
@@ -7975,19 +8481,8 @@ def _meta_engagement_text(context: dict, period_label: str, reach_stats: dict) -
 
 def _meta_engagement_slide_payload(context: dict, period_label: str, reach_stats: dict) -> dict:
     report_inputs = _meta_report_inputs(context)
-    engagement_points = _meta_first_series(
-        report_inputs.get("daily_engagement"),
-        report_inputs.get("engagement_daily"),
-        report_inputs.get("content_interactions_daily"),
-        report_inputs.get("interactions_daily"),
-    )
-    engagement_total = (
-        _meta_number(report_inputs.get("engagement"))
-        or _meta_number(report_inputs.get("total_interactions"))
-        or _meta_number(report_inputs.get("accounts_engaged"))
-        or _meta_number(report_inputs.get("content_interactions"))
-        or _meta_metric_total(context, "engagement", engagement_points)
-    )
+    engagement_points = extractDailyMetricSeries(context, "engagement")
+    engagement_total = _resolve_metric_total(context, "engagement", engagement_points)
     engagement_source = (
         str(report_inputs.get("engagement_source_metric") or "").strip()
         or (
@@ -8013,7 +8508,9 @@ def _meta_engagement_slide_payload(context: dict, period_label: str, reach_stats
     chart["data"] = normalized_points
     chart["series"] = normalized_points
     engagement_unavailable_reason = _meta_metric_unavailable_reason(context, "engagement")
-    engagement_display_value = engagement_total if engagement_total is not None else "N/A"
+    engagement_display_value = engagement_total if engagement_total is not None else 0
+    insight_text = _meta_engagement_text(context, period_label, reach_stats)
+    insight_short, insight_full = truncateInsightForSlide(insight_text)
     logger.info(
         "[BACKEND_ENGAGEMENT_SLIDE_AUDIT]",
         extra={
@@ -8047,10 +8544,18 @@ def _meta_engagement_slide_payload(context: dict, period_label: str, reach_stats
             "source": engagement_source,
             "unavailable_reason": engagement_unavailable_reason,
         },
-        "text": _meta_engagement_text(context, period_label, reach_stats),
-        "insight": _meta_engagement_text(context, period_label, reach_stats),
+        "text": insight_short,
+        "insight": insight_short,
+        "insight_short": insight_short,
+        "insight_full": insight_full,
+        "metric_key": "engagement",
+        "metric_label": "Engagement",
         "chart": chart,
         "points": normalized_points,
+        "daily_series": normalized_points,
+        "highest_day": getHighestDay(normalized_points),
+        "lowest_day": getLowestDay(normalized_points),
+        "daily_series_reason": "" if normalized_points else "daily_series_unavailable_from_source",
         "source_metric": engagement_source,
     }
 
@@ -8388,6 +8893,8 @@ def _meta_block_title(block: dict) -> str:
 
 
 def _build_meta_report_block_pool(context: dict) -> list[dict]:
+    # LEGACY / candidate for removal after frontend/backend contract is stable.
+    # Recommended source of truth for social 5-slide reports is build_5_blocks().
     title = context["title"]
     report_timeframe = context["report_timeframe"]
     period_label = str(report_timeframe.get("label") or "Selected period")
@@ -8632,17 +9139,123 @@ def _renumber_blocks(blocks: list[dict]) -> list[dict]:
 
 
 def build_5_blocks(dataset: dict) -> list[dict]:
-    block_pool = _build_meta_report_block_pool(dataset)
-    selected_blocks = list(block_pool[:5])
-    if len(selected_blocks) >= 5:
-        selected_blocks[4] = dict(selected_blocks[0])
-    return _meta_enrich_data_blocks(
-        dataset,
-        _renumber_blocks(selected_blocks),
+    # Source of truth for official social 5-slide report structure:
+    # cover, reach, impressions, engagement, summary.
+    report_timeframe = dataset["report_timeframe"]
+    period_label = str(report_timeframe.get("label") or "Selected period")
+    resolved_branding = resolve_report_branding(
+        None,
+        None,
+        str(dataset.get("plan") or ""),
+        preferred_branding=dataset.get("branding") if isinstance(dataset.get("branding"), dict) else None,
     )
+    reach_points = extractDailyMetricsSeries(dataset, "reach")
+    reach_stats = _meta_series_stats(reach_points)
+    reach_insight_full = _meta_reach_insight(dataset)
+    impressions_insight_full = (
+        str((dataset.get("impressions_slide_payload") or {}).get("insight_text") or "").strip()
+        or _meta_trend_copy("Impressions", _meta_series_stats(extractDailyMetricsSeries(dataset, "impressions")), period_label)
+    )
+    engagement_insight_full = _meta_engagement_text(dataset, period_label, reach_stats)
+    reach_payload = buildMetricSlidePayload(
+        dataset,
+        metric_key="reach",
+        metric_label="Reach",
+        insight=reach_insight_full,
+    )
+    impressions_payload = buildMetricSlidePayload(
+        dataset,
+        metric_key="impressions",
+        metric_label="Impressions",
+        insight=impressions_insight_full,
+    )
+    engagement_payload = buildMetricSlidePayload(
+        dataset,
+        metric_key="engagement",
+        metric_label="Engagement",
+        insight=engagement_insight_full,
+    )
+    blocks = [
+        _meta_report_block(
+            "title",
+            1,
+            {
+                "slide_number": 1,
+                "slide_type": "cover",
+                "text": dataset["title"],
+                "subtitle": f"{dataset['page_name']} performance report · {period_label}",
+                "timeframe": report_timeframe,
+                "period_label": report_timeframe.get("label"),
+                "period_since": report_timeframe.get("since"),
+                "period_until": report_timeframe.get("until"),
+                "branding": resolved_branding,
+                "brand_name": resolved_branding.get("resolved_brand_name"),
+                "brand_logo_url": resolved_branding.get("resolved_logo_url"),
+                "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
+                "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
+                "cover_branding": {
+                    "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
+                    "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
+                },
+                "semantic_name": "cover",
+            },
+            ["text", "subtitle"],
+        ),
+        _meta_report_block(
+            "stat",
+            2,
+            {
+                "slide_number": 2,
+                "slide_type": "metric",
+                "title": "Reach",
+                "label": "Reach",
+                "semantic_name": "reach_overview",
+                **reach_payload,
+            },
+        ),
+        _meta_report_block(
+            "stat",
+            3,
+            {
+                "slide_number": 3,
+                "slide_type": "metric",
+                "title": "Impressions",
+                "label": "Impressions",
+                "semantic_name": "impressions_trend",
+                **impressions_payload,
+            },
+        ),
+        _meta_report_block(
+            "stat",
+            4,
+            {
+                "slide_number": 4,
+                "slide_type": "metric",
+                "title": "Engagement",
+                "label": "Engagement",
+                "semantic_name": "engagement_overview",
+                **engagement_payload,
+            },
+        ),
+        _meta_report_block(
+            "text",
+            5,
+            _build_five_slide_summary_payload(
+                dataset,
+                period_label=period_label,
+                reach_payload=reach_payload,
+                impressions_payload=impressions_payload,
+                engagement_payload=engagement_payload,
+            ),
+            ["text"],
+        ),
+    ]
+    return _meta_enrich_data_blocks(dataset, _renumber_blocks(blocks[:5]))
 
 
 def build_10_blocks(dataset: dict) -> list[dict]:
+    # LEGACY / candidate for removal after frontend/backend contract is stable.
+    # Recommended source of truth for official social 5-slide reports is build_5_blocks().
     report_timeframe = dataset["report_timeframe"]
     period_label = str(report_timeframe.get("label") or "Selected period")
     title = dataset["title"]
@@ -8797,6 +9410,8 @@ def build_10_blocks(dataset: dict) -> list[dict]:
 
 
 def build_15_blocks(dataset: dict) -> list[dict]:
+    # LEGACY / candidate for removal after frontend/backend contract is stable.
+    # Recommended source of truth for official social 5-slide reports is build_5_blocks().
     report_timeframe = dataset["report_timeframe"]
     period_label = str(report_timeframe.get("label") or "Selected period")
     title = dataset["title"]
@@ -9027,6 +9642,8 @@ def build_15_blocks(dataset: dict) -> list[dict]:
 
 
 def build_30_blocks(dataset: dict) -> list[dict]:
+    # LEGACY / candidate for removal after frontend/backend contract is stable.
+    # Recommended source of truth for official social 5-slide reports is build_5_blocks().
     return _meta_enrich_data_blocks(
         dataset,
         _renumber_blocks(_build_meta_report_block_pool(dataset)[:30]),
@@ -9034,6 +9651,7 @@ def build_30_blocks(dataset: dict) -> list[dict]:
 
 
 def build_blocks(requested_slides: int, dataset: dict) -> list[dict]:
+    # Official source of truth for social 5-slide reports.
     if requested_slides <= 5:
         return build_5_blocks(dataset)
     if requested_slides <= 10:
@@ -9186,6 +9804,7 @@ def create_report(
         db,
         dataset.workspace_id,
         preferred_branding=_user_branding(current_user),
+        user=current_user,
     )
     report = Report(
         workspace_id=dataset.workspace_id,
@@ -9207,6 +9826,68 @@ def create_report(
     db.add(report)
     db.commit()
     db.refresh(report)
+    logger.info(
+        "[ReportBranding][resolved]",
+        extra={
+            "workspace_id": dataset.workspace_id,
+            "report_id": report.id,
+            "plan": slide_limits["plan"],
+            "brand_name_original": str(current_user.full_name).strip() if current_user.full_name else None,
+            "brand_logo_url_original": (
+                str(current_user.logo_url).strip()
+                if user_logo_column_available() and current_user.logo_url
+                else None
+            ),
+            "resolved_brand_name": report_branding.get("resolved_brand_name"),
+            "resolved_logo_url": report_branding.get("resolved_logo_url"),
+            "has_custom_branding": report_branding.get("has_custom_branding"),
+        },
+    )
+    if int(slide_limits["requested_slides"]) == 5:
+        metric_payloads: dict[str, dict[str, Any]] = {}
+        ai_summary_length = 0
+        for block_spec in block_specs:
+            raw_block_data = block_spec.get("data_json")
+            if isinstance(raw_block_data, str):
+                try:
+                    block_data = json.loads(raw_block_data)
+                except json.JSONDecodeError:
+                    block_data = {}
+            elif isinstance(raw_block_data, dict):
+                block_data = raw_block_data
+            else:
+                block_data = {}
+            semantic_name = str(block_data.get("semantic_name") or "").strip()
+            if semantic_name in {"reach_overview", "impressions_trend", "engagement_overview"}:
+                metric_payloads[semantic_name] = block_data
+            elif semantic_name == "executive_summary":
+                ai_summary_length = len(str(block_data.get("ai_summary") or block_data.get("text") or ""))
+        logger.info(
+            "[FiveSlideReport][structure]",
+            extra={
+                "report_id": report.id,
+                "integration": report_inputs.get("integration_type"),
+                "template": "executive_5_slide",
+                "slide_count": int(slide_limits["requested_slides"]),
+                "dataset_keys_available": sorted(report_row.keys()),
+                "slide_2_metric_key": metric_payloads.get("reach_overview", {}).get("metric_key"),
+                "slide_2_total": metric_payloads.get("reach_overview", {}).get("total"),
+                "slide_2_daily_series_length": len(metric_payloads.get("reach_overview", {}).get("daily_series") or []),
+                "slide_2_daily_series_source_path": metric_payloads.get("reach_overview", {}).get("daily_series_source_path"),
+                "slide_2_daily_series_source_metric_key": metric_payloads.get("reach_overview", {}).get("daily_series_source_metric_key"),
+                "slide_3_metric_key": metric_payloads.get("impressions_trend", {}).get("metric_key"),
+                "slide_3_total": metric_payloads.get("impressions_trend", {}).get("total"),
+                "slide_3_daily_series_length": len(metric_payloads.get("impressions_trend", {}).get("daily_series") or []),
+                "slide_3_daily_series_source_path": metric_payloads.get("impressions_trend", {}).get("daily_series_source_path"),
+                "slide_3_daily_series_source_metric_key": metric_payloads.get("impressions_trend", {}).get("daily_series_source_metric_key"),
+                "slide_4_metric_key": metric_payloads.get("engagement_overview", {}).get("metric_key"),
+                "slide_4_total": metric_payloads.get("engagement_overview", {}).get("total"),
+                "slide_4_daily_series_length": len(metric_payloads.get("engagement_overview", {}).get("daily_series") or []),
+                "slide_4_daily_series_source_path": metric_payloads.get("engagement_overview", {}).get("daily_series_source_path"),
+                "slide_4_daily_series_source_metric_key": metric_payloads.get("engagement_overview", {}).get("daily_series_source_metric_key"),
+                "slide_5_ai_summary_length": ai_summary_length,
+            },
+        )
     record_first_report_conversion(db, user_id=current_user.id)
     db.commit()
     logger.info(
@@ -9522,6 +10203,7 @@ def create_multi_source_report(
         db,
         first_dataset.workspace_id,
         preferred_branding=_user_branding(current_user),
+        user=current_user,
     )
     generate_multi_source_blocks = (
         len(resolved_sources) == 2
@@ -9557,6 +10239,23 @@ def create_multi_source_report(
         db.add(report)
         db.commit()
         db.refresh(report)
+        logger.info(
+            "[ReportBranding][resolved]",
+            extra={
+                "workspace_id": first_dataset.workspace_id,
+                "report_id": report.id,
+                "plan": get_workspace_plan(db, first_dataset.workspace_id),
+                "brand_name_original": str(current_user.full_name).strip() if current_user.full_name else None,
+                "brand_logo_url_original": (
+                    str(current_user.logo_url).strip()
+                    if user_logo_column_available() and current_user.logo_url
+                    else None
+                ),
+                "resolved_brand_name": branding.get("resolved_brand_name"),
+                "resolved_logo_url": branding.get("resolved_logo_url"),
+                "has_custom_branding": branding.get("has_custom_branding"),
+            },
+        )
         record_first_report_conversion(db, user_id=current_user.id)
         db.commit()
 
@@ -9797,6 +10496,7 @@ def _create_meta_dataset_report(
         db,
         dataset.workspace_id,
         preferred_branding=_user_branding(current_user),
+        user=current_user,
     )
     ai_plan_context = build_ai_agent_plan_context(
         plan=slide_limits["plan"],
@@ -9835,6 +10535,7 @@ def _create_meta_dataset_report(
     block_build_context = {
         "title": title,
         "report_timeframe": report_timeframe,
+        "plan": slide_limits["plan"],
         "page_name": page_name,
         "followers": followers,
         "reach": reach,
@@ -10045,6 +10746,23 @@ def _create_meta_dataset_report(
     db.add(report)
     db.commit()
     db.refresh(report)
+    logger.info(
+        "[ReportBranding][resolved]",
+        extra={
+            "workspace_id": dataset.workspace_id,
+            "report_id": report.id,
+            "plan": slide_limits["plan"],
+            "brand_name_original": str(current_user.full_name).strip() if current_user.full_name else None,
+            "brand_logo_url_original": (
+                str(current_user.logo_url).strip()
+                if user_logo_column_available() and current_user.logo_url
+                else None
+            ),
+            "resolved_brand_name": report_branding.get("resolved_brand_name"),
+            "resolved_logo_url": report_branding.get("resolved_logo_url"),
+            "has_custom_branding": report_branding.get("has_custom_branding"),
+        },
+    )
     record_first_report_conversion(db, user_id=current_user.id)
     db.commit()
     logger.info(
@@ -10284,6 +11002,20 @@ def _create_meta_dataset_report(
                     "source_current": comparison.get("source_current"),
                     "source_previous": comparison.get("source_previous"),
                     "reason_if_null": comparison.get("reason_if_null"),
+                },
+            )
+        if semantic_name in {"reach_overview", "impressions_trend", "engagement_overview"}:
+            logger.info(
+                "[MetricSlidePayload][resolved]",
+                extra={
+                    "report_id": report.id,
+                    "integration": report_inputs.get("integration_type"),
+                    "metric_key": block_data.get("metric_key"),
+                    "total": block_data.get("total"),
+                    "daily_series_length": len(block_data.get("daily_series") or []),
+                    "highest_day": block_data.get("highest_day"),
+                    "lowest_day": block_data.get("lowest_day"),
+                    "insight_length": len(str(block_data.get("insight_short") or block_data.get("insight") or "")),
                 },
             )
 
