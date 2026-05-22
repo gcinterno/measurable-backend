@@ -197,6 +197,10 @@ def get_plan_capabilities(plan: str) -> dict[str, Any]:
     }
 
 
+def report_branding_mode_for_plan(plan: str | None) -> str:
+    return "custom" if get_plan_capabilities(str(plan or DEFAULT_WORKSPACE_PLAN))["allow_custom_branding"] else "measurable"
+
+
 def get_workspace_plan_capabilities(db: Session, workspace_id: int) -> dict[str, Any]:
     plan = get_workspace_plan(db, workspace_id)
     return {"plan": plan, "capabilities": get_plan_capabilities(plan)}
@@ -213,6 +217,12 @@ def get_workspace_storage_limit(db: Session, workspace_id: int) -> int:
 
 
 def count_workspace_storage_bytes(db: Session, workspace_id: int) -> int:
+    try:
+        table_names = set(inspect(engine).get_table_names())
+    except SQLAlchemyError:
+        return 0
+    if "dataset_files" not in table_names:
+        return 0
     total_size = (
         db.query(func.coalesce(func.sum(DatasetFile.size_bytes), 0))
         .filter(DatasetFile.workspace_id == workspace_id)
@@ -349,6 +359,36 @@ def build_default_workspace_name(full_name: str | None) -> str:
     if normalized_name:
         return f"Workspace de {normalized_name}"
     return "My Workspace"
+
+
+def resolve_account_display_name(
+    workspace: Workspace | dict[str, Any] | None,
+    user: User | dict[str, Any] | None = None,
+) -> dict[str, str | None]:
+    explicit_name: str | None = None
+    workspace_name: str | None = None
+    user_full_name: str | None = None
+    user_email: str | None = None
+
+    if isinstance(workspace, dict):
+        explicit_name = str(workspace.get("account_display_name") or "").strip() or None
+        workspace_name = str(workspace.get("name") or "").strip() or None
+    elif workspace is not None:
+        explicit_name = str(getattr(workspace, "account_display_name", "") or "").strip() or None
+        workspace_name = str(getattr(workspace, "name", "") or "").strip() or None
+
+    if isinstance(user, dict):
+        user_full_name = str(user.get("full_name") or "").strip() or None
+        user_email = str(user.get("email") or "").strip() or None
+    elif user is not None:
+        user_full_name = str(getattr(user, "full_name", "") or "").strip() or None
+        user_email = str(getattr(user, "email", "") or "").strip() or None
+
+    effective_name = explicit_name or workspace_name or user_full_name or user_email or "Measurable Account"
+    return {
+        "account_display_name": explicit_name,
+        "account_display_name_effective": effective_name,
+    }
 
 
 def register_user_with_default_workspace(

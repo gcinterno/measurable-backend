@@ -447,6 +447,38 @@ class AdminDeletionInsightsOut(BaseModel):
     recent_feedback: list[AdminDeletionFeedbackOut]
 
 
+class SuggestionCreateIn(BaseModel):
+    message: str
+
+
+class SuggestionStatusUpdateIn(BaseModel):
+    status: Literal["new", "reviewed", "archived"]
+
+
+class UserSuggestionOut(BaseModel):
+    id: int
+    user_id: int
+    workspace_id: Optional[int] = None
+    message: str
+    status: str
+    source: str
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SuggestionCreateOut(BaseModel):
+    success: bool = True
+    suggestion: UserSuggestionOut
+
+
+class AdminSuggestionOut(UserSuggestionOut):
+    user_email: Optional[str] = None
+    user_name: Optional[str] = None
+    workspace_name: Optional[str] = None
+
+
 class AdminInsightsOut(BaseModel):
     onboarding: AdminOnboardingInsightsOut
     deletions: AdminDeletionInsightsOut
@@ -466,12 +498,20 @@ class MeOut(BaseSchema):
     id: int
     email: str
     full_name: Optional[str]
+    workspace_id: Optional[int] = None
+    account_display_name: Optional[str] = None
+    account_display_name_effective: str = "Measurable Account"
     email_verified: bool
     auth_provider: str
     is_admin: bool = False
     last_login_at: Optional[datetime] = None
     logo_url: Optional[str] = None
     branding: BrandingOut = BrandingOut()
+    current_plan_name: Optional[str] = None
+    current_plan_code: Optional[str] = None
+    is_free_plan: bool = False
+    can_use_custom_branding: bool = False
+    report_branding_mode: Literal["measurable", "custom"] = "measurable"
     created_at: datetime
     updated_at: datetime
 
@@ -484,6 +524,7 @@ class MeUpdateIn(BaseModel):
 class WorkspaceSchema(BaseSchema):
     id: int
     name: str
+    account_display_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -655,11 +696,24 @@ class ScheduleUpdateIn(BaseModel):
 class WorkspaceCreateIn(BaseModel):
     name: str
     logo_url: Optional[str] = None
+    brand_name: Optional[str] = None
+    brand_logo_url: Optional[str] = None
 
 
 class WorkspaceUpdateIn(BaseModel):
     name: Optional[str] = None
     logo_url: Optional[str] = None
+    brand_name: Optional[str] = None
+    brand_logo_url: Optional[str] = None
+
+
+class WorkspaceAccountDisplayNameUpdateIn(BaseModel):
+    account_display_name: Optional[str] = None
+
+
+class WorkspaceBrandingUpdateIn(BaseModel):
+    brand_name: Optional[str] = None
+    brand_logo_url: Optional[str] = None
 
 
 class PlanLimitsOut(BaseModel):
@@ -676,7 +730,11 @@ class PlanLimitsOut(BaseModel):
 class WorkspaceOut(BaseSchema):
     id: int
     name: str
+    account_display_name: Optional[str] = None
+    account_display_name_effective: str = "Measurable Account"
     logo_url: Optional[str] = None
+    brand_name: Optional[str] = None
+    brand_logo_url: Optional[str] = None
     branding: BrandingOut = BrandingOut()
     plan: str = "free"
     plan_limits: PlanLimitsOut
@@ -717,6 +775,7 @@ class MetaPageOut(BaseModel):
     facebook_page_name: Optional[str] = None
     username: Optional[str] = None
     name: str
+    display_label: Optional[str] = None
     category: Optional[str] = None
     instagram_username: Optional[str] = None
     profile_picture_url: Optional[str] = None
@@ -846,6 +905,15 @@ class ReportSourceRead(BaseSchema):
     updated_at: datetime
 
 
+class ReportIntegrationMetadataOut(BaseModel):
+    integration_type: str = "legacy"
+    integration_display_name: str = "Manual / Legacy report"
+    source_name: Optional[str] = "Unknown source"
+    source_handle: Optional[str] = None
+    social_network: Optional[str] = None
+    channel: Optional[str] = None
+
+
 class MultiSourceReportCreateRequest(BaseModel):
     sources: list[ReportSourceCreate]
     timeframe: str = "last_28_days"
@@ -901,9 +969,12 @@ class ReportOut(BaseSchema):
     dataset_id: int
     title: str
     status: Optional[str] = None
+    folder_id: Optional[str] = None
+    folder_name: Optional[str] = None
     description: Optional[dict] = None
     timeframe: Optional[dict] = None
     report_sources: list[ReportSourceRead] = Field(default_factory=list)
+    integration_metadata: ReportIntegrationMetadataOut = Field(default_factory=ReportIntegrationMetadataOut)
     version_id: Optional[int] = None
     version: Optional[int] = None
     locale: str = "en"
@@ -917,6 +988,9 @@ class ReportListItemOut(BaseModel):
     id: int
     name: str
     status: str
+    folder_id: Optional[str] = None
+    folder_name: Optional[str] = None
+    integration_metadata: ReportIntegrationMetadataOut = Field(default_factory=ReportIntegrationMetadataOut)
     thumbnail_url: Optional[str] = None
     created_at: datetime
 
@@ -933,6 +1007,7 @@ class MetaPagesReportCreateOut(BaseModel):
     title: str
     locale: str = "en"
     status: str
+    selected_integration_metadata: ReportIntegrationMetadataOut = Field(default_factory=ReportIntegrationMetadataOut)
 
 
 class ReportBlockOut(BaseSchema):
@@ -951,7 +1026,10 @@ class ReportVersionOut(BaseSchema):
     version_id: Optional[int] = None
     report_id: int
     version: int
+    folder_id: Optional[str] = None
+    folder_name: Optional[str] = None
     report_sources: list[ReportSourceRead] = Field(default_factory=list)
+    integration_metadata: ReportIntegrationMetadataOut = Field(default_factory=ReportIntegrationMetadataOut)
     description: Optional[dict] = None
     timeframe: Optional[dict] = None
     locale: str = "en"
@@ -970,3 +1048,31 @@ class ReportExportOut(BaseModel):
 
 class ReportBlockUpdateIn(BaseModel):
     data: dict
+
+
+class ReportFolderUpdateIn(BaseModel):
+    folder_id: Optional[str] = None
+    folder_name: Optional[str] = None
+
+
+class ReportFolderUpdateOut(BaseModel):
+    report_id: int
+    folder_id: Optional[str] = None
+    folder_name: Optional[str] = None
+    updated: bool = True
+
+
+class AccountSummaryOut(BaseModel):
+    reports_created_count: int = 0
+    reports_available_count: Optional[int] = None
+    reports_remaining_this_month: Optional[int] = None
+    reports_limit_this_month: Optional[int] = None
+    integrations_connected_count: int = 0
+    integrations_total_available: int = 0
+    current_plan_name: str = "free"
+    current_plan_code: Optional[str] = None
+    is_free_plan: bool = False
+    can_use_custom_branding: bool = False
+    report_branding_mode: Literal["measurable", "custom"] = "measurable"
+    account_display_name: Optional[str] = None
+    account_display_name_effective: str = "Measurable Account"

@@ -1,0 +1,4017 @@
+{
+  "datasets": [
+    {
+      "created_at": "2026-05-22T21:06:08.776263+00:00",
+      "dataset_id": 188,
+      "dataset_name": "meta_page_595932073598543_insights.csv",
+      "integration_type": "facebook_pages",
+      "live_audit": {
+        "errors": [],
+        "integration_id": 5,
+        "meta_candidates": {
+          "impressions_candidates": [
+            "page_impressions"
+          ],
+          "reach_candidates": [
+            "page_impressions_unique"
+          ]
+        },
+        "metrics": {
+          "fan_count": {
+            "source_metric": "fan_count",
+            "value": 4575
+          },
+          "followers_count": {
+            "source_metric": "followers_count",
+            "value": 4575
+          },
+          "impressions": {
+            "daily_points": 0,
+            "source_metric": null,
+            "value": null
+          },
+          "page_consumptions": {
+            "daily_points": 0,
+            "source_metric": "page_consumptions",
+            "value": null
+          },
+          "page_fan_adds": {
+            "daily_points": 0,
+            "source_metric": "page_fan_adds",
+            "value": null
+          },
+          "page_post_engagements": {
+            "daily_points": 21,
+            "source_metric": "page_post_engagements",
+            "value": 4965
+          },
+          "page_profile_views": {
+            "daily_points": 0,
+            "source_metric": "page_profile_views",
+            "value": null
+          },
+          "page_views_total": {
+            "daily_points": 21,
+            "source_metric": "page_views_total",
+            "value": 5748
+          },
+          "reach": {
+            "daily_points": 21,
+            "source_metric": "page_impressions_unique",
+            "value": 180294
+          }
+        },
+        "record_id": "595932073598543",
+        "record_lookup": {
+          "candidate_count": 2,
+          "exact_match_workspace_id": 9,
+          "lookup_workspace_id": 1,
+          "record_id": "595932073598543",
+          "record_type": "facebook_page",
+          "selection_mode": "exact_record_cross_workspace"
+        },
+        "status": "ok",
+        "token_source": "meta_page_cache_token",
+        "workspace_mismatch": {
+          "dataset_workspace_id": 1,
+          "integration_workspace_id": 9
+        }
+      },
+      "live_vs_dataset": [
+        {
+          "dataset_metric": "followers",
+          "dataset_source_path": "dataset.data.followers",
+          "dataset_value": 4575,
+          "live_daily_points": null,
+          "live_metric_key": "followers_count",
+          "live_value": 4575
+        },
+        {
+          "dataset_metric": "reach",
+          "dataset_source_path": "dataset.data.reach",
+          "dataset_value": 180294,
+          "live_daily_points": 21,
+          "live_metric_key": "reach",
+          "live_value": 180294
+        },
+        {
+          "dataset_metric": "impressions",
+          "dataset_source_path": "sum(dataset.data.impressions_daily)",
+          "dataset_value": 0,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "engagement",
+          "dataset_source_path": "dataset.data.engagement",
+          "dataset_value": 4965,
+          "live_daily_points": 21,
+          "live_metric_key": "page_post_engagements",
+          "live_value": 4965
+        },
+        {
+          "dataset_metric": "link_clicks",
+          "dataset_source_path": "sum(dataset.data.normalized_report_metrics.link_clicks_daily)",
+          "dataset_value": 0,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "page_views",
+          "dataset_source_path": "sum(dataset.data.normalized_report_metrics.page_visits_daily)",
+          "dataset_value": 0,
+          "live_daily_points": 21,
+          "live_metric_key": "page_views_total",
+          "live_value": 5748
+        }
+      ],
+      "metrics": {
+        "comments": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "comments",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "daily_engagement": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "report_inputs.daily_engagement",
+            "dataset.data.normalized_report_metrics.interactions_daily",
+            "report_inputs.engagement_daily",
+            "report_inputs.interactions_daily"
+          ],
+          "metric_key": "daily_engagement",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_followers": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.followers_growth_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.followers_growth_daily",
+            "report_inputs.followers_growth_daily"
+          ],
+          "metric_key": "daily_followers",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_impressions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.impressions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "context.normalized_report_metrics.views_daily",
+            "dataset.data.impressions_daily",
+            "dataset.data.normalized_report_metrics.impressions_daily",
+            "report_inputs.impressions_daily"
+          ],
+          "metric_key": "daily_impressions",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_interactions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.interactions_daily",
+            "report_inputs.interactions_daily"
+          ],
+          "metric_key": "daily_interactions",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_page_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.page_visits_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.page_visits_daily",
+            "report_inputs.page_visits_daily"
+          ],
+          "metric_key": "daily_page_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_profile_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "daily_profile_views",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.reach_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "context.reach_daily",
+            "dataset.data.reach_daily",
+            "report_inputs.reach_daily"
+          ],
+          "metric_key": "daily_reach",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "engagement": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "report_inputs.daily_engagement",
+          "formatted_value": "4,965",
+          "matched_candidates": [
+            "dataset.data.engagement",
+            "report_inputs.engagement"
+          ],
+          "metric_key": "engagement",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.engagement",
+          "value": 4965,
+          "value_type": "int"
+        },
+        "fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "fans",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "follower_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "4,575",
+          "matched_candidates": [
+            "dataset.data.followers",
+            "report_inputs.followers"
+          ],
+          "metric_key": "follower_count",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.followers",
+          "value": 4575,
+          "value_type": "int"
+        },
+        "followers": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "4,575",
+          "matched_candidates": [
+            "dataset.data.followers",
+            "report_inputs.followers"
+          ],
+          "metric_key": "followers",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.followers",
+          "value": 4575,
+          "value_type": "int"
+        },
+        "impressions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.impressions_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "impressions",
+          "metric_origin": "unknown",
+          "reason": null,
+          "source_path": "sum(dataset.data.impressions_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "interactions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": "4,965",
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.interactions_total",
+            "dataset.data.report_metric_mapping.interactions.total",
+            "dataset.data.content_interactions",
+            "report_inputs.content_interactions"
+          ],
+          "metric_key": "interactions",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.content_interactions",
+          "value": 4965,
+          "value_type": "int"
+        },
+        "likes": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "likes",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "link_clicks": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.link_clicks_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "link_clicks",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "sum(dataset.data.normalized_report_metrics.link_clicks_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "page_fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "page_fans",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "page_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.page_visits_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "page_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "sum(dataset.data.normalized_report_metrics.page_visits_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "post_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "0",
+          "matched_candidates": [
+            "len(dataset.data.recent_posts)"
+          ],
+          "metric_key": "post_count",
+          "metric_origin": "calculated_by_backend",
+          "reason": null,
+          "source_path": "len(dataset.data.recent_posts)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "profile_views": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "6,092",
+          "matched_candidates": [
+            "report_inputs.profile_visits"
+          ],
+          "metric_key": "profile_views",
+          "metric_origin": "derived_report_input",
+          "reason": null,
+          "source_path": "report_inputs.profile_visits",
+          "value": 6092,
+          "value_type": "int"
+        },
+        "reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.reach_daily",
+          "formatted_value": "180,294",
+          "matched_candidates": [
+            "dataset.data.reach",
+            "dataset.data.normalized_report_metrics.viewers_total",
+            "dataset.data.report_metric_mapping.viewers.total",
+            "report_inputs.reach"
+          ],
+          "metric_key": "reach",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.reach",
+          "value": 180294,
+          "value_type": "int"
+        },
+        "reactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "reactions",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "saves": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "saves",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "shares": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "shares",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "video_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.views_daily",
+          "formatted_value": "6,092",
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.views_total",
+            "dataset.data.report_metric_mapping.views.total",
+            "report_inputs.views"
+          ],
+          "metric_key": "video_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "dataset.data.normalized_report_metrics.views_total",
+          "value": 6092,
+          "value_type": "int"
+        },
+        "website_clicks": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "website_clicks",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        }
+      },
+      "record_id": "595932073598543",
+      "record_type": "facebook_page",
+      "report_inputs_keys": [
+        "account_name",
+        "accounts_engaged",
+        "content_interactions",
+        "content_interactions_daily",
+        "daily_engagement",
+        "engagement",
+        "engagement_daily",
+        "engagement_source_metric",
+        "followers",
+        "followers_growth",
+        "followers_growth_daily",
+        "impressions",
+        "impressions_daily",
+        "impressions_source_metric",
+        "integration_type",
+        "interactions_daily",
+        "link_clicks",
+        "link_clicks_daily",
+        "page_name",
+        "page_visits_daily",
+        "profile_visits",
+        "reach",
+        "reach_daily",
+        "reach_source_metric",
+        "recent_posts",
+        "timeframe_key",
+        "timeframe_label",
+        "timeframe_preset",
+        "timeframe_since",
+        "timeframe_until",
+        "total_interactions",
+        "unavailable_metrics",
+        "username",
+        "views"
+      ],
+      "timeframe": {
+        "current_since": "2026-05-01",
+        "current_until": "2026-05-22",
+        "key": "this_month",
+        "label": "This Month",
+        "preset": null,
+        "previous_since": "2026-04-01",
+        "previous_until": "2026-04-22",
+        "requested_since": "2026-04-01",
+        "requested_until": "2026-05-22",
+        "selected_timeframe": "this_month",
+        "since": "2026-05-01",
+        "until": "2026-05-22"
+      },
+      "top_level_keys": [
+        "content_interactions",
+        "engagement",
+        "followers",
+        "followers_growth",
+        "impressions",
+        "impressions_daily",
+        "impressions_source_metric",
+        "link_clicks",
+        "normalized_report_metrics",
+        "page_name",
+        "profile_visits",
+        "reach",
+        "reach_daily",
+        "reach_source_metric",
+        "recent_posts",
+        "report_metric_mapping",
+        "timeframe"
+      ],
+      "user_id": 1,
+      "warnings": [
+        "WARNING: total does not match sum(daily_series). metric = reach; total = 180294; sum(daily_series) = 187575; source_path = dataset.data.reach; daily_source_path = dataset.data.reach_daily",
+        "WARNING: total does not match sum(daily_series). metric = impressions; total = 0; sum(daily_series) = 6092; source_path = sum(dataset.data.impressions_daily); daily_source_path = dataset.data.impressions_daily",
+        "WARNING: total does not match sum(daily_series). metric = engagement; total = 4965; sum(daily_series) = 5156; source_path = dataset.data.engagement; daily_source_path = report_inputs.daily_engagement"
+      ],
+      "workspace_id": 1,
+      "workspace_user_ids": [
+        1
+      ]
+    },
+    {
+      "created_at": "2026-05-22T20:15:58.662836+00:00",
+      "dataset_id": 187,
+      "dataset_name": "meta_instagram_17841472361970260_insights.csv",
+      "integration_type": "instagram_business",
+      "live_audit": {
+        "errors": [
+          {
+            "error_code": null,
+            "error_message": "(#100) metric[0] must be one of the following values: reach, follower_count, website_clicks, profile_views, online_followers, accounts_engaged, total_interactions, likes, comments, shares, saves, replies, engaged_audience_demographics, reached_audience_demographics, follower_demographics, follows_and_unfollows, profile_links_taps, views, threads_likes, threads_replies, reposts, quotes, threads_followers, threads_follower_demographics, content_views, threads_views, threads_clicks, threads_reposts",
+            "metric_key": "impressions",
+            "metric_type": null,
+            "permission_issue": false,
+            "status": "error"
+          },
+          {
+            "error_code": null,
+            "error_message": "(#100) The following metrics (views) should be specified with parameter metric_type=total_value",
+            "metric_key": "views",
+            "metric_type": null,
+            "permission_issue": false,
+            "status": "error"
+          },
+          {
+            "error_code": null,
+            "error_message": "(#100) The following metrics (accounts_engaged) should be specified with parameter metric_type=total_value",
+            "metric_key": "accounts_engaged",
+            "metric_type": null,
+            "permission_issue": false,
+            "status": "error"
+          },
+          {
+            "error_code": null,
+            "error_message": "(#100) metric[0] must be one of the following values: reach, follower_count, website_clicks, profile_views, online_followers, accounts_engaged, total_interactions, likes, comments, shares, saves, replies, engaged_audience_demographics, reached_audience_demographics, follower_demographics, follows_and_unfollows, profile_links_taps, views, threads_likes, threads_replies, reposts, quotes, threads_followers, threads_follower_demographics, content_views, threads_views, threads_clicks, threads_reposts",
+            "metric_key": "content_interactions",
+            "metric_type": null,
+            "permission_issue": false,
+            "status": "error"
+          },
+          {
+            "error_code": null,
+            "error_message": "(#100) The following metrics (profile_views) should be specified with parameter metric_type=total_value",
+            "metric_key": "profile_views",
+            "metric_type": null,
+            "permission_issue": false,
+            "status": "error"
+          },
+          {
+            "error_code": null,
+            "error_message": "(#100) The following metrics (website_clicks) should be specified with parameter metric_type=total_value",
+            "metric_key": "website_clicks",
+            "metric_type": null,
+            "permission_issue": false,
+            "status": "error"
+          }
+        ],
+        "integration_id": 5,
+        "metrics": {
+          "reach": {
+            "daily_points": 21,
+            "end_time": "2026-05-21T07:00:00+0000",
+            "fallback_used": false,
+            "latest_value": 2184,
+            "metric_type": null,
+            "raw_values_sample": [
+              4315,
+              4496,
+              5140
+            ],
+            "value": 97072
+          },
+          "total_interactions": {
+            "daily_points": 0,
+            "end_time": null,
+            "fallback_used": true,
+            "latest_value": null,
+            "metric_type": "total_value",
+            "raw_values_sample": [],
+            "value": null
+          }
+        },
+        "profile": {
+          "followers_count": 7827,
+          "name": "Botanero Nuevo León",
+          "username": "botaneronl"
+        },
+        "record_id": "17841472361970260",
+        "record_lookup": {
+          "candidate_count": 2,
+          "exact_match_workspace_id": 9,
+          "lookup_workspace_id": 1,
+          "record_id": "17841472361970260",
+          "record_type": "instagram_account",
+          "selection_mode": "exact_record_cross_workspace"
+        },
+        "status": "ok",
+        "token_source": "meta_page_cache_token",
+        "workspace_mismatch": {
+          "dataset_workspace_id": 1,
+          "integration_workspace_id": 9
+        }
+      },
+      "live_vs_dataset": [
+        {
+          "dataset_metric": "followers",
+          "dataset_source_path": "dataset.data.followers",
+          "dataset_value": 7827,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "reach",
+          "dataset_source_path": "dataset.data.reach",
+          "dataset_value": 97072,
+          "live_daily_points": 21,
+          "live_metric_key": "reach",
+          "live_value": 97072
+        },
+        {
+          "dataset_metric": "impressions",
+          "dataset_source_path": null,
+          "dataset_value": null,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "engagement",
+          "dataset_source_path": null,
+          "dataset_value": null,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "profile_views",
+          "dataset_source_path": null,
+          "dataset_value": null,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "website_clicks",
+          "dataset_source_path": null,
+          "dataset_value": null,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "video_views",
+          "dataset_source_path": null,
+          "dataset_value": null,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        }
+      ],
+      "metrics": {
+        "comments": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "comments",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "daily_engagement": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "daily_engagement",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_followers": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "daily_followers",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_impressions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "daily_impressions",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_interactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "daily_interactions",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_page_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "daily_page_views",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_profile_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "daily_profile_views",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 21,
+          "daily_series_source_path": "dataset.data.reach_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "context.reach_daily",
+            "dataset.data.reach_daily",
+            "report_inputs.reach_daily"
+          ],
+          "metric_key": "daily_reach",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "engagement": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "engagement",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "fans",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "follower_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "7,827",
+          "matched_candidates": [
+            "dataset.data.followers_count",
+            "dataset.data.followers",
+            "report_inputs.followers"
+          ],
+          "metric_key": "follower_count",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.followers",
+          "value": 7827,
+          "value_type": "int"
+        },
+        "followers": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "7,827",
+          "matched_candidates": [
+            "dataset.data.followers",
+            "dataset.data.followers_count",
+            "report_inputs.followers"
+          ],
+          "metric_key": "followers",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.followers",
+          "value": 7827,
+          "value_type": "int"
+        },
+        "impressions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "impressions",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "interactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "interactions",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "likes": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "likes",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "link_clicks": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "link_clicks",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "page_fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "page_fans",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "page_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "page_views",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "post_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "0",
+          "matched_candidates": [
+            "len(dataset.data.recent_posts)"
+          ],
+          "metric_key": "post_count",
+          "metric_origin": "calculated_by_backend",
+          "reason": null,
+          "source_path": "len(dataset.data.recent_posts)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "profile_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "profile_views",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 21,
+          "daily_series_source_path": "dataset.data.reach_daily",
+          "formatted_value": "97,072",
+          "matched_candidates": [
+            "dataset.data.reach",
+            "dataset.data.normalized_report_metrics.viewers_total",
+            "dataset.data.report_metric_mapping.viewers.total",
+            "report_inputs.reach"
+          ],
+          "metric_key": "reach",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.reach",
+          "value": 97072,
+          "value_type": "int"
+        },
+        "reactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "reactions",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "saves": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "saves",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "shares": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "shares",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "video_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "video_views",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "website_clicks": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "website_clicks",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        }
+      },
+      "record_id": "17841472361970260",
+      "record_type": "instagram_account",
+      "report_inputs_keys": [
+        "account_name",
+        "accounts_engaged",
+        "content_interactions",
+        "content_interactions_daily",
+        "daily_engagement",
+        "engagement",
+        "engagement_daily",
+        "engagement_source_metric",
+        "followers",
+        "followers_growth",
+        "followers_growth_daily",
+        "impressions",
+        "impressions_daily",
+        "impressions_source_metric",
+        "integration_type",
+        "interactions_daily",
+        "link_clicks",
+        "link_clicks_daily",
+        "page_name",
+        "page_visits_daily",
+        "profile_visits",
+        "reach",
+        "reach_daily",
+        "reach_source_metric",
+        "recent_posts",
+        "timeframe_key",
+        "timeframe_label",
+        "timeframe_preset",
+        "timeframe_since",
+        "timeframe_until",
+        "total_interactions",
+        "unavailable_metrics",
+        "username",
+        "views"
+      ],
+      "timeframe": {
+        "current_since": "2026-05-01",
+        "current_until": "2026-05-22",
+        "key": "this_month",
+        "label": "This Month",
+        "preset": null,
+        "previous_since": "2026-04-01",
+        "previous_until": "2026-04-22",
+        "requested_since": "2026-04-01",
+        "requested_until": "2026-05-22",
+        "selected_timeframe": "this_month",
+        "since": "2026-05-01",
+        "until": "2026-05-22"
+      },
+      "top_level_keys": [
+        "account_name",
+        "accounts_engaged",
+        "content_interactions",
+        "daily_engagement",
+        "engagement",
+        "followers",
+        "followers_count",
+        "followers_growth",
+        "impressions",
+        "impressions_daily",
+        "impressions_source_metric",
+        "instagram_metric_audit",
+        "integration_type",
+        "link_clicks",
+        "normalized_report_metrics",
+        "page_name",
+        "profile_views",
+        "profile_visits",
+        "reach",
+        "reach_daily",
+        "reach_source_metric",
+        "recent_posts",
+        "report_metric_mapping",
+        "timeframe",
+        "total_interactions",
+        "unavailable_metrics",
+        "username",
+        "views",
+        "website_clicks"
+      ],
+      "user_id": 1,
+      "warnings": [],
+      "workspace_id": 1,
+      "workspace_user_ids": [
+        1
+      ]
+    },
+    {
+      "created_at": "2026-05-22T20:15:43.537335+00:00",
+      "dataset_id": 186,
+      "dataset_name": "meta_page_595932073598543_insights.csv",
+      "integration_type": "facebook_pages",
+      "live_audit": {
+        "errors": [],
+        "integration_id": 5,
+        "meta_candidates": {
+          "impressions_candidates": [
+            "page_impressions"
+          ],
+          "reach_candidates": [
+            "page_impressions_unique"
+          ]
+        },
+        "metrics": {
+          "fan_count": {
+            "source_metric": "fan_count",
+            "value": 4575
+          },
+          "followers_count": {
+            "source_metric": "followers_count",
+            "value": 4575
+          },
+          "impressions": {
+            "daily_points": 0,
+            "source_metric": null,
+            "value": null
+          },
+          "page_consumptions": {
+            "daily_points": 0,
+            "source_metric": "page_consumptions",
+            "value": null
+          },
+          "page_fan_adds": {
+            "daily_points": 0,
+            "source_metric": "page_fan_adds",
+            "value": null
+          },
+          "page_post_engagements": {
+            "daily_points": 21,
+            "source_metric": "page_post_engagements",
+            "value": 4965
+          },
+          "page_profile_views": {
+            "daily_points": 0,
+            "source_metric": "page_profile_views",
+            "value": null
+          },
+          "page_views_total": {
+            "daily_points": 21,
+            "source_metric": "page_views_total",
+            "value": 5748
+          },
+          "reach": {
+            "daily_points": 21,
+            "source_metric": "page_impressions_unique",
+            "value": 180294
+          }
+        },
+        "record_id": "595932073598543",
+        "record_lookup": {
+          "candidate_count": 2,
+          "exact_match_workspace_id": 9,
+          "lookup_workspace_id": 1,
+          "record_id": "595932073598543",
+          "record_type": "facebook_page",
+          "selection_mode": "exact_record_cross_workspace"
+        },
+        "status": "ok",
+        "token_source": "meta_page_cache_token",
+        "workspace_mismatch": {
+          "dataset_workspace_id": 1,
+          "integration_workspace_id": 9
+        }
+      },
+      "live_vs_dataset": [
+        {
+          "dataset_metric": "followers",
+          "dataset_source_path": "dataset.data.followers",
+          "dataset_value": 4574,
+          "live_daily_points": null,
+          "live_metric_key": "followers_count",
+          "live_value": 4575
+        },
+        {
+          "dataset_metric": "reach",
+          "dataset_source_path": "dataset.data.reach",
+          "dataset_value": 180288,
+          "live_daily_points": 21,
+          "live_metric_key": "reach",
+          "live_value": 180294
+        },
+        {
+          "dataset_metric": "impressions",
+          "dataset_source_path": "sum(dataset.data.impressions_daily)",
+          "dataset_value": 0,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "engagement",
+          "dataset_source_path": "dataset.data.engagement",
+          "dataset_value": 4965,
+          "live_daily_points": 21,
+          "live_metric_key": "page_post_engagements",
+          "live_value": 4965
+        },
+        {
+          "dataset_metric": "link_clicks",
+          "dataset_source_path": "sum(dataset.data.normalized_report_metrics.link_clicks_daily)",
+          "dataset_value": 0,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "page_views",
+          "dataset_source_path": "sum(dataset.data.normalized_report_metrics.page_visits_daily)",
+          "dataset_value": 0,
+          "live_daily_points": 21,
+          "live_metric_key": "page_views_total",
+          "live_value": 5748
+        }
+      ],
+      "metrics": {
+        "comments": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "comments",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "daily_engagement": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "report_inputs.daily_engagement",
+            "dataset.data.normalized_report_metrics.interactions_daily",
+            "report_inputs.engagement_daily",
+            "report_inputs.interactions_daily"
+          ],
+          "metric_key": "daily_engagement",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_followers": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.followers_growth_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.followers_growth_daily",
+            "report_inputs.followers_growth_daily"
+          ],
+          "metric_key": "daily_followers",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_impressions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.impressions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "context.normalized_report_metrics.views_daily",
+            "dataset.data.impressions_daily",
+            "dataset.data.normalized_report_metrics.impressions_daily",
+            "report_inputs.impressions_daily"
+          ],
+          "metric_key": "daily_impressions",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_interactions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.interactions_daily",
+            "report_inputs.interactions_daily"
+          ],
+          "metric_key": "daily_interactions",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_page_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.page_visits_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.page_visits_daily",
+            "report_inputs.page_visits_daily"
+          ],
+          "metric_key": "daily_page_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_profile_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "daily_profile_views",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.reach_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "context.reach_daily",
+            "dataset.data.reach_daily",
+            "report_inputs.reach_daily"
+          ],
+          "metric_key": "daily_reach",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "engagement": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "report_inputs.daily_engagement",
+          "formatted_value": "4,965",
+          "matched_candidates": [
+            "dataset.data.engagement",
+            "report_inputs.engagement"
+          ],
+          "metric_key": "engagement",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.engagement",
+          "value": 4965,
+          "value_type": "int"
+        },
+        "fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "fans",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "follower_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "4,574",
+          "matched_candidates": [
+            "dataset.data.followers",
+            "report_inputs.followers"
+          ],
+          "metric_key": "follower_count",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.followers",
+          "value": 4574,
+          "value_type": "int"
+        },
+        "followers": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "4,574",
+          "matched_candidates": [
+            "dataset.data.followers",
+            "report_inputs.followers"
+          ],
+          "metric_key": "followers",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.followers",
+          "value": 4574,
+          "value_type": "int"
+        },
+        "impressions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.impressions_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "impressions",
+          "metric_origin": "unknown",
+          "reason": null,
+          "source_path": "sum(dataset.data.impressions_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "interactions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": "4,965",
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.interactions_total",
+            "dataset.data.report_metric_mapping.interactions.total",
+            "dataset.data.content_interactions",
+            "report_inputs.content_interactions"
+          ],
+          "metric_key": "interactions",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.content_interactions",
+          "value": 4965,
+          "value_type": "int"
+        },
+        "likes": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "likes",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "link_clicks": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.link_clicks_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "link_clicks",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "sum(dataset.data.normalized_report_metrics.link_clicks_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "page_fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "page_fans",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "page_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.page_visits_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "page_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "sum(dataset.data.normalized_report_metrics.page_visits_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "post_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "0",
+          "matched_candidates": [
+            "len(dataset.data.recent_posts)"
+          ],
+          "metric_key": "post_count",
+          "metric_origin": "calculated_by_backend",
+          "reason": null,
+          "source_path": "len(dataset.data.recent_posts)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "profile_views": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "6,092",
+          "matched_candidates": [
+            "report_inputs.profile_visits"
+          ],
+          "metric_key": "profile_views",
+          "metric_origin": "derived_report_input",
+          "reason": null,
+          "source_path": "report_inputs.profile_visits",
+          "value": 6092,
+          "value_type": "int"
+        },
+        "reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.reach_daily",
+          "formatted_value": "180,288",
+          "matched_candidates": [
+            "dataset.data.reach",
+            "dataset.data.normalized_report_metrics.viewers_total",
+            "dataset.data.report_metric_mapping.viewers.total",
+            "report_inputs.reach"
+          ],
+          "metric_key": "reach",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.reach",
+          "value": 180288,
+          "value_type": "int"
+        },
+        "reactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "reactions",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "saves": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "saves",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "shares": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "shares",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "video_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.views_daily",
+          "formatted_value": "6,092",
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.views_total",
+            "dataset.data.report_metric_mapping.views.total",
+            "report_inputs.views"
+          ],
+          "metric_key": "video_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "dataset.data.normalized_report_metrics.views_total",
+          "value": 6092,
+          "value_type": "int"
+        },
+        "website_clicks": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "website_clicks",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        }
+      },
+      "record_id": "595932073598543",
+      "record_type": "facebook_page",
+      "report_inputs_keys": [
+        "account_name",
+        "accounts_engaged",
+        "content_interactions",
+        "content_interactions_daily",
+        "daily_engagement",
+        "engagement",
+        "engagement_daily",
+        "engagement_source_metric",
+        "followers",
+        "followers_growth",
+        "followers_growth_daily",
+        "impressions",
+        "impressions_daily",
+        "impressions_source_metric",
+        "integration_type",
+        "interactions_daily",
+        "link_clicks",
+        "link_clicks_daily",
+        "page_name",
+        "page_visits_daily",
+        "profile_visits",
+        "reach",
+        "reach_daily",
+        "reach_source_metric",
+        "recent_posts",
+        "timeframe_key",
+        "timeframe_label",
+        "timeframe_preset",
+        "timeframe_since",
+        "timeframe_until",
+        "total_interactions",
+        "unavailable_metrics",
+        "username",
+        "views"
+      ],
+      "timeframe": {
+        "current_since": "2026-05-01",
+        "current_until": "2026-05-22",
+        "key": "this_month",
+        "label": "This Month",
+        "preset": null,
+        "previous_since": "2026-04-01",
+        "previous_until": "2026-04-22",
+        "requested_since": "2026-04-01",
+        "requested_until": "2026-05-22",
+        "selected_timeframe": "this_month",
+        "since": "2026-05-01",
+        "until": "2026-05-22"
+      },
+      "top_level_keys": [
+        "content_interactions",
+        "engagement",
+        "followers",
+        "followers_growth",
+        "impressions",
+        "impressions_daily",
+        "impressions_source_metric",
+        "link_clicks",
+        "normalized_report_metrics",
+        "page_name",
+        "profile_visits",
+        "reach",
+        "reach_daily",
+        "reach_source_metric",
+        "recent_posts",
+        "report_metric_mapping",
+        "timeframe"
+      ],
+      "user_id": 1,
+      "warnings": [
+        "WARNING: total does not match sum(daily_series). metric = reach; total = 180288; sum(daily_series) = 187569; source_path = dataset.data.reach; daily_source_path = dataset.data.reach_daily",
+        "WARNING: total does not match sum(daily_series). metric = impressions; total = 0; sum(daily_series) = 6092; source_path = sum(dataset.data.impressions_daily); daily_source_path = dataset.data.impressions_daily",
+        "WARNING: total does not match sum(daily_series). metric = engagement; total = 4965; sum(daily_series) = 5156; source_path = dataset.data.engagement; daily_source_path = report_inputs.daily_engagement"
+      ],
+      "workspace_id": 1,
+      "workspace_user_ids": [
+        1
+      ]
+    },
+    {
+      "created_at": "2026-05-22T20:04:51.078275+00:00",
+      "dataset_id": 185,
+      "dataset_name": "meta_page_595932073598543_insights.csv",
+      "integration_type": "facebook_pages",
+      "live_audit": {
+        "errors": [],
+        "integration_id": 5,
+        "meta_candidates": {
+          "impressions_candidates": [
+            "page_impressions"
+          ],
+          "reach_candidates": [
+            "page_impressions_unique"
+          ]
+        },
+        "metrics": {
+          "fan_count": {
+            "source_metric": "fan_count",
+            "value": 4575
+          },
+          "followers_count": {
+            "source_metric": "followers_count",
+            "value": 4575
+          },
+          "impressions": {
+            "daily_points": 0,
+            "source_metric": null,
+            "value": null
+          },
+          "page_consumptions": {
+            "daily_points": 0,
+            "source_metric": "page_consumptions",
+            "value": null
+          },
+          "page_fan_adds": {
+            "daily_points": 0,
+            "source_metric": "page_fan_adds",
+            "value": null
+          },
+          "page_post_engagements": {
+            "daily_points": 21,
+            "source_metric": "page_post_engagements",
+            "value": 4965
+          },
+          "page_profile_views": {
+            "daily_points": 0,
+            "source_metric": "page_profile_views",
+            "value": null
+          },
+          "page_views_total": {
+            "daily_points": 21,
+            "source_metric": "page_views_total",
+            "value": 5748
+          },
+          "reach": {
+            "daily_points": 21,
+            "source_metric": "page_impressions_unique",
+            "value": 180294
+          }
+        },
+        "record_id": "595932073598543",
+        "record_lookup": {
+          "candidate_count": 2,
+          "exact_match_workspace_id": 9,
+          "lookup_workspace_id": 1,
+          "record_id": "595932073598543",
+          "record_type": "facebook_page",
+          "selection_mode": "exact_record_cross_workspace"
+        },
+        "status": "ok",
+        "token_source": "meta_page_cache_token",
+        "workspace_mismatch": {
+          "dataset_workspace_id": 1,
+          "integration_workspace_id": 9
+        }
+      },
+      "live_vs_dataset": [
+        {
+          "dataset_metric": "followers",
+          "dataset_source_path": "dataset.data.followers",
+          "dataset_value": 4574,
+          "live_daily_points": null,
+          "live_metric_key": "followers_count",
+          "live_value": 4575
+        },
+        {
+          "dataset_metric": "reach",
+          "dataset_source_path": "dataset.data.reach",
+          "dataset_value": 180288,
+          "live_daily_points": 21,
+          "live_metric_key": "reach",
+          "live_value": 180294
+        },
+        {
+          "dataset_metric": "impressions",
+          "dataset_source_path": "sum(dataset.data.impressions_daily)",
+          "dataset_value": 0,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "engagement",
+          "dataset_source_path": "dataset.data.engagement",
+          "dataset_value": 4965,
+          "live_daily_points": 21,
+          "live_metric_key": "page_post_engagements",
+          "live_value": 4965
+        },
+        {
+          "dataset_metric": "link_clicks",
+          "dataset_source_path": "sum(dataset.data.normalized_report_metrics.link_clicks_daily)",
+          "dataset_value": 0,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "page_views",
+          "dataset_source_path": "sum(dataset.data.normalized_report_metrics.page_visits_daily)",
+          "dataset_value": 0,
+          "live_daily_points": 21,
+          "live_metric_key": "page_views_total",
+          "live_value": 5748
+        }
+      ],
+      "metrics": {
+        "comments": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "comments",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "daily_engagement": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "report_inputs.daily_engagement",
+            "dataset.data.normalized_report_metrics.interactions_daily",
+            "report_inputs.engagement_daily",
+            "report_inputs.interactions_daily"
+          ],
+          "metric_key": "daily_engagement",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_followers": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.followers_growth_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.followers_growth_daily",
+            "report_inputs.followers_growth_daily"
+          ],
+          "metric_key": "daily_followers",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_impressions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.impressions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "context.normalized_report_metrics.views_daily",
+            "dataset.data.impressions_daily",
+            "dataset.data.normalized_report_metrics.impressions_daily",
+            "report_inputs.impressions_daily"
+          ],
+          "metric_key": "daily_impressions",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_interactions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.interactions_daily",
+            "report_inputs.interactions_daily"
+          ],
+          "metric_key": "daily_interactions",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_page_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.page_visits_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.page_visits_daily",
+            "report_inputs.page_visits_daily"
+          ],
+          "metric_key": "daily_page_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_profile_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "daily_profile_views",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.reach_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "context.reach_daily",
+            "dataset.data.reach_daily",
+            "report_inputs.reach_daily"
+          ],
+          "metric_key": "daily_reach",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "engagement": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "report_inputs.daily_engagement",
+          "formatted_value": "4,965",
+          "matched_candidates": [
+            "dataset.data.engagement",
+            "report_inputs.engagement"
+          ],
+          "metric_key": "engagement",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.engagement",
+          "value": 4965,
+          "value_type": "int"
+        },
+        "fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "fans",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "follower_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "4,574",
+          "matched_candidates": [
+            "dataset.data.followers",
+            "report_inputs.followers"
+          ],
+          "metric_key": "follower_count",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.followers",
+          "value": 4574,
+          "value_type": "int"
+        },
+        "followers": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "4,574",
+          "matched_candidates": [
+            "dataset.data.followers",
+            "report_inputs.followers"
+          ],
+          "metric_key": "followers",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.followers",
+          "value": 4574,
+          "value_type": "int"
+        },
+        "impressions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.impressions_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "impressions",
+          "metric_origin": "unknown",
+          "reason": null,
+          "source_path": "sum(dataset.data.impressions_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "interactions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": "4,965",
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.interactions_total",
+            "dataset.data.report_metric_mapping.interactions.total",
+            "dataset.data.content_interactions",
+            "report_inputs.content_interactions"
+          ],
+          "metric_key": "interactions",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.content_interactions",
+          "value": 4965,
+          "value_type": "int"
+        },
+        "likes": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "likes",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "link_clicks": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.link_clicks_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "link_clicks",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "sum(dataset.data.normalized_report_metrics.link_clicks_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "page_fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "page_fans",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "page_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.page_visits_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "page_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "sum(dataset.data.normalized_report_metrics.page_visits_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "post_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "0",
+          "matched_candidates": [
+            "len(dataset.data.recent_posts)"
+          ],
+          "metric_key": "post_count",
+          "metric_origin": "calculated_by_backend",
+          "reason": null,
+          "source_path": "len(dataset.data.recent_posts)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "profile_views": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "6,092",
+          "matched_candidates": [
+            "report_inputs.profile_visits"
+          ],
+          "metric_key": "profile_views",
+          "metric_origin": "derived_report_input",
+          "reason": null,
+          "source_path": "report_inputs.profile_visits",
+          "value": 6092,
+          "value_type": "int"
+        },
+        "reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.reach_daily",
+          "formatted_value": "180,288",
+          "matched_candidates": [
+            "dataset.data.reach",
+            "dataset.data.normalized_report_metrics.viewers_total",
+            "dataset.data.report_metric_mapping.viewers.total",
+            "report_inputs.reach"
+          ],
+          "metric_key": "reach",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.reach",
+          "value": 180288,
+          "value_type": "int"
+        },
+        "reactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "reactions",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "saves": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "saves",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "shares": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "shares",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "video_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.views_daily",
+          "formatted_value": "6,092",
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.views_total",
+            "dataset.data.report_metric_mapping.views.total",
+            "report_inputs.views"
+          ],
+          "metric_key": "video_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "dataset.data.normalized_report_metrics.views_total",
+          "value": 6092,
+          "value_type": "int"
+        },
+        "website_clicks": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "website_clicks",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        }
+      },
+      "record_id": "595932073598543",
+      "record_type": "facebook_page",
+      "report_inputs_keys": [
+        "account_name",
+        "accounts_engaged",
+        "content_interactions",
+        "content_interactions_daily",
+        "daily_engagement",
+        "engagement",
+        "engagement_daily",
+        "engagement_source_metric",
+        "followers",
+        "followers_growth",
+        "followers_growth_daily",
+        "impressions",
+        "impressions_daily",
+        "impressions_source_metric",
+        "integration_type",
+        "interactions_daily",
+        "link_clicks",
+        "link_clicks_daily",
+        "page_name",
+        "page_visits_daily",
+        "profile_visits",
+        "reach",
+        "reach_daily",
+        "reach_source_metric",
+        "recent_posts",
+        "timeframe_key",
+        "timeframe_label",
+        "timeframe_preset",
+        "timeframe_since",
+        "timeframe_until",
+        "total_interactions",
+        "unavailable_metrics",
+        "username",
+        "views"
+      ],
+      "timeframe": {
+        "current_since": "2026-05-01",
+        "current_until": "2026-05-22",
+        "key": "this_month",
+        "label": "This Month",
+        "preset": null,
+        "previous_since": "2026-04-01",
+        "previous_until": "2026-04-22",
+        "requested_since": "2026-04-01",
+        "requested_until": "2026-05-22",
+        "selected_timeframe": "this_month",
+        "since": "2026-05-01",
+        "until": "2026-05-22"
+      },
+      "top_level_keys": [
+        "content_interactions",
+        "engagement",
+        "followers",
+        "followers_growth",
+        "impressions",
+        "impressions_daily",
+        "impressions_source_metric",
+        "link_clicks",
+        "normalized_report_metrics",
+        "page_name",
+        "profile_visits",
+        "reach",
+        "reach_daily",
+        "reach_source_metric",
+        "recent_posts",
+        "report_metric_mapping",
+        "timeframe"
+      ],
+      "user_id": 1,
+      "warnings": [
+        "WARNING: total does not match sum(daily_series). metric = reach; total = 180288; sum(daily_series) = 187569; source_path = dataset.data.reach; daily_source_path = dataset.data.reach_daily",
+        "WARNING: total does not match sum(daily_series). metric = impressions; total = 0; sum(daily_series) = 6092; source_path = sum(dataset.data.impressions_daily); daily_source_path = dataset.data.impressions_daily",
+        "WARNING: total does not match sum(daily_series). metric = engagement; total = 4965; sum(daily_series) = 5156; source_path = dataset.data.engagement; daily_source_path = report_inputs.daily_engagement"
+      ],
+      "workspace_id": 1,
+      "workspace_user_ids": [
+        1
+      ]
+    },
+    {
+      "created_at": "2026-05-22T04:46:19.017888+00:00",
+      "dataset_id": 184,
+      "dataset_name": "meta_page_595932073598543_insights.csv",
+      "integration_type": "facebook_pages",
+      "live_audit": {
+        "errors": [],
+        "integration_id": 5,
+        "meta_candidates": {
+          "impressions_candidates": [
+            "page_impressions"
+          ],
+          "reach_candidates": [
+            "page_impressions_unique"
+          ]
+        },
+        "metrics": {
+          "fan_count": {
+            "source_metric": "fan_count",
+            "value": 4575
+          },
+          "followers_count": {
+            "source_metric": "followers_count",
+            "value": 4575
+          },
+          "impressions": {
+            "daily_points": 0,
+            "source_metric": null,
+            "value": null
+          },
+          "page_consumptions": {
+            "daily_points": 0,
+            "source_metric": "page_consumptions",
+            "value": null
+          },
+          "page_fan_adds": {
+            "daily_points": 0,
+            "source_metric": "page_fan_adds",
+            "value": null
+          },
+          "page_post_engagements": {
+            "daily_points": 6,
+            "source_metric": "page_post_engagements",
+            "value": 1129
+          },
+          "page_profile_views": {
+            "daily_points": 0,
+            "source_metric": "page_profile_views",
+            "value": null
+          },
+          "page_views_total": {
+            "daily_points": 6,
+            "source_metric": "page_views_total",
+            "value": 1163
+          },
+          "reach": {
+            "daily_points": 6,
+            "source_metric": "page_impressions_unique",
+            "value": 44860
+          }
+        },
+        "record_id": "595932073598543",
+        "record_lookup": {
+          "candidate_count": 2,
+          "exact_match_workspace_id": 9,
+          "lookup_workspace_id": 1,
+          "record_id": "595932073598543",
+          "record_type": "facebook_page",
+          "selection_mode": "exact_record_cross_workspace"
+        },
+        "status": "ok",
+        "token_source": "meta_page_cache_token",
+        "workspace_mismatch": {
+          "dataset_workspace_id": 1,
+          "integration_workspace_id": 9
+        }
+      },
+      "live_vs_dataset": [
+        {
+          "dataset_metric": "followers",
+          "dataset_source_path": "dataset.data.followers",
+          "dataset_value": 4565,
+          "live_daily_points": null,
+          "live_metric_key": "followers_count",
+          "live_value": 4575
+        },
+        {
+          "dataset_metric": "reach",
+          "dataset_source_path": "dataset.data.reach",
+          "dataset_value": 44860,
+          "live_daily_points": 6,
+          "live_metric_key": "reach",
+          "live_value": 44860
+        },
+        {
+          "dataset_metric": "impressions",
+          "dataset_source_path": "sum(dataset.data.impressions_daily)",
+          "dataset_value": 0,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "engagement",
+          "dataset_source_path": "dataset.data.engagement",
+          "dataset_value": 1129,
+          "live_daily_points": 6,
+          "live_metric_key": "page_post_engagements",
+          "live_value": 1129
+        },
+        {
+          "dataset_metric": "link_clicks",
+          "dataset_source_path": "sum(dataset.data.normalized_report_metrics.link_clicks_daily)",
+          "dataset_value": 0,
+          "live_daily_points": null,
+          "live_metric_key": null,
+          "live_value": null
+        },
+        {
+          "dataset_metric": "page_views",
+          "dataset_source_path": "sum(dataset.data.normalized_report_metrics.page_visits_daily)",
+          "dataset_value": 0,
+          "live_daily_points": 6,
+          "live_metric_key": "page_views_total",
+          "live_value": 1163
+        }
+      ],
+      "metrics": {
+        "comments": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "comments",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "daily_engagement": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "report_inputs.daily_engagement",
+            "dataset.data.normalized_report_metrics.interactions_daily",
+            "report_inputs.engagement_daily",
+            "report_inputs.interactions_daily"
+          ],
+          "metric_key": "daily_engagement",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_followers": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.followers_growth_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.followers_growth_daily",
+            "report_inputs.followers_growth_daily"
+          ],
+          "metric_key": "daily_followers",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_impressions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.impressions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "context.normalized_report_metrics.views_daily",
+            "dataset.data.impressions_daily",
+            "dataset.data.normalized_report_metrics.impressions_daily",
+            "report_inputs.impressions_daily"
+          ],
+          "metric_key": "daily_impressions",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_interactions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.interactions_daily",
+            "report_inputs.interactions_daily"
+          ],
+          "metric_key": "daily_interactions",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_page_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.page_visits_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.page_visits_daily",
+            "report_inputs.page_visits_daily"
+          ],
+          "metric_key": "daily_page_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_profile_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "daily_profile_views",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "daily_reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.reach_daily",
+          "formatted_value": null,
+          "matched_candidates": [
+            "context.reach_daily",
+            "dataset.data.reach_daily",
+            "report_inputs.reach_daily"
+          ],
+          "metric_key": "daily_reach",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": null,
+          "value": null,
+          "value_type": "daily_series"
+        },
+        "engagement": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "report_inputs.daily_engagement",
+          "formatted_value": "1,129",
+          "matched_candidates": [
+            "dataset.data.engagement",
+            "report_inputs.engagement"
+          ],
+          "metric_key": "engagement",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.engagement",
+          "value": 1129,
+          "value_type": "int"
+        },
+        "fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "fans",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "follower_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "4,565",
+          "matched_candidates": [
+            "dataset.data.followers",
+            "report_inputs.followers"
+          ],
+          "metric_key": "follower_count",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.followers",
+          "value": 4565,
+          "value_type": "int"
+        },
+        "followers": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "4,565",
+          "matched_candidates": [
+            "dataset.data.followers",
+            "report_inputs.followers"
+          ],
+          "metric_key": "followers",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.followers",
+          "value": 4565,
+          "value_type": "int"
+        },
+        "impressions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.impressions_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "impressions",
+          "metric_origin": "unknown",
+          "reason": null,
+          "source_path": "sum(dataset.data.impressions_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "interactions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.interactions_daily",
+          "formatted_value": "1,129",
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.interactions_total",
+            "dataset.data.report_metric_mapping.interactions.total",
+            "dataset.data.content_interactions",
+            "report_inputs.content_interactions"
+          ],
+          "metric_key": "interactions",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.content_interactions",
+          "value": 1129,
+          "value_type": "int"
+        },
+        "likes": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "likes",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "link_clicks": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.link_clicks_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "link_clicks",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "sum(dataset.data.normalized_report_metrics.link_clicks_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "page_fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "page_fans",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "page_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.page_visits_daily",
+          "formatted_value": "0",
+          "matched_candidates": [],
+          "metric_key": "page_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "sum(dataset.data.normalized_report_metrics.page_visits_daily)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "post_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "0",
+          "matched_candidates": [
+            "len(dataset.data.recent_posts)"
+          ],
+          "metric_key": "post_count",
+          "metric_origin": "calculated_by_backend",
+          "reason": null,
+          "source_path": "len(dataset.data.recent_posts)",
+          "value": 0,
+          "value_type": "int"
+        },
+        "profile_views": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": "1,367",
+          "matched_candidates": [
+            "report_inputs.profile_visits"
+          ],
+          "metric_key": "profile_views",
+          "metric_origin": "derived_report_input",
+          "reason": null,
+          "source_path": "report_inputs.profile_visits",
+          "value": 1367,
+          "value_type": "int"
+        },
+        "reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.reach_daily",
+          "formatted_value": "44,860",
+          "matched_candidates": [
+            "dataset.data.reach",
+            "dataset.data.normalized_report_metrics.viewers_total",
+            "dataset.data.report_metric_mapping.viewers.total",
+            "report_inputs.reach"
+          ],
+          "metric_key": "reach",
+          "metric_origin": "direct_saved_dataset_field",
+          "reason": null,
+          "source_path": "dataset.data.reach",
+          "value": 44860,
+          "value_type": "int"
+        },
+        "reactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "reactions",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "saves": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "saves",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "shares": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "shares",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        },
+        "video_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-15",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 7,
+          "daily_series_source_path": "dataset.data.normalized_report_metrics.views_daily",
+          "formatted_value": "1,367",
+          "matched_candidates": [
+            "dataset.data.normalized_report_metrics.views_total",
+            "dataset.data.report_metric_mapping.views.total",
+            "report_inputs.views"
+          ],
+          "metric_key": "video_views",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "reason": null,
+          "source_path": "dataset.data.normalized_report_metrics.views_total",
+          "value": 1367,
+          "value_type": "int"
+        },
+        "website_clicks": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "daily_series_source_path": null,
+          "formatted_value": null,
+          "matched_candidates": [],
+          "metric_key": "website_clicks",
+          "metric_origin": "unknown",
+          "reason": "not_found_in_dataset",
+          "source_path": null,
+          "value": null,
+          "value_type": null
+        }
+      },
+      "record_id": "595932073598543",
+      "record_type": "facebook_page",
+      "report_inputs_keys": [
+        "account_name",
+        "accounts_engaged",
+        "content_interactions",
+        "content_interactions_daily",
+        "daily_engagement",
+        "engagement",
+        "engagement_daily",
+        "engagement_source_metric",
+        "followers",
+        "followers_growth",
+        "followers_growth_daily",
+        "impressions",
+        "impressions_daily",
+        "impressions_source_metric",
+        "integration_type",
+        "interactions_daily",
+        "link_clicks",
+        "link_clicks_daily",
+        "page_name",
+        "page_visits_daily",
+        "profile_visits",
+        "reach",
+        "reach_daily",
+        "reach_source_metric",
+        "recent_posts",
+        "timeframe_key",
+        "timeframe_label",
+        "timeframe_preset",
+        "timeframe_since",
+        "timeframe_until",
+        "total_interactions",
+        "unavailable_metrics",
+        "username",
+        "views"
+      ],
+      "timeframe": {
+        "current_since": "2026-05-15",
+        "current_until": "2026-05-21",
+        "key": "last_7_days",
+        "label": "Last 7 Days",
+        "preset": "last_7_days",
+        "previous_since": "2026-05-08",
+        "previous_until": "2026-05-14",
+        "requested_since": "2026-05-08",
+        "requested_until": "2026-05-21",
+        "selected_timeframe": "last_7_days",
+        "since": "2026-05-15",
+        "until": "2026-05-21"
+      },
+      "top_level_keys": [
+        "content_interactions",
+        "engagement",
+        "followers",
+        "followers_growth",
+        "impressions",
+        "impressions_daily",
+        "impressions_source_metric",
+        "link_clicks",
+        "normalized_report_metrics",
+        "page_name",
+        "profile_visits",
+        "reach",
+        "reach_daily",
+        "reach_source_metric",
+        "recent_posts",
+        "report_metric_mapping",
+        "timeframe"
+      ],
+      "user_id": 1,
+      "warnings": [
+        "WARNING: total does not match sum(daily_series). metric = reach; total = 44860; sum(daily_series) = 53908; source_path = dataset.data.reach; daily_source_path = dataset.data.reach_daily",
+        "WARNING: total does not match sum(daily_series). metric = impressions; total = 0; sum(daily_series) = 1367; source_path = sum(dataset.data.impressions_daily); daily_source_path = dataset.data.impressions_daily",
+        "WARNING: total does not match sum(daily_series). metric = engagement; total = 1129; sum(daily_series) = 1386; source_path = dataset.data.engagement; daily_source_path = report_inputs.daily_engagement"
+      ],
+      "workspace_id": 1,
+      "workspace_user_ids": [
+        1
+      ]
+    }
+  ],
+  "generated_at": "2026-05-22T21:08:36.140337+00:00",
+  "live_enabled": true,
+  "scope": {
+    "dataset_id_used_for_scope": 188,
+    "matched_dataset_count": 5,
+    "requested_user_id": null,
+    "requested_workspace_id": null,
+    "resolved_workspace_id": 1,
+    "selection_mode": "latest_workspace_from_matching_dataset"
+  },
+  "summaries": {
+    "facebook_pages": {
+      "dataset_count": 4,
+      "integration_type": "facebook_pages",
+      "latest_dataset_id": 188,
+      "metrics": {
+        "comments": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "daily_engagement": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": null,
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "source_path": null,
+          "value": null
+        },
+        "daily_followers": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": null,
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "source_path": null,
+          "value": null
+        },
+        "daily_impressions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": null,
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": null,
+          "value": null
+        },
+        "daily_interactions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": null,
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "source_path": null,
+          "value": null
+        },
+        "daily_page_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": null,
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "source_path": null,
+          "value": null
+        },
+        "daily_profile_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "daily_reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": null,
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": null,
+          "value": null
+        },
+        "engagement": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": "4,965",
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": "dataset.data.engagement",
+          "value": 4965
+        },
+        "fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "follower_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": "4,575",
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": "dataset.data.followers",
+          "value": 4575
+        },
+        "followers": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": "4,575",
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": "dataset.data.followers",
+          "value": 4575
+        },
+        "impressions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": "0",
+          "metric_origin": "unknown",
+          "source_path": "sum(dataset.data.impressions_daily)",
+          "value": 0
+        },
+        "interactions": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": "4,965",
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": "dataset.data.content_interactions",
+          "value": 4965
+        },
+        "likes": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "link_clicks": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": "0",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "source_path": "sum(dataset.data.normalized_report_metrics.link_clicks_daily)",
+          "value": 0
+        },
+        "page_fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "page_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": "0",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "source_path": "sum(dataset.data.normalized_report_metrics.page_visits_daily)",
+          "value": 0
+        },
+        "post_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": "0",
+          "metric_origin": "calculated_by_backend",
+          "source_path": "len(dataset.data.recent_posts)",
+          "value": 0
+        },
+        "profile_views": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": "6,092",
+          "metric_origin": "derived_report_input",
+          "source_path": "report_inputs.profile_visits",
+          "value": 6092
+        },
+        "reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": "180,294",
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": "dataset.data.reach",
+          "value": 180294
+        },
+        "reactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "saves": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "shares": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "video_views": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-22",
+          "daily_series_length": 22,
+          "formatted_value": "6,092",
+          "metric_origin": "normalized_or_calculated_by_backend",
+          "source_path": "dataset.data.normalized_report_metrics.views_total",
+          "value": 6092
+        },
+        "website_clicks": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        }
+      },
+      "warnings": [
+        "WARNING: total does not match sum(daily_series). metric = reach; total = 180294; sum(daily_series) = 187575; source_path = dataset.data.reach; daily_source_path = dataset.data.reach_daily",
+        "WARNING: total does not match sum(daily_series). metric = impressions; total = 0; sum(daily_series) = 6092; source_path = sum(dataset.data.impressions_daily); daily_source_path = dataset.data.impressions_daily",
+        "WARNING: total does not match sum(daily_series). metric = engagement; total = 4965; sum(daily_series) = 5156; source_path = dataset.data.engagement; daily_source_path = report_inputs.daily_engagement"
+      ]
+    },
+    "instagram_business": {
+      "dataset_count": 1,
+      "integration_type": "instagram_business",
+      "latest_dataset_id": 187,
+      "metrics": {
+        "comments": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "daily_engagement": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "daily_followers": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "daily_impressions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "daily_interactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "daily_page_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "daily_profile_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "daily_reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 21,
+          "formatted_value": null,
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": null,
+          "value": null
+        },
+        "engagement": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "follower_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": "7,827",
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": "dataset.data.followers",
+          "value": 7827
+        },
+        "followers": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": "7,827",
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": "dataset.data.followers",
+          "value": 7827
+        },
+        "impressions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "interactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "likes": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "link_clicks": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "page_fans": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "page_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "post_count": {
+          "available": true,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": "0",
+          "metric_origin": "calculated_by_backend",
+          "source_path": "len(dataset.data.recent_posts)",
+          "value": 0
+        },
+        "profile_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "reach": {
+          "available": true,
+          "daily_series_available": true,
+          "daily_series_first_date": "2026-05-01",
+          "daily_series_last_date": "2026-05-21",
+          "daily_series_length": 21,
+          "formatted_value": "97,072",
+          "metric_origin": "direct_saved_dataset_field",
+          "source_path": "dataset.data.reach",
+          "value": 97072
+        },
+        "reactions": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "saves": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "shares": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "video_views": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        },
+        "website_clicks": {
+          "available": false,
+          "daily_series_available": false,
+          "daily_series_first_date": null,
+          "daily_series_last_date": null,
+          "daily_series_length": 0,
+          "formatted_value": null,
+          "metric_origin": "unknown",
+          "source_path": null,
+          "value": null
+        }
+      },
+      "warnings": []
+    }
+  },
+  "warnings": [
+    "WARNING: total does not match sum(daily_series). metric = reach; total = 180294; sum(daily_series) = 187575; source_path = dataset.data.reach; daily_source_path = dataset.data.reach_daily",
+    "WARNING: total does not match sum(daily_series). metric = impressions; total = 0; sum(daily_series) = 6092; source_path = sum(dataset.data.impressions_daily); daily_source_path = dataset.data.impressions_daily",
+    "WARNING: total does not match sum(daily_series). metric = engagement; total = 4965; sum(daily_series) = 5156; source_path = dataset.data.engagement; daily_source_path = report_inputs.daily_engagement",
+    "WARNING: total does not match sum(daily_series). metric = reach; total = 180288; sum(daily_series) = 187569; source_path = dataset.data.reach; daily_source_path = dataset.data.reach_daily",
+    "WARNING: total does not match sum(daily_series). metric = impressions; total = 0; sum(daily_series) = 6092; source_path = sum(dataset.data.impressions_daily); daily_source_path = dataset.data.impressions_daily",
+    "WARNING: total does not match sum(daily_series). metric = engagement; total = 4965; sum(daily_series) = 5156; source_path = dataset.data.engagement; daily_source_path = report_inputs.daily_engagement",
+    "WARNING: total does not match sum(daily_series). metric = reach; total = 180288; sum(daily_series) = 187569; source_path = dataset.data.reach; daily_source_path = dataset.data.reach_daily",
+    "WARNING: total does not match sum(daily_series). metric = impressions; total = 0; sum(daily_series) = 6092; source_path = sum(dataset.data.impressions_daily); daily_source_path = dataset.data.impressions_daily",
+    "WARNING: total does not match sum(daily_series). metric = engagement; total = 4965; sum(daily_series) = 5156; source_path = dataset.data.engagement; daily_source_path = report_inputs.daily_engagement",
+    "WARNING: total does not match sum(daily_series). metric = reach; total = 44860; sum(daily_series) = 53908; source_path = dataset.data.reach; daily_source_path = dataset.data.reach_daily",
+    "WARNING: total does not match sum(daily_series). metric = impressions; total = 0; sum(daily_series) = 1367; source_path = sum(dataset.data.impressions_daily); daily_source_path = dataset.data.impressions_daily",
+    "WARNING: total does not match sum(daily_series). metric = engagement; total = 1129; sum(daily_series) = 1386; source_path = dataset.data.engagement; daily_source_path = report_inputs.daily_engagement"
+  ]
+}

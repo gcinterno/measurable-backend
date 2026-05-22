@@ -224,14 +224,14 @@ def test_paid_workspace_reports_keep_custom_branding(client):
     )
     assert create_response.status_code == 200
     payload = create_response.json()
-    assert payload["branding"]["logo_url"] == "https://custom.example/user-logo.png"
+    assert payload["branding"]["logo_url"] == "https://custom.example/workspace-logo.png"
 
     db = SessionLocal()
     try:
         report = db.get(Report, payload["id"])
         assert report is not None
         metadata = json.loads(report.description or "{}")
-        assert metadata["branding"]["logo_url"] == "https://custom.example/user-logo.png"
+        assert metadata["branding"]["logo_url"] == "https://custom.example/workspace-logo.png"
 
         report_version = (
             db.query(ReportVersion)
@@ -248,10 +248,10 @@ def test_paid_workspace_reports_keep_custom_branding(client):
         db.refresh(export)
 
         export_payload = build_export_payload(db, export, report, report_version, [])
-        assert export_payload["report"]["branding"]["logo_url"] == "https://custom.example/user-logo.png"
+        assert export_payload["report"]["branding"]["logo_url"] == "https://custom.example/workspace-logo.png"
         assert export_payload["report"]["branding"]["brand_name"] == "Acme Workspace"
         assert export_payload["report"]["branding"]["resolved_brand_name"] == "Acme Workspace"
-        assert export_payload["report"]["branding"]["resolved_logo_url"] == "https://custom.example/user-logo.png"
+        assert export_payload["report"]["branding"]["resolved_logo_url"] == "https://custom.example/workspace-logo.png"
     finally:
         db.close()
 
@@ -260,8 +260,81 @@ def test_paid_workspace_reports_keep_custom_branding(client):
         headers=_auth_headers(refs["user_id"]),
     )
     assert get_response.status_code == 200
-    assert get_response.json()["branding"]["logo_url"] == "https://custom.example/user-logo.png"
+    assert get_response.json()["branding"]["logo_url"] == "https://custom.example/workspace-logo.png"
     assert get_response.json()["branding"]["brand_name"] == "Acme Workspace"
+
+
+def test_workspace_brand_assets_patch_are_shared_by_settings_and_reports(client):
+    refs = _seed_branding_fixture(plan="core")
+
+    update_response = client.patch(
+        f"/workspaces/{refs['workspace_id']}/branding",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "brand_name": "Agency Atria Marketing",
+            "brand_logo_url": "https://custom.example/atria-logo.png",
+        },
+    )
+    assert update_response.status_code == 200
+    workspace_payload = update_response.json()
+    assert workspace_payload["name"] == "Agency Atria Marketing"
+    assert workspace_payload["logo_url"] == "https://custom.example/atria-logo.png"
+    assert workspace_payload["brand_name"] == "Agency Atria Marketing"
+    assert workspace_payload["brand_logo_url"] == "https://custom.example/atria-logo.png"
+    assert workspace_payload["branding"]["resolved_brand_name"] == "Agency Atria Marketing"
+    assert workspace_payload["branding"]["resolved_logo_url"] == "https://custom.example/atria-logo.png"
+
+    get_response = client.get(
+        f"/workspaces/{refs['workspace_id']}",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    assert get_response.status_code == 200
+    assert get_response.json()["brand_name"] == "Agency Atria Marketing"
+    assert get_response.json()["brand_logo_url"] == "https://custom.example/atria-logo.png"
+
+    create_response = client.post(
+        "/reports",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "dataset_id": refs["dataset_id"],
+            "title": "Brand assets report",
+            "requested_slides": 2,
+            "locale": "en",
+        },
+    )
+    assert create_response.status_code == 200
+    report_payload = create_response.json()
+    assert report_payload["branding"]["resolved_brand_name"] == "Agency Atria Marketing"
+    assert report_payload["branding"]["resolved_logo_url"] == "https://custom.example/atria-logo.png"
+
+    db = SessionLocal()
+    try:
+        report = db.get(Report, report_payload["id"])
+        assert report is not None
+        metadata = json.loads(report.description or "{}")
+        assert metadata["branding"]["resolved_brand_name"] == "Agency Atria Marketing"
+        assert metadata["branding"]["resolved_logo_url"] == "https://custom.example/atria-logo.png"
+    finally:
+        db.close()
+
+
+def test_workspace_update_accepts_brand_asset_aliases(client):
+    refs = _seed_branding_fixture(plan="core")
+
+    update_response = client.put(
+        f"/workspaces/{refs['workspace_id']}",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "brand_name": "New Report Brand",
+            "brand_logo_url": "https://custom.example/new-report-logo.png",
+        },
+    )
+    assert update_response.status_code == 200
+    payload = update_response.json()
+    assert payload["name"] == "New Report Brand"
+    assert payload["logo_url"] == "https://custom.example/new-report-logo.png"
+    assert payload["branding"]["resolved_brand_name"] == "New Report Brand"
+    assert payload["branding"]["resolved_logo_url"] == "https://custom.example/new-report-logo.png"
 
 
 def test_paid_workspace_reports_fallback_to_measurable_logo_and_default_brand_name(client):

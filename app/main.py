@@ -86,6 +86,7 @@ from .models import (
     Subscription,
     User,
     UserAttribution,
+    UserSuggestion,
     Workspace,
     WorkspaceMember,
 )
@@ -109,8 +110,10 @@ from .schemas import (
     AdminOnboardingCountsOut,
     AdminOnboardingInsightsOut,
     AdminPlatformCountsOut,
+    AdminSuggestionOut,
     AdminUserOut,
     AdminUsersOut,
+    AccountSummaryOut,
     DeleteAccountIn,
     DeleteAccountOut,
     ConversationOut,
@@ -161,13 +164,22 @@ from .schemas import (
     ReportBlockUpdateIn,
     ReportCreateIn,
     ReportDeleteOut,
+    ReportFolderUpdateIn,
+    ReportFolderUpdateOut,
+    ReportIntegrationMetadataOut,
     ReportOut,
     ReportSourceRead,
     ReportVersionOut,
     ScheduleCreateIn,
     ScheduleSchema,
     ScheduleUpdateIn,
+    SuggestionCreateIn,
+    SuggestionCreateOut,
+    SuggestionStatusUpdateIn,
     TokenOut,
+    UserSuggestionOut,
+    WorkspaceAccountDisplayNameUpdateIn,
+    WorkspaceBrandingUpdateIn,
     WorkspaceUpdateIn,
     WorkspaceCreateIn,
     WorkspaceOut,
@@ -208,6 +220,7 @@ from .services import (
     issue_auth_code,
     send_auth_email,
     validate_auth_code,
+    count_workspace_reports_this_month,
     count_workspace_storage_bytes,
     enforce_storage_limit,
     enforce_export_capability,
@@ -219,6 +232,8 @@ from .services import (
     get_workspace_plan,
     get_plan_limits,
     hash_client_ip,
+    report_branding_mode_for_plan,
+    resolve_account_display_name,
     resolve_report_slide_limits,
     resolve_report_branding_for_workspace,
     resolve_meta_pages_timeframe,
@@ -238,17 +253,79 @@ from .services import (
 
 logger = logging.getLogger(__name__)
 DEFAULT_GENERATED_REPORT_SLIDE_COUNT = 2
+INTEGRATIONS_TOTAL_AVAILABLE = 3
+
+
+def _workspace_account_display_payload(workspace: Workspace | None, user: User | None) -> dict[str, str | None]:
+    return resolve_account_display_name(workspace, user)
+
+
+def _workspace_plan_snapshot(db: Session, workspace_id: int) -> dict[str, object]:
+    plan = get_workspace_plan(db, workspace_id)
+    plan_limits = get_plan_limits(plan)
+    can_use_custom_branding = bool(plan_limits.get("allow_custom_branding"))
+    return {
+        "plan": plan,
+        "plan_limits": plan_limits,
+        "is_free_plan": plan == "free",
+        "can_use_custom_branding": can_use_custom_branding,
+        "report_branding_mode": report_branding_mode_for_plan(plan),
+    }
+
+
+def _workspace_summary_out(db: Session, workspace: Workspace, user: User | None) -> AccountSummaryOut:
+    plan_snapshot = _workspace_plan_snapshot(db, workspace.id)
+    plan_limits = dict(plan_snapshot["plan_limits"])
+    reports_created_count = int(
+        db.query(func.count(Report.id)).filter(Report.workspace_id == workspace.id).scalar() or 0
+    )
+    reports_this_month = count_workspace_reports_this_month(db, workspace.id)
+    report_limit = plan_limits.get("reports_per_month")
+    reports_remaining = None if report_limit is None else max(int(report_limit) - int(reports_this_month), 0)
+    integrations_connected_count = int(
+        db.query(func.count(Integration.id))
+        .filter(Integration.workspace_id == workspace.id, func.lower(Integration.status) == "connected")
+        .scalar()
+        or 0
+    )
+    account_display = _workspace_account_display_payload(workspace, user)
+    return AccountSummaryOut(
+        reports_created_count=reports_created_count,
+        reports_available_count=reports_remaining,
+        reports_remaining_this_month=reports_remaining,
+        reports_limit_this_month=int(report_limit) if report_limit is not None else None,
+        integrations_connected_count=integrations_connected_count,
+        integrations_total_available=INTEGRATIONS_TOTAL_AVAILABLE,
+        current_plan_name=str(plan_snapshot["plan"]),
+        current_plan_code=str(plan_snapshot["plan"]),
+        is_free_plan=bool(plan_snapshot["is_free_plan"]),
+        can_use_custom_branding=bool(plan_snapshot["can_use_custom_branding"]),
+        report_branding_mode=str(plan_snapshot["report_branding_mode"]),
+        account_display_name=account_display["account_display_name"],
+        account_display_name_effective=str(account_display["account_display_name_effective"]),
+    )
 
 
 def _workspace_out(db: Session, workspace: Workspace) -> WorkspaceOut:
-    plan = get_workspace_plan(db, workspace.id)
-    plan_limits = PlanLimitsOut(**get_plan_limits(plan))
+    plan_snapshot = _workspace_plan_snapshot(db, workspace.id)
+    plan = str(plan_snapshot["plan"])
+    plan_limits = PlanLimitsOut(**dict(plan_snapshot["plan_limits"]))
     storage_used_bytes = count_workspace_storage_bytes(db, workspace.id)
+    branding = resolve_report_branding(
+        None,
+        workspace,
+        plan,
+    )
+    account_display = _workspace_account_display_payload(workspace, None)
     return WorkspaceOut(
         id=workspace.id,
         name=workspace.name,
+        account_display_name=account_display["account_display_name"],
+        account_display_name_effective=str(account_display["account_display_name_effective"]),
         logo_url=workspace.logo_url,
-        branding=resolve_workspace_branding(workspace.id),
+        brand_name=workspace.name or None,
+        brand_logo_url=workspace.logo_url,
+        branding=branding,
         plan=plan,
         plan_limits=plan_limits,
         storage_used_bytes=storage_used_bytes,
@@ -1036,6 +1113,169 @@ def _report_status(report: Report) -> str | None:
     return str(status) if isinstance(status, str) and status.strip() else None
 
 
+def _canonical_report_integration_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"instagram", "instagram_business", "instagram_account"}:
+        return "instagram"
+    if normalized in {"facebook", "facebook_page", "facebook_pages", "meta_pages"}:
+        return "facebook"
+    if normalized in {"meta", "meta_ads"}:
+        return "meta"
+    if normalized in {"csv", "csv_upload"}:
+        return "csv"
+    if normalized in {"upload", "file_upload", "manual_upload"}:
+        return "upload"
+    if normalized in {"legacy", "manual", "manual_report"}:
+        return "legacy"
+    return normalized or "legacy"
+
+
+def _report_integration_display_name(integration_type: str) -> str:
+    mapping = {
+        "instagram": "Instagram Business",
+        "facebook": "Facebook Page",
+        "meta": "Meta",
+        "csv": "CSV Upload",
+        "upload": "File Upload",
+        "legacy": "Manual / Legacy report",
+    }
+    return mapping.get(integration_type, "Unknown integration")
+
+
+def _report_source_handle(payload: dict[str, Any]) -> str | None:
+    for key in ("source_handle", "handle", "username", "instagram_username"):
+        value = str(payload.get(key) or "").strip()
+        if not value:
+            continue
+        return value if value.startswith("@") else f"@{value}" if key in {"username", "instagram_username"} else value
+    return None
+
+
+def derive_report_integration_metadata(
+    db: Session,
+    report: Report,
+    dataset: Dataset | None = None,
+) -> ReportIntegrationMetadataOut:
+    metadata = _report_metadata(report)
+    if "report_sources" in report.__dict__:
+        report_sources = list(report.report_sources)
+    else:
+        try:
+            report_sources = (
+                db.query(ReportSource)
+                .filter(ReportSource.report_id == report.id)
+                .order_by(ReportSource.position.asc(), ReportSource.id.asc())
+                .all()
+            )
+        except SQLAlchemyError:
+            report_sources = []
+    resolved_dataset = dataset or db.get(Dataset, report.dataset_id)
+    dataset_data = resolved_dataset.data if resolved_dataset is not None and isinstance(resolved_dataset.data, dict) else {}
+
+    payload_candidates: list[dict[str, Any]] = []
+    if report_sources:
+        primary_source = report_sources[0]
+        config_json = dict(primary_source.config_json) if isinstance(primary_source.config_json, dict) else {}
+        source_payload = {
+            "integration_type": primary_source.source_type or primary_source.provider,
+            "integration_display_name": _report_integration_display_name(
+                _canonical_report_integration_type(primary_source.source_type or primary_source.provider)
+            ),
+            "source_name": (
+                primary_source.label
+                or config_json.get("account_name")
+                or config_json.get("page_name")
+                or (
+                    primary_source.integration_account.display_name
+                    if primary_source.integration_account is not None
+                    else None
+                )
+            ),
+            "source_handle": _report_source_handle(config_json),
+            "social_network": config_json.get("social_network") or config_json.get("channel") or primary_source.provider,
+            "channel": config_json.get("channel") or primary_source.source_type,
+        }
+        payload_candidates.append(source_payload)
+
+    report_metadata_payload = metadata.get("integration_metadata") if isinstance(metadata.get("integration_metadata"), dict) else {}
+    if report_metadata_payload:
+        payload_candidates.append(dict(report_metadata_payload))
+    payload_candidates.append(
+        {
+            "integration_type": metadata.get("integration_type"),
+            "integration_display_name": metadata.get("integration_display_name"),
+            "source_name": metadata.get("source_name") or metadata.get("integration_account_name"),
+            "source_handle": metadata.get("source_handle"),
+            "social_network": metadata.get("social_network"),
+            "channel": metadata.get("channel"),
+        }
+    )
+    if dataset_data:
+        payload_candidates.append(
+            {
+                "integration_type": dataset_data.get("integration_type"),
+                "integration_display_name": dataset_data.get("integration_display_name"),
+                "source_name": (
+                    dataset_data.get("page_name")
+                    or dataset_data.get("account_name")
+                    or dataset_data.get("name")
+                    or dataset_data.get("file_name")
+                    or dataset_data.get("filename")
+                ),
+                "source_handle": _report_source_handle(dataset_data),
+                "social_network": dataset_data.get("social_network"),
+                "channel": dataset_data.get("channel") or dataset_data.get("integration_type"),
+            }
+        )
+
+    chosen: dict[str, Any] | None = None
+    for candidate in payload_candidates:
+        integration_type = _canonical_report_integration_type(candidate.get("integration_type"))
+        if integration_type != "legacy" or any(candidate.get(key) for key in ("source_name", "source_handle", "channel")):
+            chosen = dict(candidate)
+            chosen["integration_type"] = integration_type
+            break
+
+    if chosen is None:
+        chosen = {"integration_type": "legacy"}
+
+    integration_type = _canonical_report_integration_type(chosen.get("integration_type"))
+    if integration_type == "meta":
+        channel = str(chosen.get("channel") or "").strip().lower()
+        if channel in {"facebook", "facebook_pages", "meta_pages"}:
+            integration_type = "facebook"
+        elif channel in {"instagram", "instagram_business"}:
+            integration_type = "instagram"
+
+    source_name = str(chosen.get("source_name") or "").strip() or None
+    if source_name is None and integration_type == "legacy":
+        source_name = "Unknown source"
+
+    source_handle = _report_source_handle(chosen)
+    social_network = str(chosen.get("social_network") or "").strip().lower() or None
+    if social_network in {"facebook_pages", "meta_pages"}:
+        social_network = "facebook"
+    if social_network == "instagram_business":
+        social_network = "instagram"
+
+    channel = str(chosen.get("channel") or "").strip().lower() or None
+    canonical_channel = _canonical_report_integration_type(channel or integration_type)
+    if canonical_channel == "legacy":
+        canonical_channel = None if integration_type == "legacy" else integration_type
+
+    return ReportIntegrationMetadataOut(
+        integration_type=integration_type,
+        integration_display_name=(
+            str(chosen.get("integration_display_name") or "").strip()
+            or _report_integration_display_name(integration_type)
+        ),
+        source_name=source_name,
+        source_handle=source_handle,
+        social_network=social_network or (integration_type if integration_type in {"facebook", "instagram"} else None),
+        channel=canonical_channel,
+    )
+
+
 def _report_sources_out(db: Session, *, report_id: int) -> list[ReportSourceRead]:
     report_sources = (
         db.query(ReportSource)
@@ -1098,12 +1338,16 @@ def _report_version_out(
             version_id=report_version.id,
         ),
     )
+    integration_metadata = derive_report_integration_metadata(db, report)
     return ReportVersionOut(
         id=report_version.id,
         version_id=report_version.id,
         report_id=report_version.report_id,
         version=report_version.version,
+        folder_id=report.folder_id,
+        folder_name=report.folder_name,
         report_sources=_report_sources_out(db, report_id=report.id),
+        integration_metadata=integration_metadata,
         description=metadata,
         timeframe=_report_timeframe(report),
         locale=_report_locale(report),
@@ -2208,6 +2452,43 @@ def _user_list_value(value: Any) -> list[str]:
     return [str(value)]
 
 
+def _me_out(db: Session, current_user: User) -> MeOut:
+    workspace, _subscription = _find_user_workspace_and_subscription(db, user_id=current_user.id)
+    workspace_id = workspace.id if workspace is not None else None
+    plan_snapshot = (
+        _workspace_plan_snapshot(db, workspace.id)
+        if workspace is not None
+        else {
+            "plan": None,
+            "is_free_plan": True,
+            "can_use_custom_branding": False,
+            "report_branding_mode": "measurable",
+        }
+    )
+    account_display = _workspace_account_display_payload(workspace, current_user)
+    return MeOut(
+        id=current_user.id,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        workspace_id=workspace_id,
+        account_display_name=account_display["account_display_name"],
+        account_display_name_effective=str(account_display["account_display_name_effective"]),
+        email_verified=current_user.email_verified,
+        auth_provider=current_user.auth_provider,
+        is_admin=bool(getattr(current_user, "is_admin", False)),
+        last_login_at=current_user.last_login_at,
+        logo_url=(str(current_user.logo_url) if user_logo_column_available() and current_user.logo_url else None),
+        branding=_user_branding(current_user),
+        current_plan_name=str(plan_snapshot["plan"]) if plan_snapshot.get("plan") else None,
+        current_plan_code=str(plan_snapshot["plan"]) if plan_snapshot.get("plan") else None,
+        is_free_plan=bool(plan_snapshot["is_free_plan"]),
+        can_use_custom_branding=bool(plan_snapshot["can_use_custom_branding"]),
+        report_branding_mode=str(plan_snapshot["report_branding_mode"]),
+        created_at=current_user.created_at,
+        updated_at=current_user.updated_at,
+    )
+
+
 @app.get("/onboarding/me", response_model=OnboardingStateOut)
 def onboarding_me(current_user: User = Depends(get_current_user)) -> OnboardingStateOut:
     if not user_onboarding_columns_available():
@@ -2248,7 +2529,7 @@ def complete_onboarding(
 
 
 @app.get("/me", response_model=MeOut)
-def me(current_user: User = Depends(get_current_user)) -> MeOut:
+def me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> MeOut:
     logger.info(
         "AUTH_ME_DEBUG",
         extra={
@@ -2256,24 +2537,141 @@ def me(current_user: User = Depends(get_current_user)) -> MeOut:
             "is_admin": bool(getattr(current_user, "is_admin", False)),
         },
     )
-    return MeOut(
-        id=current_user.id,
-        email=current_user.email,
-        full_name=current_user.full_name,
-        email_verified=current_user.email_verified,
-        auth_provider=current_user.auth_provider,
-        is_admin=bool(getattr(current_user, "is_admin", False)),
-        last_login_at=current_user.last_login_at,
-        logo_url=(str(current_user.logo_url) if user_logo_column_available() and current_user.logo_url else None),
-        branding=_user_branding(current_user),
-        created_at=current_user.created_at,
-        updated_at=current_user.updated_at,
-    )
+    return _me_out(db, current_user)
 
 
 @app.get("/auth/me", response_model=MeOut)
-def auth_me(current_user: User = Depends(get_current_user)) -> MeOut:
-    return me(current_user)
+def auth_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> MeOut:
+    return _me_out(db, current_user)
+
+
+@app.get("/account/summary", response_model=AccountSummaryOut)
+def account_summary(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AccountSummaryOut:
+    workspace, _subscription = _find_user_workspace_and_subscription(db, user_id=current_user.id)
+    if workspace is None:
+        account_display = _workspace_account_display_payload(None, current_user)
+        return AccountSummaryOut(
+            integrations_total_available=INTEGRATIONS_TOTAL_AVAILABLE,
+            account_display_name=account_display["account_display_name"],
+            account_display_name_effective=str(account_display["account_display_name_effective"]),
+        )
+    return _workspace_summary_out(db, workspace, current_user)
+
+
+def _suggestion_out(suggestion: UserSuggestion) -> UserSuggestionOut:
+    return UserSuggestionOut(
+        id=suggestion.id,
+        user_id=suggestion.user_id,
+        workspace_id=suggestion.workspace_id,
+        message=suggestion.message,
+        status=suggestion.status,
+        source=suggestion.source,
+        reviewed_at=suggestion.reviewed_at,
+        reviewed_by=suggestion.reviewed_by,
+        created_at=suggestion.created_at,
+        updated_at=suggestion.updated_at,
+    )
+
+
+@app.post("/suggestions", response_model=SuggestionCreateOut, status_code=201)
+def create_suggestion(
+    payload: SuggestionCreateIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SuggestionCreateOut:
+    if not payload.message.strip():
+        raise http_error(400, "invalid_message", "Suggestion message is required.")
+    if len(payload.message) > 1000:
+        raise http_error(400, "message_too_long", "Suggestion message must be 1000 characters or fewer.")
+
+    workspace_ids = _workspace_ids_for_user(db, current_user.id)
+    suggestion = UserSuggestion(
+        user_id=current_user.id,
+        workspace_id=workspace_ids[0] if workspace_ids else None,
+        message=payload.message,
+        status="new",
+        source="floating_suggestion_button",
+    )
+    db.add(suggestion)
+    db.commit()
+    db.refresh(suggestion)
+    return SuggestionCreateOut(success=True, suggestion=_suggestion_out(suggestion))
+
+
+@app.get("/admin/suggestions", response_model=list[AdminSuggestionOut])
+def admin_list_suggestions(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> list[AdminSuggestionOut]:
+    rows = (
+        db.query(UserSuggestion, User.email, User.full_name, Workspace.name)
+        .join(User, User.id == UserSuggestion.user_id)
+        .outerjoin(Workspace, Workspace.id == UserSuggestion.workspace_id)
+        .order_by(UserSuggestion.created_at.desc(), UserSuggestion.id.desc())
+        .all()
+    )
+    return [
+        AdminSuggestionOut(
+            id=suggestion.id,
+            user_id=suggestion.user_id,
+            workspace_id=suggestion.workspace_id,
+            message=suggestion.message,
+            status=suggestion.status,
+            source=suggestion.source,
+            reviewed_at=suggestion.reviewed_at,
+            reviewed_by=suggestion.reviewed_by,
+            created_at=suggestion.created_at,
+            updated_at=suggestion.updated_at,
+            user_email=user_email,
+            user_name=user_name,
+            workspace_name=workspace_name,
+        )
+        for suggestion, user_email, user_name, workspace_name in rows
+    ]
+
+
+@app.patch("/admin/suggestions/{suggestion_id}", response_model=AdminSuggestionOut)
+def admin_update_suggestion_status(
+    suggestion_id: int,
+    payload: SuggestionStatusUpdateIn,
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> AdminSuggestionOut:
+    suggestion = db.get(UserSuggestion, suggestion_id)
+    if suggestion is None:
+        raise http_error(404, "suggestion_not_found", "Suggestion not found.")
+
+    suggestion.status = payload.status
+    if payload.status in {"reviewed", "archived"}:
+        suggestion.reviewed_at = datetime.now(timezone.utc)
+        suggestion.reviewed_by = current_user.id
+    elif payload.status == "new":
+        suggestion.reviewed_at = None
+        suggestion.reviewed_by = None
+    db.add(suggestion)
+    db.commit()
+    db.refresh(suggestion)
+
+    user = db.get(User, suggestion.user_id)
+    workspace = db.get(Workspace, suggestion.workspace_id) if suggestion.workspace_id is not None else None
+    return AdminSuggestionOut(
+        id=suggestion.id,
+        user_id=suggestion.user_id,
+        workspace_id=suggestion.workspace_id,
+        message=suggestion.message,
+        status=suggestion.status,
+        source=suggestion.source,
+        reviewed_at=suggestion.reviewed_at,
+        reviewed_by=suggestion.reviewed_by,
+        created_at=suggestion.created_at,
+        updated_at=suggestion.updated_at,
+        user_email=user.email if user else None,
+        user_name=user.full_name if user else None,
+        workspace_name=workspace.name if workspace else None,
+    )
 
 
 @app.get("/admin/metrics", response_model=AdminMetricsOut)
@@ -3335,18 +3733,23 @@ def update_me(
     db.add(current_user)
     db.commit()
     db.refresh(current_user)
-    return MeOut(
-        id=current_user.id,
-        email=current_user.email,
-        full_name=current_user.full_name,
-        email_verified=current_user.email_verified,
-        auth_provider=current_user.auth_provider,
-        last_login_at=current_user.last_login_at,
-        logo_url=(str(current_user.logo_url) if user_logo_column_available() and current_user.logo_url else None),
-        branding=_user_branding(current_user),
-        created_at=current_user.created_at,
-        updated_at=current_user.updated_at,
-    )
+    return _me_out(db, current_user)
+
+
+@app.patch("/me/workspace", response_model=WorkspaceOut)
+def update_my_workspace_account_display_name(
+    payload: WorkspaceAccountDisplayNameUpdateIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceOut:
+    workspace, _subscription = _find_user_workspace_and_subscription(db, user_id=current_user.id)
+    if workspace is None:
+        raise http_error(404, "workspace_not_found", "No workspace found for current user.")
+    workspace.account_display_name = str(payload.account_display_name or "").strip() or None
+    db.add(workspace)
+    db.commit()
+    db.refresh(workspace)
+    return _workspace_out(db, workspace)
 
 
 @app.post("/ai/chat", response_model=ChatReplyOut)
@@ -5481,6 +5884,11 @@ def _get_meta_integration(
 
 def _meta_page_out_from_cache(meta_page: MetaPage) -> MetaPageOut:
     is_instagram_record = meta_page.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT
+    display_label = (
+        f"@{meta_page.instagram_username}"
+        if is_instagram_record and str(meta_page.instagram_username or "").strip()
+        else meta_page.name
+    )
     return MetaPageOut(
         id=meta_page.page_id,
         account_id=meta_page.page_id if is_instagram_record else None,
@@ -5491,6 +5899,7 @@ def _meta_page_out_from_cache(meta_page: MetaPage) -> MetaPageOut:
         facebook_page_name=meta_page.business_name if is_instagram_record else meta_page.name,
         username=meta_page.instagram_username if is_instagram_record else None,
         name=meta_page.name,
+        display_label=display_label,
         category=meta_page.category,
         instagram_username=meta_page.instagram_username,
         profile_picture_url=meta_page.profile_picture_url,
@@ -6574,19 +6983,46 @@ METRIC_ALIASES: dict[str, list[str]] = {
         "link_clicks",
         "profile_activity",
     ],
+    "page_views": [
+        "page_views",
+        "page_views_total",
+        "page_visits",
+        "page_visits_total",
+        "views",
+        "views_total",
+        "profile_views",
+        "profile_visits",
+        "page_views_login",
+        "page_views_logout",
+        "profile_activity",
+    ],
+    "followers": [
+        "followers",
+        "followers_count",
+        "follower_count",
+        "fans",
+        "fan_count",
+        "page_fans",
+    ],
 }
 
 METRIC_LABELS: dict[str, str] = {
     "reach": "Reach",
     "impressions": "Impressions",
     "engagement": "Engagement",
+    "page_views": "Page Views",
+    "followers": "Followers",
 }
 
 METRIC_LABELS_ES: dict[str, str] = {
     "reach": "Alcance",
     "impressions": "Impresiones",
     "engagement": "Engagement",
+    "page_views": "Visitas a la página",
+    "followers": "Seguidores",
 }
+
+METRIC_UNAVAILABLE_MESSAGE = "Dato no disponible en este momento con los permisos actuales de Meta."
 
 
 def normalizeMetricValue(value) -> float | int | None:
@@ -7198,6 +7634,8 @@ def _meta_metric_unavailable_reason(context: dict, metric: str) -> str | None:
         candidate_keys.extend(["total_interactions", "content_interactions", "accounts_engaged"])
     elif metric == "followers":
         candidate_keys.extend(["followers_count", "followers"])
+    elif metric == "page_views":
+        candidate_keys.extend(["page_views", "page_visits", "profile_views", "views"])
     elif metric == "profile_visits":
         candidate_keys.extend(["profile_views"])
     elif metric == "link_clicks":
@@ -7225,8 +7663,9 @@ def _metric_aliases(metric_key: str) -> list[str]:
 def _metric_summary_description(metric_key: str) -> str:
     descriptions = {
         "reach": "Total reach",
-        "impressions": "Total impressions",
         "engagement": "Total engagement",
+        "followers": "Current audience size",
+        "page_views": "Total page views",
     }
     return descriptions.get(str(metric_key or "").strip().lower(), "Total metric value")
 
@@ -7243,18 +7682,41 @@ def _format_metric_summary_value(value: Any) -> str:
 
 
 def _build_summary_metric_card(metric_key: str, payload: dict[str, Any]) -> dict[str, Any]:
-    raw_value = payload.get("total")
+    is_available = bool(payload.get("is_available"))
+    raw_value = payload.get("total") if is_available else None
     simple_value: Any
     if isinstance(raw_value, (dict, list)):
-        simple_value = "N/A"
+        simple_value = None
     else:
-        simple_value = raw_value if raw_value not in (None, "") else "N/A"
+        simple_value = raw_value if raw_value not in (None, "") else None
     return {
         "label": payload.get("metric_label_en") or payload.get("metric_label") or metric_key.title(),
         "value": simple_value,
         "formatted_value": _format_metric_summary_value(simple_value),
-        "description": _metric_summary_description(metric_key),
+        "is_available": is_available,
+        "description": _metric_summary_description(metric_key) if is_available else METRIC_UNAVAILABLE_MESSAGE,
     }
+
+
+def _build_context_metric_summary_card(
+    context: dict[str, Any],
+    *,
+    metric_key: str,
+    metric_label: str | None = None,
+) -> dict[str, Any]:
+    points = extractDailyMetricSeries(context, metric_key)
+    total, _metric_source = _resolve_metric_total_details(context, metric_key, points)
+    is_available = total is not None or bool(points)
+    if total is None and points:
+        total = _meta_metric_total_for_series(metric_key, points)
+        is_available = total is not None
+    payload = {
+        "metric_label_en": metric_label or METRIC_LABELS.get(metric_key, metric_key.replace("_", " ").title()),
+        "metric_label": metric_label or METRIC_LABELS.get(metric_key, metric_key.replace("_", " ").title()),
+        "total": total if is_available else None,
+        "is_available": is_available,
+    }
+    return _build_summary_metric_card(metric_key, payload)
 
 
 def _daily_series_candidate_debug(context: dict, metric_key: str) -> dict[str, Any]:
@@ -7313,6 +7775,197 @@ def _daily_series_candidate_debug(context: dict, metric_key: str) -> dict[str, A
         "context_matching_paths": _matching_paths(context if isinstance(context, dict) else {}, "context"),
         "report_inputs_matching_paths": _matching_paths(report_inputs, "report_inputs"),
     }
+
+
+def _metric_unavailable_reason(context: dict, metric_key: str) -> str:
+    explicit_reason = str(_meta_metric_unavailable_reason(context, metric_key) or "").strip().lower()
+    if "permission" in explicit_reason or "scope" in explicit_reason:
+        return "missing_permission"
+    if "unsupported" in explicit_reason or "not_supported" in explicit_reason:
+        return "not_supported_for_source"
+    if "empty" in explicit_reason:
+        return "empty_response"
+    return "not_returned_by_meta"
+
+
+def _metric_period_bounds(context: dict) -> tuple[str | None, str | None]:
+    report_timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
+    period_start = str(report_timeframe.get("since") or report_timeframe.get("current_since") or "")[:10] or None
+    period_end = str(report_timeframe.get("until") or report_timeframe.get("current_until") or "")[:10] or None
+    return period_start, period_end
+
+
+def _series_first_last_dates(points: list[dict]) -> tuple[str | None, str | None]:
+    dates = [str(point.get("date") or "")[:10] for point in points if point.get("date")]
+    if not dates:
+        return None, None
+    return min(dates), max(dates)
+
+
+def _metric_direct_value_candidates(context: dict, metric_key: str) -> list[Any]:
+    report_inputs = _meta_report_inputs(context)
+    aliases = _metric_aliases(metric_key)
+    direct_values: list[Any] = []
+    if metric_key == "impressions":
+        impressions_payload = (
+            context.get("impressions_slide_payload")
+            if isinstance(context.get("impressions_slide_payload"), dict)
+            else {}
+        )
+        direct_values.extend(
+            [
+                impressions_payload.get("impressions_total"),
+                impressions_payload.get("total"),
+                impressions_payload.get("value"),
+            ]
+        )
+    for source in (context, report_inputs):
+        if not isinstance(source, dict):
+            continue
+        for alias in aliases:
+            metrics = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
+            normalized = (
+                source.get("normalized_report_metrics")
+                if isinstance(source.get("normalized_report_metrics"), dict)
+                else {}
+            )
+            direct_values.extend(
+                [
+                    source.get(alias),
+                    source.get(f"{alias}_total"),
+                    source.get(f"total_{alias}"),
+                    metrics.get(alias),
+                    metrics.get(f"{alias}_total"),
+                    normalized.get(alias),
+                    normalized.get(f"{alias}_total"),
+                ]
+            )
+    return direct_values
+
+
+def _engagement_component_values(context: dict) -> list[Any]:
+    report_inputs = _meta_report_inputs(context)
+    component_keys = ("reactions", "likes", "comments", "shares", "saves", "link_clicks")
+    return [report_inputs.get(key) for key in component_keys]
+
+
+def _engagement_direct_value_candidates(context: dict) -> list[Any]:
+    report_inputs = _meta_report_inputs(context)
+    direct_keys = ("engagement", "engagements", "interactions", "total_interactions", "post_engagements", "content_interactions")
+    direct_values: list[Any] = []
+    for source in (context, report_inputs):
+        if not isinstance(source, dict):
+            continue
+        metrics = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
+        normalized = (
+            source.get("normalized_report_metrics")
+            if isinstance(source.get("normalized_report_metrics"), dict)
+            else {}
+        )
+        for key in direct_keys:
+            direct_values.extend(
+                [
+                    source.get(key),
+                    source.get(f"{key}_total"),
+                    metrics.get(key),
+                    metrics.get(f"{key}_total"),
+                    normalized.get(key),
+                    normalized.get(f"{key}_total"),
+                ]
+            )
+    return direct_values
+
+
+def _page_views_direct_value_candidates(context: dict) -> list[Any]:
+    report_inputs = _meta_report_inputs(context)
+    direct_keys = (
+        "page_views",
+        "page_views_total",
+        "views",
+        "views_total",
+        "page_visits",
+        "page_visits_total",
+        "profile_views",
+        "profile_visits",
+        "page_views_login",
+        "page_views_logout",
+        "profile_activity",
+    )
+    direct_values: list[Any] = []
+    for source in (context, report_inputs):
+        if not isinstance(source, dict):
+            continue
+        metrics = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
+        normalized = (
+            source.get("normalized_report_metrics")
+            if isinstance(source.get("normalized_report_metrics"), dict)
+            else {}
+        )
+        report_metric_mapping = (
+            source.get("report_metric_mapping")
+            if isinstance(source.get("report_metric_mapping"), dict)
+            else {}
+        )
+        page_visits_mapping = (
+            report_metric_mapping.get("page_visits")
+            if isinstance(report_metric_mapping.get("page_visits"), dict)
+            else {}
+        )
+        views_mapping = (
+            report_metric_mapping.get("views")
+            if isinstance(report_metric_mapping.get("views"), dict)
+            else {}
+        )
+        direct_values.extend(
+            [
+                page_visits_mapping.get("total"),
+                views_mapping.get("total"),
+                normalized.get("page_visits_total"),
+                normalized.get("views_total"),
+            ]
+        )
+        for key in direct_keys:
+            direct_values.extend(
+                [
+                    source.get(key),
+                    source.get(f"{key}_total"),
+                    metrics.get(key),
+                    metrics.get(f"{key}_total"),
+                    normalized.get(key),
+                    normalized.get(f"{key}_total"),
+                ]
+            )
+    return direct_values
+
+
+def _resolve_metric_total_details(context: dict, metric_key: str, points: list[dict]) -> tuple[float | int | None, str]:
+    if metric_key == "engagement":
+        for value in _engagement_direct_value_candidates(context):
+            normalized = normalizeMetricValue(value)
+            if normalized is not None:
+                return normalized, "direct_meta_metric"
+        component_values = [normalizeMetricValue(value) for value in _engagement_component_values(context)]
+        if any(value is not None for value in component_values):
+            return sum(value or 0 for value in component_values), "calculated_from_components"
+        if points:
+            return _meta_metric_total_for_series(metric_key, points), "direct_meta_metric"
+        return None, "not_available"
+    if metric_key == "page_views":
+        for value in _page_views_direct_value_candidates(context):
+            normalized = normalizeMetricValue(value)
+            if normalized is not None:
+                return normalized, "direct_meta_metric"
+        if points:
+            return _meta_metric_total_for_series(metric_key, points), "direct_meta_metric"
+        return None, "not_available"
+
+    for value in _metric_direct_value_candidates(context, metric_key):
+        normalized = normalizeMetricValue(value)
+        if normalized is not None:
+            return normalized, "direct_meta_metric"
+    if points:
+        return _meta_metric_total_for_series(metric_key, points), "direct_meta_metric"
+    return None, "not_available"
 
 
 def _extract_series_candidate(candidate: Any) -> list[dict]:
@@ -7400,6 +8053,15 @@ def _extract_daily_metric_series_details(dataset: dict, metric_key: str) -> tupl
                 (report_inputs.get("interactions_daily"), "report_inputs.interactions_daily", "interactions"),
             ]
         )
+    if metric_key == "page_views":
+        candidate_pairs.extend(
+            [
+                (report_inputs.get("page_views_daily"), "report_inputs.page_views_daily", "page_views"),
+                (report_inputs.get("page_visits_daily"), "report_inputs.page_visits_daily", "page_visits"),
+                (report_inputs.get("profile_views_daily"), "report_inputs.profile_views_daily", "profile_views"),
+                (report_inputs.get("views_daily"), "report_inputs.views_daily", "views"),
+            ]
+        )
     for source in (dataset, report_inputs):
         if not isinstance(source, dict):
             continue
@@ -7470,8 +8132,6 @@ def _extract_daily_metric_series_details(dataset: dict, metric_key: str) -> tupl
                 (block.get("chart_data"), f"context.blocks[{index}].chart_data", metric_key),
             ]
         )
-    if metric_key == "engagement":
-        candidate_pairs.append((_meta_posts_daily_series(dataset, metric="engagement"), "context.posts_daily_series.engagement", "engagement"))
     first_any: tuple[list[dict], str | None, str | None] | None = None
     for candidate, source_path, matched_key in candidate_pairs:
         points = _extract_series_candidate(candidate)
@@ -7546,61 +8206,8 @@ def _meta_posts_daily_series(context: dict, *, metric: str) -> list[dict]:
 
 
 def _resolve_metric_total(context: dict, metric_key: str, points: list[dict]) -> float | int | None:
-    report_inputs = _meta_report_inputs(context)
-    aliases = _metric_aliases(metric_key)
-    direct_values: list[Any] = []
-    if metric_key == "impressions":
-        impressions_payload = (
-            context.get("impressions_slide_payload")
-            if isinstance(context.get("impressions_slide_payload"), dict)
-            else {}
-        )
-        direct_values.extend(
-            [
-                impressions_payload.get("impressions_total"),
-                impressions_payload.get("total"),
-                impressions_payload.get("value"),
-            ]
-        )
-    for source in (context, report_inputs):
-        if not isinstance(source, dict):
-            continue
-        for alias in aliases:
-            direct_values.extend(
-                [
-                    source.get(alias),
-                    source.get(f"{alias}_total"),
-                    source.get(f"total_{alias}"),
-                ]
-            )
-            metrics = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
-            normalized = (
-                source.get("normalized_report_metrics")
-                if isinstance(source.get("normalized_report_metrics"), dict)
-                else {}
-            )
-            direct_values.extend([metrics.get(alias), normalized.get(alias), normalized.get(f"{alias}_total")])
-    if metric_key == "engagement":
-        report_inputs = _meta_report_inputs(context)
-        direct_values.extend(
-            [
-                report_inputs.get("likes"),
-                report_inputs.get("comments"),
-                report_inputs.get("shares"),
-                report_inputs.get("saves"),
-                report_inputs.get("reactions"),
-                report_inputs.get("link_clicks"),
-                report_inputs.get("profile_activity"),
-            ]
-        )
-        component_values = [normalizeMetricValue(value) for value in direct_values[-7:]]
-        if any(value is not None for value in component_values):
-            return sum(value or 0 for value in component_values)
-    for value in direct_values:
-        normalized = normalizeMetricValue(value)
-        if normalized is not None:
-            return normalized
-    return _meta_metric_total_for_series(metric_key, points)
+    total, _metric_source = _resolve_metric_total_details(context, metric_key, points)
+    return total
 
 
 def getHighestDay(points: list[dict]) -> dict[str, Any]:
@@ -7627,20 +8234,175 @@ def getLowestDay(points: list[dict]) -> dict[str, Any]:
     }
 
 
+def truncateInsight(text: Any, max_chars: int) -> str:
+    full_text = " ".join(str(text or "").split())
+    if not full_text:
+        return ""
+    if len(full_text) <= max_chars:
+        return full_text
+    clipped = full_text[:max_chars].rstrip()
+    sentence_break = max(clipped.rfind(". "), clipped.rfind("! "), clipped.rfind("? "))
+    if sentence_break >= max(80, int(max_chars * 0.45)):
+        return clipped[: sentence_break + 1].rstrip()
+    word_break = clipped.rfind(" ")
+    return (clipped[:word_break] if word_break > 0 else clipped).rstrip(" ,;:-") + "..."
+
+
 def truncateInsightForSlide(text: Any, *, limit: int = 280) -> tuple[str, str]:
     full_text = " ".join(str(text or "").split())
     if not full_text:
         return "", ""
-    if len(full_text) <= limit:
-        return full_text, full_text
-    clipped = full_text[:limit].rstrip()
-    sentence_break = max(clipped.rfind(". "), clipped.rfind("! "), clipped.rfind("? "))
-    if sentence_break >= 120:
-        short_text = clipped[: sentence_break + 1].rstrip()
-    else:
-        word_break = clipped.rfind(" ")
-        short_text = (clipped[:word_break] if word_break > 0 else clipped).rstrip(" ,;:-") + "..."
+    short_text = truncateInsight(full_text, limit)
     return short_text, full_text
+
+
+def _metric_day_label(day: Any) -> str | None:
+    if not isinstance(day, dict):
+        return None
+    return str(day.get("label") or day.get("date") or "").strip() or None
+
+
+def _metric_trend_sentence(metric_label: str, daily_series: list[dict]) -> str:
+    points = _meta_series_points(daily_series)
+    if len(points) < 2:
+        return ""
+    first_value = normalizeMetricValue(points[0].get("value"))
+    last_value = normalizeMetricValue(points[-1].get("value"))
+    if first_value is None or last_value is None:
+        return ""
+    if last_value > first_value:
+        direction = "cerró por encima del inicio"
+    elif last_value < first_value:
+        direction = "cerró por debajo del inicio"
+    else:
+        direction = "se mantuvo estable entre el inicio y el cierre"
+    return f"La serie diaria de {metric_label.lower()} {direction}, lo que ayuda a ubicar el momento con mayor tracción."
+
+
+def build_metric_ai_insight(metric_slide: dict[str, Any], context: dict[str, Any]) -> dict[str, str | int]:
+    metric_key = str(metric_slide.get("metric_key") or "").strip().lower()
+    label = str(metric_slide.get("metric_label") or metric_slide.get("metric_label_en") or metric_key.title())
+    total = metric_slide.get("formatted_total") or _format_metric_summary_value(metric_slide.get("total"))
+    daily_series = metric_slide.get("daily_series") if isinstance(metric_slide.get("daily_series"), list) else []
+    highest_label = _metric_day_label(metric_slide.get("highest_day"))
+    lowest_label = _metric_day_label(metric_slide.get("lowest_day"))
+    unavailable_message = str(metric_slide.get("unavailable_message") or METRIC_UNAVAILABLE_MESSAGE)
+
+    if not metric_slide.get("is_available"):
+        full = (
+            f"Este dato no está disponible en este momento con los permisos actuales de Meta. "
+            "El reporte puede seguir interpretando las métricas disponibles y esta sección se actualizará cuando la fuente entregue más información."
+        )
+        return {
+            "insight_short": truncateInsight(full, 260),
+            "insight": truncateInsight(full, 420),
+            "insight_tone": "executive_ai",
+            "insight_max_chars": 260,
+        }
+
+    trend = _metric_trend_sentence(label, daily_series)
+    peak = f" El pico más alto aparece en {highest_label}." if highest_label else ""
+    low = f" El punto más bajo fue {lowest_label}." if lowest_label and lowest_label != highest_label else ""
+
+    if metric_key == "reach":
+        full = (
+            f"El alcance acumuló {total} personas durante el periodo.{peak} "
+            f"{trend or 'La distribución diaria ayuda a identificar qué piezas empujaron más visibilidad.'} "
+            "Conviene reforzar los formatos que generaron mayor exposición."
+        )
+    elif metric_key == "engagement":
+        source = str(metric_slide.get("metric_source") or "")
+        source_text = " calculado desde interacciones disponibles" if source == "calculated_from_components" else ""
+        full = (
+            f"El engagement alcanzó {total}{source_text}.{peak}{low} "
+            f"{trend or 'La lectura diaria permite detectar qué contenido concentró más respuesta.'} "
+            "Analiza formato, copy y llamada a la acción del mejor día."
+        )
+    elif metric_key == "page_views":
+        full = (
+            f"Las visitas a la página llegaron a {total}.{peak}{low} "
+            f"{trend or 'La evolución diaria ayuda a entender cuándo la audiencia mostró mayor intención de visitar la página.'} "
+            "Conecta esos picos con publicaciones, llamadas a la acción o campañas que impulsaron interés."
+        )
+    elif metric_key == "followers":
+        full = (
+            f"La comunidad cerró el periodo con {total} seguidores. "
+            "Este dato funciona como referencia del tamaño actual de audiencia para leer el resto de métricas disponibles."
+        )
+    else:
+        full = (
+            f"{label} cerró en {total}.{peak}{low} "
+            f"{trend or 'La serie diaria disponible ayuda a ubicar el momento de mayor tracción.'} "
+            "Toma los días pico como referencia para el siguiente periodo."
+        )
+
+    return {
+        "insight_short": truncateInsight(full, 260),
+        "insight": truncateInsight(full, 420),
+        "insight_tone": "executive_ai",
+        "insight_max_chars": 260,
+    }
+
+
+def build_final_ai_summary(slides: dict[str, dict[str, Any]], context: dict[str, Any]) -> dict[str, str]:
+    period_label = str((context.get("report_timeframe") or {}).get("label") or "el periodo").strip()
+    available = [
+        payload
+        for payload in slides.values()
+        if isinstance(payload, dict) and payload.get("is_available")
+    ]
+    unavailable = [
+        str(payload.get("metric_label_en") or payload.get("metric_label") or key.title())
+        for key, payload in slides.items()
+        if isinstance(payload, dict) and not payload.get("is_available")
+    ]
+    reach = slides.get("reach", {})
+    engagement = slides.get("engagement", {})
+    followers = slides.get("followers", {})
+    page_views = slides.get("page_views", {})
+
+    if available:
+        parts = []
+        if reach.get("is_available"):
+            parts.append(f"Reach cerró en {reach.get('formatted_total')}")
+        if engagement.get("is_available"):
+            parts.append(f"Engagement registró {engagement.get('formatted_total')}")
+        if followers.get("is_available"):
+            parts.append(f"Followers cerró en {followers.get('formatted_total')}")
+        if page_views.get("is_available"):
+            parts.append(f"Page Views alcanzó {page_views.get('formatted_total')}")
+        summary = (
+            f"Durante {period_label}, " + ", ".join(parts) + ". "
+            "La lectura ejecutiva apunta a reforzar los días y formatos que concentran visibilidad, interacción e intención de visita."
+        )
+    else:
+        summary = (
+            f"Durante {period_label}, las métricas principales no están disponibles con los permisos actuales de Meta. "
+            "El reporte conserva la estructura y se actualizará cuando la fuente entregue más información."
+        )
+    if unavailable:
+        summary += f" Métricas no disponibles por ahora: {', '.join(unavailable)}."
+
+    best_metric = None
+    for payload in (engagement, page_views, reach):
+        if payload.get("is_available"):
+            best_metric = payload
+            break
+    if best_metric and best_metric.get("highest_day"):
+        day_label = _metric_day_label(best_metric.get("highest_day"))
+        recommendation = (
+            f"Revisa qué publicación o formato impulsó el pico de {best_metric.get('metric_label_en')} en {day_label} "
+            "y úsalo como referencia para el siguiente periodo."
+        )
+    elif unavailable and len(unavailable) == len(slides):
+        recommendation = "Confirma permisos y disponibilidad de datos antes de comparar rendimiento entre periodos."
+    else:
+        recommendation = "Prioriza las métricas disponibles y evita interpretar como cero cualquier dato marcado como N/A."
+
+    return {
+        "ai_summary": truncateInsight(summary, 520),
+        "recommendation": truncateInsight(recommendation, 220),
+    }
 
 
 def buildMetricSlidePayload(
@@ -7655,7 +8417,7 @@ def buildMetricSlidePayload(
     label = METRIC_LABELS_ES.get(normalized_metric_key, label_en)
     debug_metadata = _daily_series_candidate_debug(context, normalized_metric_key)
     daily_series, source_path, matched_key = _extract_daily_metric_series_details(context, normalized_metric_key)
-    total = _resolve_metric_total(context, normalized_metric_key, daily_series)
+    total, metric_source = _resolve_metric_total_details(context, normalized_metric_key, daily_series)
     all_daily_values_zero = bool(daily_series) and all(
         normalizeMetricValue(point.get("value")) == 0 for point in daily_series
     )
@@ -7664,6 +8426,7 @@ def buildMetricSlidePayload(
         logger.warning(
             "[FiveSlideMetric][daily_series.inconsistent_with_total]",
             extra={
+                "report_id": context.get("report_id"),
                 "integration": _meta_integration_type(context),
                 "metric_key": normalized_metric_key,
                 "total": total,
@@ -7677,13 +8440,16 @@ def buildMetricSlidePayload(
         daily_series = []
         source_path = None
         matched_key = None
-    insight_short, insight_full = truncateInsightForSlide(insight)
-    if normalized_metric_key == "engagement" and total is None:
-        total_value: Any = "N/A"
-        value = "N/A"
-    else:
-        total_value = total if total is not None else 0
-        value = total_value
+    is_available = total is not None or bool(daily_series)
+    if total is None and daily_series:
+        total = _meta_metric_total_for_series(normalized_metric_key, daily_series)
+        metric_source = "direct_meta_metric"
+        is_available = total is not None
+    unavailable_reason = None if is_available else _metric_unavailable_reason(context, normalized_metric_key)
+    unavailable_message = None if is_available else METRIC_UNAVAILABLE_MESSAGE
+    total_value: Any = total if is_available else None
+    value = total_value
+    formatted_total = _format_metric_summary_value(total_value)
     frequency = None
     if normalized_metric_key == "impressions":
         viewers_total = (
@@ -7698,18 +8464,28 @@ def buildMetricSlidePayload(
             frequency = round(float(numeric_total) / float(viewers_total), 2)
     highest_day = getHighestDay(daily_series)
     lowest_day = getLowestDay(daily_series)
+    if not is_available:
+        highest_day = None
+        lowest_day = None
+    period_start, period_end = _metric_period_bounds(context)
+    first_date, last_date = _series_first_last_dates(daily_series)
+    branding = context.get("branding") if isinstance(context.get("branding"), dict) else {}
     payload = {
         "metric_key": normalized_metric_key,
-        "metric_label": label,
+        "metric_label": label_en,
+        "metric_label_es": label,
         "metric_label_en": label_en,
         "value": value,
         "total": total_value,
+        "formatted_total": formatted_total,
+        "is_available": is_available,
+        "unavailable_reason": unavailable_reason,
+        "unavailable_message": unavailable_message,
+        "metric_source": metric_source if is_available else "not_available",
+        "branding": branding,
         "daily_series": daily_series,
         "highest_day": highest_day,
         "lowest_day": lowest_day,
-        "insight": insight_short,
-        "insight_short": insight_short,
-        "insight_full": insight_full,
         "frequency": frequency,
         "daily_series_reason": "" if daily_series else "daily_series_unavailable_from_source",
         "daily_series_source_path": source_path,
@@ -7720,17 +8496,43 @@ def buildMetricSlidePayload(
             "points": daily_series,
             "data": daily_series,
             "series": daily_series,
-            "is_available": bool(daily_series),
+            "is_available": is_available and bool(daily_series),
             "timeframe": context.get("report_timeframe") or {},
         },
     }
+    insight_payload = build_metric_ai_insight(payload, context)
+    payload.update(insight_payload)
+    payload["insight_full"] = payload["insight"]
+    if period_end and last_date and last_date < period_end:
+        logger.info(
+            "[FiveSlideMetric][daily_series.missing_period_end]",
+            extra={
+                "integration": _meta_integration_type(context),
+                "report_id": context.get("report_id"),
+                "metric_key": normalized_metric_key,
+                "period_start": period_start,
+                "period_end": period_end,
+                "first_date": first_date,
+                "last_date": last_date,
+                "daily_series_source_path": source_path,
+            },
+        )
     logger.info(
-        "[FiveSlideMetric][resolved]",
-        extra={
-            "integration": _meta_integration_type(context),
+            "[FiveSlideMetric][resolved]",
+            extra={
+                "report_id": context.get("report_id"),
+                "integration": _meta_integration_type(context),
             "metric_key": normalized_metric_key,
             "total": total_value,
+            "formatted_total": formatted_total,
+            "is_available": is_available,
+            "unavailable_reason": unavailable_reason,
+            "metric_source": payload["metric_source"],
             "daily_series_length": len(daily_series),
+            "first_date": first_date,
+            "last_date": last_date,
+            "period_start": period_start,
+            "period_end": period_end,
             "daily_series_values": daily_series,
             "daily_series_source_path": source_path,
             "daily_series_source_metric_key": matched_key,
@@ -7747,30 +8549,48 @@ def _build_five_slide_summary_payload(
     *,
     period_label: str,
     reach_payload: dict[str, Any],
-    impressions_payload: dict[str, Any],
     engagement_payload: dict[str, Any],
+    page_views_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    ai_source = str(context.get("ai_summary") or _meta_overview_insight(context, _meta_overview_payload(context, period_label)["metrics"])).strip()
-    ai_summary_short, _ai_summary_full = truncateInsightForSlide(ai_source, limit=400)
-    strongest_reach_day = (reach_payload.get("highest_day") or {}).get("label") or "the strongest reach day"
-    recommendation = (
-        f"Repeat the content pattern from {strongest_reach_day} and use clearer calls to action to turn visibility into interaction."
-        if strongest_reach_day
-        else "Repeat the strongest content pattern and use clearer calls to action to turn visibility into interaction."
+    followers_card = _build_context_metric_summary_card(
+        context,
+        metric_key="followers",
+        metric_label="Followers",
     )
-    recommendation_short, _ = truncateInsightForSlide(recommendation, limit=180)
+    final_insights = build_final_ai_summary(
+        {
+            "reach": reach_payload,
+            "engagement": engagement_payload,
+            "followers": {
+                "metric_label_en": followers_card["label"],
+                "metric_label": followers_card["label"],
+                "formatted_total": followers_card["formatted_value"],
+                "total": followers_card["value"],
+                "is_available": followers_card["is_available"],
+            },
+            "page_views": page_views_payload,
+        },
+        context,
+    )
+    ai_summary = final_insights["ai_summary"]
+    recommendation = final_insights["recommendation"]
     return {
         "slide_number": 5,
         "slide_type": "summary",
         "title": "Resumen final",
         "title_en": "Final Summary",
+        "branding": context.get("branding") if isinstance(context.get("branding"), dict) else {},
         "metrics_summary": {
             "reach": _build_summary_metric_card("reach", reach_payload),
-            "impressions": _build_summary_metric_card("impressions", impressions_payload),
             "engagement": _build_summary_metric_card("engagement", engagement_payload),
+            "followers": followers_card,
+            "page_views": _build_summary_metric_card("page_views", page_views_payload),
         },
-        "ai_summary": ai_summary_short,
-        "recommendation": recommendation_short,
+        "ai_summary": ai_summary,
+        "recommendation": recommendation,
+        "text": ai_summary,
+        "insight": ai_summary,
+        "insight_short": ai_summary,
         "semantic_name": "executive_summary",
         "timeframe": context.get("report_timeframe") or {},
     }
@@ -7780,7 +8600,7 @@ def _meta_metric_series(context: dict, metric: str) -> list[dict]:
     # LEGACY / candidate for removal after frontend/backend contract is stable.
     # Recommended source of truth for 5-slide daily series is extractDailyMetricSeries()
     # backed by _extract_daily_metric_series_details().
-    if metric in {"reach", "impressions", "engagement"}:
+    if metric in {"reach", "impressions", "engagement", "page_views"}:
         return extractDailyMetricSeries(context, metric)
     if metric == "followers":
         report_inputs = _meta_report_inputs(context)
@@ -7795,7 +8615,7 @@ def _meta_metric_series(context: dict, metric: str) -> list[dict]:
 
 
 def _meta_metric_total(context: dict, metric: str, points: list[dict]) -> float | int | None:
-    if metric in {"reach", "impressions", "engagement"}:
+    if metric in {"reach", "impressions", "engagement", "page_views"}:
         return _resolve_metric_total(context, metric, points)
     if metric == "followers":
         return _meta_number(context.get("followers")) or (points[-1]["value"] if points else None)
@@ -8310,6 +9130,8 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             semantic_name = "audience_growth"
         elif "reach" in label_lower:
             semantic_name = "reach_overview"
+        elif "page view" in label_lower or "page_view" in label_lower or "visitas" in label_lower:
+            semantic_name = "page_views_overview"
         elif "impression" in label_lower:
             semantic_name = "impressions_trend"
         elif "engagement" in label_lower:
@@ -8323,11 +9145,13 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
         metric = "impressions"
     elif "engagement" in semantic_name or "engagement" in label.lower():
         metric = "engagement"
+    elif "page_views" in semantic_name or "page view" in label.lower() or "visitas" in label.lower():
+        metric = "page_views"
     elif "audience" in semantic_name or "follower" in semantic_name or "follower" in label.lower():
         metric = "followers"
     elif "post" in semantic_name or "content" in semantic_name:
         metric = "engagement"
-    if semantic_name in {"reach_overview", "impressions_trend", "engagement_overview"}:
+    if semantic_name in {"reach_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
         report_timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
         period_label = str(report_timeframe.get("label") or "Selected period")
         reach_stats = _meta_series_stats(extractDailyMetricSeries(context, "reach"))
@@ -8338,6 +9162,8 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             or _meta_trend_copy("Impressions", _meta_series_stats(extractDailyMetricSeries(context, "impressions")), period_label)
             if semantic_name == "impressions_trend"
             else _meta_engagement_text(context, period_label, reach_stats)
+            if semantic_name == "engagement_overview"
+            else ""
         )
         metric_payload = buildMetricSlidePayload(
             context,
@@ -8370,8 +9196,12 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             if not points
             else f"Daily {label.lower()} is available for this period."
         )
-    if semantic_name in {"reach_overview", "impressions_trend", "engagement_overview"}:
-        insight = str(data.get("insight_short") or data.get("insight") or insight)
+    if semantic_name in {"reach_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
+        insight_short_value = str(data.get("insight_short") or data.get("insight") or insight)
+        insight_full_value = str(data.get("insight_full") or data.get("insight") or insight_short_value)
+    else:
+        insight_short_value = str(data.get("insight_short") or insight)
+        insight_full_value = str(data.get("insight_full") or data.get("insight") or insight)
     data.update(
         {
             "title": data.get("title") or label,
@@ -8384,12 +9214,12 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             "change_absolute": change_payload.get("change_absolute"),
             "change_percentage": change_payload.get("change_percentage"),
             "trend": change_payload.get("trend"),
-            "insight": insight,
-            "insight_short": str(data.get("insight_short") or insight),
-            "insight_full": str(data.get("insight_full") or data.get("insight") or insight),
+            "insight": insight_full_value,
+            "insight_short": insight_short_value,
+            "insight_full": insight_full_value,
             "summary": insight if semantic_name in {"overview", "reach_overview"} else data.get("summary"),
             "content": insight if semantic_name in {"overview", "reach_overview"} else data.get("content"),
-            "text": insight,
+            "text": insight_short_value,
             "chart": chart,
             "points": points,
         }
@@ -9285,7 +10115,7 @@ def _renumber_blocks(blocks: list[dict]) -> list[dict]:
 
 def build_5_blocks(dataset: dict) -> list[dict]:
     # Source of truth for official social 5-slide report structure:
-    # cover, reach, impressions, engagement, summary.
+    # cover, reach, engagement, page views, summary.
     report_timeframe = dataset["report_timeframe"]
     period_label = str(report_timeframe.get("label") or "Selected period")
     resolved_branding = resolve_report_branding(
@@ -9294,39 +10124,31 @@ def build_5_blocks(dataset: dict) -> list[dict]:
         str(dataset.get("plan") or ""),
         preferred_branding=dataset.get("branding") if isinstance(dataset.get("branding"), dict) else None,
     )
-    reach_points = extractDailyMetricsSeries(dataset, "reach")
+    metric_context = {**dataset, "branding": resolved_branding}
+    reach_points = extractDailyMetricsSeries(metric_context, "reach")
     reach_stats = _meta_series_stats(reach_points)
-    reach_insight_full = _meta_reach_insight(dataset)
-    impressions_insight_full = (
-        str((dataset.get("impressions_slide_payload") or {}).get("insight_text") or "").strip()
-        or _meta_trend_copy("Impressions", _meta_series_stats(extractDailyMetricsSeries(dataset, "impressions")), period_label)
-    )
-    engagement_insight_full = _meta_engagement_text(dataset, period_label, reach_stats)
     reach_payload = buildMetricSlidePayload(
-        dataset,
+        metric_context,
         metric_key="reach",
         metric_label="Reach",
-        insight=reach_insight_full,
-    )
-    impressions_payload = buildMetricSlidePayload(
-        dataset,
-        metric_key="impressions",
-        metric_label="Impressions",
-        insight=impressions_insight_full,
     )
     engagement_payload = buildMetricSlidePayload(
-        dataset,
+        metric_context,
         metric_key="engagement",
         metric_label="Engagement",
-        insight=engagement_insight_full,
     )
-    if _meta_integration_type(dataset) in {"facebook_pages", "meta_pages"}:
-        report_inputs = _meta_report_inputs(dataset)
+    page_views_payload = buildMetricSlidePayload(
+        metric_context,
+        metric_key="page_views",
+        metric_label="Page Views",
+    )
+    if _meta_integration_type(metric_context) in {"facebook_pages", "meta_pages"}:
+        report_inputs = _meta_report_inputs(metric_context)
         logger.info(
             "[FiveSlideReport][facebook.debug]",
             extra={
-                "integration": _meta_integration_type(dataset),
-                "dataset_keys_available": sorted(str(key) for key in dataset.keys()),
+                "integration": _meta_integration_type(metric_context),
+                "dataset_keys_available": sorted(str(key) for key in metric_context.keys()),
                 "report_inputs_keys_available": sorted(str(key) for key in report_inputs.keys()),
                 "insights_keys": sorted(str(key) for key in (report_inputs.get("insights") or {}).keys())
                 if isinstance(report_inputs.get("insights"), dict)
@@ -9340,13 +10162,15 @@ def build_5_blocks(dataset: dict) -> list[dict]:
                 "metric_values_keys": sorted(str(key) for key in (report_inputs.get("metric_values") or {}).keys())
                 if isinstance(report_inputs.get("metric_values"), dict)
                 else [],
-                "chart_data_keys": sorted(str(key) for key in (dataset.get("chart_data") or {}).keys())
-                if isinstance(dataset.get("chart_data"), dict)
+                "chart_data_keys": sorted(str(key) for key in (metric_context.get("chart_data") or {}).keys())
+                if isinstance(metric_context.get("chart_data"), dict)
                 else [],
                 "reach_daily_source_path": reach_payload.get("daily_series_source_path"),
                 "reach_daily_source_metric_key": reach_payload.get("daily_series_source_metric_key"),
-                "impressions_daily_source_path": impressions_payload.get("daily_series_source_path"),
-                "impressions_daily_source_metric_key": impressions_payload.get("daily_series_source_metric_key"),
+                "engagement_daily_source_path": engagement_payload.get("daily_series_source_path"),
+                "engagement_daily_source_metric_key": engagement_payload.get("daily_series_source_metric_key"),
+                "page_views_daily_source_path": page_views_payload.get("daily_series_source_path"),
+                "page_views_daily_source_metric_key": page_views_payload.get("daily_series_source_metric_key"),
             },
         )
     blocks = [
@@ -9393,10 +10217,10 @@ def build_5_blocks(dataset: dict) -> list[dict]:
             {
                 "slide_number": 3,
                 "slide_type": "metric",
-                "title": "Impressions",
-                "label": "Impressions",
-                "semantic_name": "impressions_trend",
-                **impressions_payload,
+                "title": "Engagement",
+                "label": "Engagement",
+                "semantic_name": "engagement_overview",
+                **engagement_payload,
             },
         ),
         _meta_report_block(
@@ -9405,26 +10229,26 @@ def build_5_blocks(dataset: dict) -> list[dict]:
             {
                 "slide_number": 4,
                 "slide_type": "metric",
-                "title": "Engagement",
-                "label": "Engagement",
-                "semantic_name": "engagement_overview",
-                **engagement_payload,
+                "title": "Page Views",
+                "label": "Page Views",
+                "semantic_name": "page_views_overview",
+                **page_views_payload,
             },
         ),
         _meta_report_block(
             "text",
             5,
             _build_five_slide_summary_payload(
-                dataset,
+                metric_context,
                 period_label=period_label,
                 reach_payload=reach_payload,
-                impressions_payload=impressions_payload,
                 engagement_payload=engagement_payload,
+                page_views_payload=page_views_payload,
             ),
             ["text"],
         ),
     ]
-    return _meta_enrich_data_blocks(dataset, _renumber_blocks(blocks[:5]))
+    return _meta_enrich_data_blocks(metric_context, _renumber_blocks(blocks[:5]))
 
 
 def build_10_blocks(dataset: dict) -> list[dict]:
@@ -9977,8 +10801,6 @@ def create_report(
     report_branding = resolve_report_branding_for_workspace(
         db,
         dataset.workspace_id,
-        preferred_branding=_user_branding(current_user),
-        user=current_user,
     )
     report = Report(
         workspace_id=dataset.workspace_id,
@@ -10032,7 +10854,7 @@ def create_report(
             else:
                 block_data = {}
             semantic_name = str(block_data.get("semantic_name") or "").strip()
-            if semantic_name in {"reach_overview", "impressions_trend", "engagement_overview"}:
+            if semantic_name in {"reach_overview", "engagement_overview", "page_views_overview"}:
                 metric_payloads[semantic_name] = block_data
             elif semantic_name == "executive_summary":
                 ai_summary_length = len(str(block_data.get("ai_summary") or block_data.get("text") or ""))
@@ -10049,16 +10871,16 @@ def create_report(
                 "slide_2_daily_series_length": len(metric_payloads.get("reach_overview", {}).get("daily_series") or []),
                 "slide_2_daily_series_source_path": metric_payloads.get("reach_overview", {}).get("daily_series_source_path"),
                 "slide_2_daily_series_source_metric_key": metric_payloads.get("reach_overview", {}).get("daily_series_source_metric_key"),
-                "slide_3_metric_key": metric_payloads.get("impressions_trend", {}).get("metric_key"),
-                "slide_3_total": metric_payloads.get("impressions_trend", {}).get("total"),
-                "slide_3_daily_series_length": len(metric_payloads.get("impressions_trend", {}).get("daily_series") or []),
-                "slide_3_daily_series_source_path": metric_payloads.get("impressions_trend", {}).get("daily_series_source_path"),
-                "slide_3_daily_series_source_metric_key": metric_payloads.get("impressions_trend", {}).get("daily_series_source_metric_key"),
-                "slide_4_metric_key": metric_payloads.get("engagement_overview", {}).get("metric_key"),
-                "slide_4_total": metric_payloads.get("engagement_overview", {}).get("total"),
-                "slide_4_daily_series_length": len(metric_payloads.get("engagement_overview", {}).get("daily_series") or []),
-                "slide_4_daily_series_source_path": metric_payloads.get("engagement_overview", {}).get("daily_series_source_path"),
-                "slide_4_daily_series_source_metric_key": metric_payloads.get("engagement_overview", {}).get("daily_series_source_metric_key"),
+                "slide_3_metric_key": metric_payloads.get("engagement_overview", {}).get("metric_key"),
+                "slide_3_total": metric_payloads.get("engagement_overview", {}).get("total"),
+                "slide_3_daily_series_length": len(metric_payloads.get("engagement_overview", {}).get("daily_series") or []),
+                "slide_3_daily_series_source_path": metric_payloads.get("engagement_overview", {}).get("daily_series_source_path"),
+                "slide_3_daily_series_source_metric_key": metric_payloads.get("engagement_overview", {}).get("daily_series_source_metric_key"),
+                "slide_4_metric_key": metric_payloads.get("page_views_overview", {}).get("metric_key"),
+                "slide_4_total": metric_payloads.get("page_views_overview", {}).get("total"),
+                "slide_4_daily_series_length": len(metric_payloads.get("page_views_overview", {}).get("daily_series") or []),
+                "slide_4_daily_series_source_path": metric_payloads.get("page_views_overview", {}).get("daily_series_source_path"),
+                "slide_4_daily_series_source_metric_key": metric_payloads.get("page_views_overview", {}).get("daily_series_source_metric_key"),
                 "slide_5_ai_summary_length": ai_summary_length,
             },
         )
@@ -10095,15 +10917,19 @@ def create_report(
         workspace_id=dataset.workspace_id,
     )
 
+    integration_metadata = derive_report_integration_metadata(db, report, dataset=dataset)
     return ReportOut(
         id=report.id,
         workspace_id=dataset.workspace_id,
         dataset_id=dataset.id,
         title=payload.title,
         status=None,
+        folder_id=report.folder_id,
+        folder_name=report.folder_name,
         description=_report_metadata(report),
         timeframe=_report_timeframe(report),
         report_sources=_report_sources_out(db, report_id=report.id),
+        integration_metadata=integration_metadata,
         locale=locale,
         branding=_report_branding(db, report),
         thumbnail_url=_report_thumbnail_url(report),
@@ -10376,8 +11202,6 @@ def create_multi_source_report(
     branding = resolve_report_branding_for_workspace(
         db,
         first_dataset.workspace_id,
-        preferred_branding=_user_branding(current_user),
-        user=current_user,
     )
     generate_multi_source_blocks = (
         len(resolved_sources) == 2
@@ -10491,15 +11315,19 @@ def create_multi_source_report(
         )
         raise
 
+    integration_metadata = derive_report_integration_metadata(db, report, dataset=first_dataset)
     return ReportOut(
         id=report.id,
         workspace_id=report.workspace_id,
         dataset_id=report.dataset_id,
         title=report.name,
         status="sources_configured",
+        folder_id=report.folder_id,
+        folder_name=report.folder_name,
         description=_report_metadata(report),
         timeframe=_report_timeframe(report),
         report_sources=_report_sources_out(db, report_id=report.id),
+        integration_metadata=integration_metadata,
         version_id=report_version.id,
         version=report_version.version,
         locale=_report_locale(report),
@@ -10669,8 +11497,6 @@ def _create_meta_dataset_report(
     report_branding = resolve_report_branding_for_workspace(
         db,
         dataset.workspace_id,
-        preferred_branding=_user_branding(current_user),
-        user=current_user,
     )
     ai_plan_context = build_ai_agent_plan_context(
         plan=slide_limits["plan"],
@@ -11072,6 +11898,8 @@ def _create_meta_dataset_report(
             "audience_growth": "followers",
             "engagement": "engagement",
             "engagement_overview": "engagement",
+            "page_views": "page_views",
+            "page_views_overview": "page_views",
             "key_metrics_overview": "reach",
         }.get(str(semantic_name or "").strip())
         if semantic_name == "overview" and isinstance(block_data.get("metrics"), list):
@@ -11144,18 +11972,19 @@ def _create_meta_dataset_report(
                     "reason_if_null": comparison.get("reason_if_null"),
                 },
             )
-        if semantic_name == "engagement_overview":
+        if semantic_name in {"engagement_overview", "page_views_overview"}:
             chart = block_data.get("chart") if isinstance(block_data.get("chart"), dict) else {}
             chart_points = chart.get("points") if isinstance(chart.get("points"), list) else []
             first_chart_point = chart_points[0] if chart_points else None
             last_chart_point = chart_points[-1] if chart_points else None
             logger.info(
-                "[BACKEND_ENGAGEMENT_SLIDE_AUDIT]",
+                "[BACKEND_METRIC_SLIDE_AUDIT]",
                 extra={
                     "report_id": report.id,
                     "dataset_id": dataset.id,
                     "slide_block_index": block_spec.get("order"),
                     "block_title": block_data.get("title"),
+                    "semantic_name": semantic_name,
                     "metric_value": block_data.get("current_value", block_data.get("value")),
                     "chart_points_count": len(chart_points),
                     "first_chart_point": first_chart_point,
@@ -11178,7 +12007,7 @@ def _create_meta_dataset_report(
                     "reason_if_null": comparison.get("reason_if_null"),
                 },
             )
-        if semantic_name in {"reach_overview", "impressions_trend", "engagement_overview"}:
+        if semantic_name in {"reach_overview", "engagement_overview", "page_views_overview"}:
             logger.info(
                 "[MetricSlidePayload][resolved]",
                 extra={
@@ -11219,6 +12048,7 @@ def _create_meta_dataset_report(
     except Exception:
         logger.exception("Unexpected Meta Pages thumbnail generation failure", extra={"report_id": report.id})
 
+    integration_metadata = derive_report_integration_metadata(db, report, dataset=dataset)
     return MetaPagesReportCreateOut(
         report_id=report.id,
         version_id=report_version.id,
@@ -11227,6 +12057,7 @@ def _create_meta_dataset_report(
         title=title,
         locale=locale,
         status="ready",
+        selected_integration_metadata=integration_metadata,
     )
 
 
@@ -11371,6 +12202,8 @@ def create_instagram_business_report(
 @app.get("/reports", response_model=list[ReportListItemOut])
 def list_reports(
     request: Request,
+    integration_type: str | None = Query(default=None),
+    channel: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[ReportListItemOut]:
@@ -11423,16 +12256,37 @@ def list_reports(
             .all()
         )
 
-        response = [
-            ReportListItemOut(
-                id=report.id,
-                name=report.name,
-                status="completed" if version_counts.get(report.id, 0) > 0 else "pending",
-                thumbnail_url=_report_thumbnail_url(report),
-                created_at=report.created_at,
+        datasets_by_id = {
+            dataset.id: dataset
+            for dataset in db.query(Dataset).filter(Dataset.id.in_([report.dataset_id for report in reports])).all()
+        }
+        integration_filter = _canonical_report_integration_type(integration_type) if integration_type else None
+        channel_filter = _canonical_report_integration_type(channel) if channel else None
+        response: list[ReportListItemOut] = []
+        for report in reports:
+            integration_metadata = derive_report_integration_metadata(
+                db,
+                report,
+                dataset=datasets_by_id.get(report.dataset_id),
             )
-            for report in reports
-        ]
+            metadata_integration = _canonical_report_integration_type(integration_metadata.integration_type)
+            metadata_channel = _canonical_report_integration_type(integration_metadata.channel)
+            if integration_filter and metadata_integration != integration_filter:
+                continue
+            if channel_filter and metadata_channel != channel_filter:
+                continue
+            response.append(
+                ReportListItemOut(
+                    id=report.id,
+                    name=report.name,
+                    status="completed" if version_counts.get(report.id, 0) > 0 else "pending",
+                    folder_id=report.folder_id,
+                    folder_name=report.folder_name,
+                    integration_metadata=integration_metadata,
+                    thumbnail_url=_report_thumbnail_url(report),
+                    created_at=report.created_at,
+                )
+            )
         elapsed_ms = round((perf_counter() - started_at) * 1000, 2)
         logger.info(
             "Reports list returned successfully",
@@ -11483,15 +12337,19 @@ def get_report(
             "description_timeframe": _report_timeframe(report),
         },
     )
+    integration_metadata = derive_report_integration_metadata(db, report)
     return ReportOut(
         id=report.id,
         workspace_id=report.workspace_id,
         dataset_id=report.dataset_id,
         title=report.name,
         status=_report_status(report),
+        folder_id=report.folder_id,
+        folder_name=report.folder_name,
         description=metadata,
         timeframe=_report_timeframe(report),
         report_sources=_report_sources_out(db, report_id=report.id),
+        integration_metadata=integration_metadata,
         version_id=latest_version.id if latest_version else None,
         version=latest_version.version if latest_version else None,
         locale=_report_locale(report),
@@ -11499,6 +12357,30 @@ def get_report(
         thumbnail_url=_report_thumbnail_url(report),
         created_at=report.created_at,
         updated_at=report.updated_at,
+    )
+
+
+@app.patch("/reports/{report_id}/folder", response_model=ReportFolderUpdateOut)
+def update_report_folder(
+    report_id: int,
+    payload: ReportFolderUpdateIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReportFolderUpdateOut:
+    report = db.get(Report, report_id)
+    if not report:
+        raise http_error(404, "report_not_found", "Report not found.")
+    _require_workspace_access(db, current_user.id, report.workspace_id)
+    report.folder_id = str(payload.folder_id or "").strip() or None
+    report.folder_name = str(payload.folder_name or "").strip() or None
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return ReportFolderUpdateOut(
+        report_id=report.id,
+        folder_id=report.folder_id,
+        folder_name=report.folder_name,
+        updated=True,
     )
 
 
@@ -12120,7 +13002,10 @@ def create_workspace(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Workspace:
-    workspace = Workspace(name=payload.name, logo_url=payload.logo_url)
+    workspace = Workspace(
+        name=payload.brand_name if payload.brand_name is not None else payload.name,
+        logo_url=payload.brand_logo_url if payload.brand_logo_url is not None else payload.logo_url,
+    )
     db.add(workspace)
     db.commit()
     db.refresh(workspace)
@@ -12147,14 +13032,77 @@ def update_workspace(
         raise http_error(404, "workspace_not_found", "Workspace not found.")
     _require_workspace_access(db, current_user.id, workspace_id)
 
+    original_brand_name = workspace.name
+    original_brand_logo_url = workspace.logo_url
     if payload.name is not None:
         workspace.name = payload.name
+    if "brand_name" in payload.model_fields_set:
+        workspace.name = payload.brand_name or ""
     if "logo_url" in payload.model_fields_set:
         workspace.logo_url = payload.logo_url
+    if "brand_logo_url" in payload.model_fields_set:
+        workspace.logo_url = payload.brand_logo_url
 
     db.add(workspace)
     db.commit()
     db.refresh(workspace)
+    if (
+        "name" in payload.model_fields_set
+        or "brand_name" in payload.model_fields_set
+        or "logo_url" in payload.model_fields_set
+        or "brand_logo_url" in payload.model_fields_set
+    ):
+        resolved_branding = resolve_report_branding_for_workspace(db, workspace.id)
+        logger.info(
+            "[BrandAssets][workspace.saved]",
+            extra={
+                "workspace_id": workspace.id,
+                "original_brand_name": original_brand_name,
+                "saved_brand_name": workspace.name,
+                "original_brand_logo_url": original_brand_logo_url,
+                "saved_brand_logo_url": workspace.logo_url,
+                "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
+                "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
+            },
+        )
+    return _workspace_out(db, workspace)
+
+
+@app.patch("/workspaces/{workspace_id}/branding", response_model=WorkspaceOut)
+def update_workspace_branding(
+    workspace_id: int,
+    payload: WorkspaceBrandingUpdateIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceOut:
+    workspace = db.get(Workspace, workspace_id)
+    if not workspace:
+        raise http_error(404, "workspace_not_found", "Workspace not found.")
+    _require_workspace_access(db, current_user.id, workspace_id)
+
+    original_brand_name = workspace.name
+    original_brand_logo_url = workspace.logo_url
+    if "brand_name" in payload.model_fields_set:
+        workspace.name = payload.brand_name or ""
+    if "brand_logo_url" in payload.model_fields_set:
+        workspace.logo_url = payload.brand_logo_url
+
+    db.add(workspace)
+    db.commit()
+    db.refresh(workspace)
+    resolved_branding = resolve_report_branding_for_workspace(db, workspace.id)
+    logger.info(
+        "[BrandAssets][workspace.saved]",
+        extra={
+            "workspace_id": workspace.id,
+            "original_brand_name": original_brand_name,
+            "saved_brand_name": workspace.name,
+            "original_brand_logo_url": original_brand_logo_url,
+            "saved_brand_logo_url": workspace.logo_url,
+            "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
+            "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
+        },
+    )
     return _workspace_out(db, workspace)
 
 

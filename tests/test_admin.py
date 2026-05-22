@@ -31,6 +31,7 @@ from app.models import (
     Subscription,
     User,
     UserAttribution,
+    UserSuggestion,
     Workspace,
     WorkspaceMember,
 )
@@ -50,6 +51,7 @@ ADMIN_TABLES = [
     ReferralConversion.__table__,
     Report.__table__,
     AccountDeletionFeedback.__table__,
+    UserSuggestion.__table__,
 ]
 
 
@@ -353,9 +355,13 @@ def _seed_admin_data() -> dict[str, str]:
 
 def _admin_token(client: TestClient) -> str:
     creds = _seed_admin_data()
+    return _login_token(client, creds["admin_email"], creds["admin_password"])
+
+
+def _login_token(client: TestClient, email: str, password: str) -> str:
     login = client.post(
         "/auth/login",
-        data={"username": creds["admin_email"], "password": creds["admin_password"]},
+        data={"username": email, "password": password},
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     assert login.status_code == 200
@@ -396,6 +402,104 @@ def test_non_admin_cannot_access_admin_metrics(client):
 
     response = client.get("/admin/metrics", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 403
+
+
+def test_authenticated_user_creates_suggestion(client):
+    _seed_admin_data()
+    token = _login_token(client, "alice@example.com", "AlicePass123!")
+    message = "  Please add custom chart colors.  "
+
+    response = client.post(
+        "/suggestions",
+        json={"message": message},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["success"] is True
+    assert body["suggestion"]["message"] == message
+    assert body["suggestion"]["status"] == "new"
+    assert body["suggestion"]["source"] == "floating_suggestion_button"
+    assert body["suggestion"]["workspace_id"] is not None
+
+
+def test_unauthenticated_user_cannot_create_suggestion(client):
+    response = client.post("/suggestions", json={"message": "Add saved templates."})
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "missing_token"
+
+
+def test_empty_suggestion_message_fails(client):
+    _seed_admin_data()
+    token = _login_token(client, "alice@example.com", "AlicePass123!")
+
+    response = client.post(
+        "/suggestions",
+        json={"message": "   "},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "invalid_message"
+
+
+def test_non_admin_cannot_list_admin_suggestions(client):
+    _seed_admin_data()
+    token = _login_token(client, "alice@example.com", "AlicePass123!")
+
+    response = client.get("/admin/suggestions", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 403
+
+
+def test_admin_can_list_suggestions(client):
+    _seed_admin_data()
+    alice_token = _login_token(client, "alice@example.com", "AlicePass123!")
+    admin_token = _login_token(client, "admin@example.com", "AdminPass123!")
+    create = client.post(
+        "/suggestions",
+        json={"message": "Add weekly executive summaries."},
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    assert create.status_code == 201
+
+    response = client.get("/admin/suggestions", headers={"Authorization": f"Bearer {admin_token}"})
+
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    assert items[0]["message"] == "Add weekly executive summaries."
+    assert items[0]["user_email"] == "alice@example.com"
+    assert items[0]["user_name"] == "Alice Example"
+    assert items[0]["workspace_name"] == "Alice Workspace"
+    assert items[0]["status"] == "new"
+    assert items[0]["created_at"] is not None
+
+
+def test_admin_updates_suggestion_status(client):
+    _seed_admin_data()
+    alice_token = _login_token(client, "alice@example.com", "AlicePass123!")
+    admin_token = _login_token(client, "admin@example.com", "AdminPass123!")
+    create = client.post(
+        "/suggestions",
+        json={"message": "Let me reorder report slides."},
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    suggestion_id = create.json()["suggestion"]["id"]
+
+    response = client.patch(
+        f"/admin/suggestions/{suggestion_id}",
+        json={"status": "reviewed"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "reviewed"
+    assert body["reviewed_at"] is not None
+    assert body["reviewed_by"] is not None
 
 
 def test_admin_metrics_users_users_and_insights(client):

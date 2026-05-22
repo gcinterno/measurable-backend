@@ -82,11 +82,37 @@ class AccountDeletionFeedback(Base):
     )
 
 
+class UserSuggestion(Base):
+    __tablename__ = "user_suggestions"
+    __table_args__ = (
+        Index("ix_user_suggestions_user_id", "user_id"),
+        Index("ix_user_suggestions_workspace_id", "workspace_id"),
+        Index("ix_user_suggestions_created_at", "created_at"),
+        Index("ix_user_suggestions_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    workspace_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workspaces.id", ondelete="SET NULL"))
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="new")
+    source: Mapped[str] = mapped_column(String(100), nullable=False, default="floating_suggestion_button")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_display_name: Mapped[Optional[str]] = mapped_column(String(255))
     logo_url: Mapped[Optional[str]] = mapped_column(String(2048))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -484,6 +510,8 @@ class Report(Base):
     dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
+    folder_id: Mapped[Optional[str]] = mapped_column(String(255))
+    folder_name: Mapped[Optional[str]] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
