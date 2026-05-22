@@ -6545,8 +6545,10 @@ METRIC_ALIASES: dict[str, list[str]] = {
         "page_impressions_unique",
         "impressions_unique",
         "unique_reach",
+        "page_reach",
         "account_reach",
         "profile_reach",
+        "viewers",
     ],
     "impressions": [
         "impressions",
@@ -7220,6 +7222,99 @@ def _metric_aliases(metric_key: str) -> list[str]:
     return list(dict.fromkeys([metric_key, *aliases]))
 
 
+def _metric_summary_description(metric_key: str) -> str:
+    descriptions = {
+        "reach": "Total reach",
+        "impressions": "Total impressions",
+        "engagement": "Total engagement",
+    }
+    return descriptions.get(str(metric_key or "").strip().lower(), "Total metric value")
+
+
+def _format_metric_summary_value(value: Any) -> str:
+    if value in (None, ""):
+        return "N/A"
+    if isinstance(value, str):
+        return value
+    numeric = normalizeMetricValue(value)
+    if numeric is None:
+        return str(value)
+    return _meta_format_number(numeric)
+
+
+def _build_summary_metric_card(metric_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    raw_value = payload.get("total")
+    simple_value: Any
+    if isinstance(raw_value, (dict, list)):
+        simple_value = "N/A"
+    else:
+        simple_value = raw_value if raw_value not in (None, "") else "N/A"
+    return {
+        "label": payload.get("metric_label_en") or payload.get("metric_label") or metric_key.title(),
+        "value": simple_value,
+        "formatted_value": _format_metric_summary_value(simple_value),
+        "description": _metric_summary_description(metric_key),
+    }
+
+
+def _daily_series_candidate_debug(context: dict, metric_key: str) -> dict[str, Any]:
+    report_inputs = _meta_report_inputs(context)
+    aliases = _metric_aliases(metric_key)
+    container_keys = [
+        "daily",
+        "daily_metrics",
+        "daily_series",
+        "time_series",
+        "insights",
+        "metric_values",
+        "values",
+        "data",
+        "breakdowns",
+        "metrics",
+        "normalized_report_metrics",
+        "report_metric_mapping",
+        "chart_data",
+    ]
+
+    def _available_nested_keys(source: dict) -> dict[str, list[str]]:
+        nested: dict[str, list[str]] = {}
+        for container_key in container_keys:
+            container = source.get(container_key)
+            if isinstance(container, dict):
+                nested[container_key] = sorted(str(key) for key in container.keys())
+        return nested
+
+    def _matching_paths(source: dict, prefix: str) -> list[str]:
+        matches: list[str] = []
+        for alias in aliases:
+            for key in (
+                alias,
+                f"{alias}_daily",
+                f"daily_{alias}",
+                f"{alias}_daily_series",
+                f"daily_series_{alias}",
+                f"{alias}_series",
+            ):
+                if key in source:
+                    matches.append(f"{prefix}.{key}")
+            for container_key in container_keys:
+                container = source.get(container_key)
+                if isinstance(container, dict) and alias in container:
+                    matches.append(f"{prefix}.{container_key}.{alias}")
+        return matches
+
+    return {
+        "metric_key": metric_key,
+        "aliases": aliases,
+        "context_keys": sorted(str(key) for key in context.keys()),
+        "report_inputs_keys": sorted(str(key) for key in report_inputs.keys()),
+        "context_nested_keys": _available_nested_keys(context if isinstance(context, dict) else {}),
+        "report_inputs_nested_keys": _available_nested_keys(report_inputs),
+        "context_matching_paths": _matching_paths(context if isinstance(context, dict) else {}, "context"),
+        "report_inputs_matching_paths": _matching_paths(report_inputs, "report_inputs"),
+    }
+
+
 def _extract_series_candidate(candidate: Any) -> list[dict]:
     points = _meta_series_points(candidate)
     if points:
@@ -7331,15 +7426,39 @@ def _extract_daily_metric_series_details(dataset: dict, metric_key: str) -> tupl
                 "data",
                 "breakdowns",
                 "metrics",
+                "normalized_report_metrics",
+                "report_metric_mapping",
             ):
                 container = source.get(container_key)
                 if isinstance(container, dict):
-                    candidate_pairs.append(
-                        (
-                            container.get(alias),
-                            f"{source_prefix}.{container_key}.{alias}",
-                            alias,
-                        )
+                    candidate_pairs.extend(
+                        [
+                            (
+                                container.get(alias),
+                                f"{source_prefix}.{container_key}.{alias}",
+                                alias,
+                            ),
+                            (
+                                container.get(f"{alias}_daily"),
+                                f"{source_prefix}.{container_key}.{alias}_daily",
+                                alias,
+                            ),
+                            (
+                                container.get(f"daily_{alias}"),
+                                f"{source_prefix}.{container_key}.daily_{alias}",
+                                alias,
+                            ),
+                            (
+                                container.get(f"{alias}_daily_series"),
+                                f"{source_prefix}.{container_key}.{alias}_daily_series",
+                                alias,
+                            ),
+                            (
+                                container.get(f"daily_series_{alias}"),
+                                f"{source_prefix}.{container_key}.daily_series_{alias}",
+                                alias,
+                            ),
+                        ]
                     )
     blocks = dataset.get("blocks") if isinstance(dataset.get("blocks"), list) else []
     for index, block in enumerate(blocks):
@@ -7353,10 +7472,19 @@ def _extract_daily_metric_series_details(dataset: dict, metric_key: str) -> tupl
         )
     if metric_key == "engagement":
         candidate_pairs.append((_meta_posts_daily_series(dataset, metric="engagement"), "context.posts_daily_series.engagement", "engagement"))
+    first_any: tuple[list[dict], str | None, str | None] | None = None
     for candidate, source_path, matched_key in candidate_pairs:
         points = _extract_series_candidate(candidate)
         if points:
-            return _normalize_daily_series_result(points), source_path, matched_key
+            normalized_points = _normalize_daily_series_result(points)
+            if not normalized_points:
+                continue
+            if first_any is None:
+                first_any = (normalized_points, source_path, matched_key)
+            if any(normalizeMetricValue(point.get("value")) not in (None, 0) for point in normalized_points):
+                return normalized_points, source_path, matched_key
+    if first_any is not None:
+        return first_any
     return [], None, None
 
 
@@ -7525,8 +7653,30 @@ def buildMetricSlidePayload(
     normalized_metric_key = str(metric_key or "").strip().lower()
     label_en = metric_label or METRIC_LABELS.get(normalized_metric_key, normalized_metric_key.replace("_", " ").title())
     label = METRIC_LABELS_ES.get(normalized_metric_key, label_en)
+    debug_metadata = _daily_series_candidate_debug(context, normalized_metric_key)
     daily_series, source_path, matched_key = _extract_daily_metric_series_details(context, normalized_metric_key)
     total = _resolve_metric_total(context, normalized_metric_key, daily_series)
+    all_daily_values_zero = bool(daily_series) and all(
+        normalizeMetricValue(point.get("value")) == 0 for point in daily_series
+    )
+    numeric_total = normalizeMetricValue(total)
+    if normalized_metric_key in {"reach", "impressions"} and all_daily_values_zero and (numeric_total or 0) > 0:
+        logger.warning(
+            "[FiveSlideMetric][daily_series.inconsistent_with_total]",
+            extra={
+                "integration": _meta_integration_type(context),
+                "metric_key": normalized_metric_key,
+                "total": total,
+                "daily_series_length": len(daily_series),
+                "daily_series_values": daily_series,
+                "daily_series_source_path": source_path,
+                "daily_series_source_metric_key": matched_key,
+                "raw_candidate_keys": debug_metadata,
+            },
+        )
+        daily_series = []
+        source_path = None
+        matched_key = None
     insight_short, insight_full = truncateInsightForSlide(insight)
     if normalized_metric_key == "engagement" and total is None:
         total_value: Any = "N/A"
@@ -7546,6 +7696,8 @@ def buildMetricSlidePayload(
         numeric_total = normalizeMetricValue(total) if total is not None else None
         if numeric_total is not None and viewers_total not in (None, 0):
             frequency = round(float(numeric_total) / float(viewers_total), 2)
+    highest_day = getHighestDay(daily_series)
+    lowest_day = getLowestDay(daily_series)
     payload = {
         "metric_key": normalized_metric_key,
         "metric_label": label,
@@ -7553,8 +7705,8 @@ def buildMetricSlidePayload(
         "value": value,
         "total": total_value,
         "daily_series": daily_series,
-        "highest_day": getHighestDay(daily_series),
-        "lowest_day": getLowestDay(daily_series),
+        "highest_day": highest_day,
+        "lowest_day": lowest_day,
         "insight": insight_short,
         "insight_short": insight_short,
         "insight_full": insight_full,
@@ -7572,6 +7724,21 @@ def buildMetricSlidePayload(
             "timeframe": context.get("report_timeframe") or {},
         },
     }
+    logger.info(
+        "[FiveSlideMetric][resolved]",
+        extra={
+            "integration": _meta_integration_type(context),
+            "metric_key": normalized_metric_key,
+            "total": total_value,
+            "daily_series_length": len(daily_series),
+            "daily_series_values": daily_series,
+            "daily_series_source_path": source_path,
+            "daily_series_source_metric_key": matched_key,
+            "raw_candidate_keys": debug_metadata,
+            "highest_day": highest_day,
+            "lowest_day": lowest_day,
+        },
+    )
     return payload
 
 
@@ -7598,31 +7765,9 @@ def _build_five_slide_summary_payload(
         "title": "Resumen final",
         "title_en": "Final Summary",
         "metrics_summary": {
-            "reach": {
-                "metric_key": "reach",
-                "metric_label": reach_payload.get("metric_label"),
-                "metric_label_en": reach_payload.get("metric_label_en"),
-                "total": reach_payload.get("total"),
-                "highest_day": reach_payload.get("highest_day"),
-                "lowest_day": reach_payload.get("lowest_day"),
-            },
-            "impressions": {
-                "metric_key": "impressions",
-                "metric_label": impressions_payload.get("metric_label"),
-                "metric_label_en": impressions_payload.get("metric_label_en"),
-                "total": impressions_payload.get("total"),
-                "highest_day": impressions_payload.get("highest_day"),
-                "lowest_day": impressions_payload.get("lowest_day"),
-                "frequency": impressions_payload.get("frequency"),
-            },
-            "engagement": {
-                "metric_key": "engagement",
-                "metric_label": engagement_payload.get("metric_label"),
-                "metric_label_en": engagement_payload.get("metric_label_en"),
-                "total": engagement_payload.get("total"),
-                "highest_day": engagement_payload.get("highest_day"),
-                "lowest_day": engagement_payload.get("lowest_day"),
-            },
+            "reach": _build_summary_metric_card("reach", reach_payload),
+            "impressions": _build_summary_metric_card("impressions", impressions_payload),
+            "engagement": _build_summary_metric_card("engagement", engagement_payload),
         },
         "ai_summary": ai_summary_short,
         "recommendation": recommendation_short,
@@ -9175,6 +9320,35 @@ def build_5_blocks(dataset: dict) -> list[dict]:
         metric_label="Engagement",
         insight=engagement_insight_full,
     )
+    if _meta_integration_type(dataset) in {"facebook_pages", "meta_pages"}:
+        report_inputs = _meta_report_inputs(dataset)
+        logger.info(
+            "[FiveSlideReport][facebook.debug]",
+            extra={
+                "integration": _meta_integration_type(dataset),
+                "dataset_keys_available": sorted(str(key) for key in dataset.keys()),
+                "report_inputs_keys_available": sorted(str(key) for key in report_inputs.keys()),
+                "insights_keys": sorted(str(key) for key in (report_inputs.get("insights") or {}).keys())
+                if isinstance(report_inputs.get("insights"), dict)
+                else [],
+                "daily_keys": sorted(str(key) for key in (report_inputs.get("daily") or {}).keys())
+                if isinstance(report_inputs.get("daily"), dict)
+                else [],
+                "values_keys": sorted(str(key) for key in (report_inputs.get("values") or {}).keys())
+                if isinstance(report_inputs.get("values"), dict)
+                else [],
+                "metric_values_keys": sorted(str(key) for key in (report_inputs.get("metric_values") or {}).keys())
+                if isinstance(report_inputs.get("metric_values"), dict)
+                else [],
+                "chart_data_keys": sorted(str(key) for key in (dataset.get("chart_data") or {}).keys())
+                if isinstance(dataset.get("chart_data"), dict)
+                else [],
+                "reach_daily_source_path": reach_payload.get("daily_series_source_path"),
+                "reach_daily_source_metric_key": reach_payload.get("daily_series_source_metric_key"),
+                "impressions_daily_source_path": impressions_payload.get("daily_series_source_path"),
+                "impressions_daily_source_metric_key": impressions_payload.get("daily_series_source_metric_key"),
+            },
+        )
     blocks = [
         _meta_report_block(
             "title",

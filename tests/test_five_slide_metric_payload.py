@@ -103,6 +103,32 @@ def test_extract_daily_metric_series_normalizes_nested_sources_and_zero_values()
     ]
 
 
+def test_extract_daily_metric_series_reads_normalized_report_metrics_and_reach_aliases():
+    dataset = {
+        "report_inputs": {
+            "integration_type": "facebook_pages",
+            "normalized_report_metrics": {
+                "viewers_daily": [
+                    {"date": "2026-05-15", "value": 1200},
+                    {"date": "2026-05-16", "value": 900},
+                ],
+                "impressions_daily": [
+                    {"date": "2026-05-15", "value": 600},
+                    {"date": "2026-05-16", "value": 767},
+                ],
+            },
+        }
+    }
+    assert extractDailyMetricSeries(dataset, "reach") == [
+        {"date": "2026-05-15", "label": "May 15", "value": 1200},
+        {"date": "2026-05-16", "label": "May 16", "value": 900},
+    ]
+    assert extractDailyMetricSeries(dataset, "impressions") == [
+        {"date": "2026-05-15", "label": "May 15", "value": 600},
+        {"date": "2026-05-16", "label": "May 16", "value": 767},
+    ]
+
+
 def test_truncate_insight_for_slide_limits_to_280_chars():
     long_text = " ".join(["This is a long insight sentence."] * 20)
     short_text, full_text = truncateInsightForSlide(long_text, limit=280)
@@ -143,6 +169,11 @@ def test_build_5_blocks_metric_slides_for_facebook_pages():
     assert summary["slide_type"] == "summary"
     assert "metrics_summary" in summary
     assert len(summary["ai_summary"]) <= 400
+    assert summary["metrics_summary"]["reach"]["value"] == 44851
+    assert summary["metrics_summary"]["reach"]["formatted_value"] == "44,851"
+    assert summary["metrics_summary"]["reach"]["description"] == "Total reach"
+    assert isinstance(summary["metrics_summary"]["reach"]["formatted_value"], str)
+    assert not isinstance(summary["metrics_summary"]["reach"]["value"], dict)
 
 
 def test_build_5_blocks_metric_slides_for_instagram_business():
@@ -173,6 +204,8 @@ def test_build_5_blocks_metric_slide_without_daily_series_keeps_empty_array():
 
 def test_build_5_blocks_zero_daily_series_is_preserved_and_available():
     context = _base_context(integration_type="facebook_pages")
+    context["impressions"] = 0
+    context["report_inputs"]["impressions"] = 0
     context["impressions_slide_payload"] = {
         "impressions_daily": [
             {"date": "2026-05-15", "value": 0},
@@ -190,6 +223,29 @@ def test_build_5_blocks_zero_daily_series_is_preserved_and_available():
         {"date": "2026-05-16", "label": "May 16", "value": 0},
     ]
     assert impressions["daily_series_reason"] == ""
+
+
+def test_build_5_blocks_impressions_discards_all_zero_series_when_total_is_positive():
+    context = _base_context(integration_type="facebook_pages")
+    context["impressions"] = 1367
+    context["report_inputs"]["impressions"] = 1367
+    context["impressions_slide_payload"] = {
+        "impressions_daily": [
+            {"date": "2026-05-15", "value": 0},
+            {"date": "2026-05-16", "value": 0},
+        ]
+    }
+    context["report_inputs"]["impressions_daily"] = [
+        {"date": "2026-05-15", "value": 0},
+        {"date": "2026-05-16", "value": 0},
+    ]
+    blocks = build_5_blocks(context)
+    impressions = json.loads(blocks[2]["data_json"])
+    assert impressions["total"] == 1367
+    assert impressions["daily_series"] == []
+    assert impressions["highest_day"] == {}
+    assert impressions["lowest_day"] == {}
+    assert impressions["daily_series_reason"] == "daily_series_unavailable_from_source"
 
 
 def test_build_5_blocks_cover_branding_falls_back_to_measurable_when_missing():
@@ -220,3 +276,19 @@ def test_build_5_blocks_engagement_can_be_calculated_from_interactions():
     engagement = json.loads(blocks[3]["data_json"])
     assert engagement["total"] == 32
     assert engagement["daily_series"][0]["value"] == 7
+
+
+def test_build_5_blocks_summary_metrics_summary_uses_renderable_primitives():
+    blocks = build_5_blocks(_base_context(integration_type="instagram_business"))
+    summary = json.loads(blocks[4]["data_json"])
+    metrics_summary = summary["metrics_summary"]
+    assert metrics_summary["reach"] == {
+        "label": "Reach",
+        "value": 44851,
+        "formatted_value": "44,851",
+        "description": "Total reach",
+    }
+    assert metrics_summary["impressions"]["value"] == 90120
+    assert metrics_summary["impressions"]["formatted_value"] == "90,120"
+    assert isinstance(metrics_summary["engagement"]["formatted_value"], str)
+    assert not isinstance(metrics_summary["engagement"]["value"], dict)
