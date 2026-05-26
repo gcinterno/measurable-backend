@@ -227,6 +227,15 @@ def test_delete_report_returns_404_when_report_missing(client):
     assert response.json()["detail"]["code"] == "report_not_found"
 
 
+def test_delete_report_compat_post_alias_works(client):
+    refs = _seed_report_graph()
+
+    response = client.post(f"/reports/{refs['report_id']}/delete", headers=_auth_headers(refs["owner_id"]))
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+
+
 def test_delete_report_returns_403_when_user_is_not_owner(client):
     refs = _seed_report_graph()
 

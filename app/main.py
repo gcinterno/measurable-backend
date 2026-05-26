@@ -1,8 +1,10 @@
 import csv
 import io
+import importlib
 import json
 import logging
 import os
+import re
 import secrets
 import requests
 from decimal import Decimal
@@ -10,12 +12,12 @@ from urllib.parse import urlencode
 from datetime import date, timedelta, datetime, timezone, time
 from time import perf_counter
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal, cast
 
 from fastapi import Body, Depends, FastAPI, File, Form, Query, Request, UploadFile, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, PartialCredentialsError
 from sqlalchemy import and_, case, func, inspect, literal, or_
@@ -25,6 +27,7 @@ from starlette.datastructures import FormData
 from .deps import (
     get_current_user,
     get_current_user_for_report_read,
+    get_optional_current_user,
     get_db,
     load_user_by_email,
     load_user_by_google_sub,
@@ -80,6 +83,7 @@ from .models import (
     ReferralPartner,
     Report,
     ReportBlock,
+    ReportShare,
     ReportSource,
     ReportVersion,
     Schedule,
@@ -87,6 +91,7 @@ from .models import (
     User,
     UserAttribution,
     UserSuggestion,
+    WishlistLead,
     Workspace,
     WorkspaceMember,
 )
@@ -111,9 +116,16 @@ from .schemas import (
     AdminOnboardingInsightsOut,
     AdminPlatformCountsOut,
     AdminSuggestionOut,
+    AdminWishlistLeadOut,
     AdminUserOut,
     AdminUsersOut,
     AccountSummaryOut,
+    BillingCheckoutSessionIn,
+    BillingCheckoutSessionOut,
+    BillingMeOut,
+    BillingPlanChangePreviewOut,
+    BillingPlanSnapshotOut,
+    BillingPortalSessionOut,
     DeleteAccountIn,
     DeleteAccountOut,
     ConversationOut,
@@ -158,6 +170,9 @@ from .schemas import (
     ResetPasswordIn,
     VerifyEmailIn,
     VerifyEmailOut,
+    PublicReportOut,
+    PublicSharedReportOut,
+    PublicSharedReportVersionOut,
     ReportBlockOut,
     ReportExportOut,
     ReportListItemOut,
@@ -168,6 +183,8 @@ from .schemas import (
     ReportFolderUpdateOut,
     ReportIntegrationMetadataOut,
     ReportOut,
+    ReportShareCreateOut,
+    ReportShareRevokeOut,
     ReportSourceRead,
     ReportVersionOut,
     ScheduleCreateIn,
@@ -178,7 +195,10 @@ from .schemas import (
     SuggestionStatusUpdateIn,
     TokenOut,
     UserSuggestionOut,
-    WorkspaceAccountDisplayNameUpdateIn,
+    WishlistCreateIn,
+    WishlistCreateOut,
+    WishlistLeadOut,
+    WorkspaceBrandingLogoUploadOut,
     WorkspaceBrandingUpdateIn,
     WorkspaceUpdateIn,
     WorkspaceCreateIn,
@@ -217,21 +237,31 @@ from .services import (
     build_auth_email_text,
     create_manual_referral_conversion,
     create_referral_click,
+    FREE_REPORTS_LIMIT,
+    FreeReportLimitReachedError,
     issue_auth_code,
     send_auth_email,
     validate_auth_code,
+    count_workspace_reports_total,
     count_workspace_reports_this_month,
     count_workspace_storage_bytes,
+    enforce_report_creation_limit,
     enforce_storage_limit,
     enforce_export_capability,
     extract_meta_pages_report_inputs,
-    enforce_monthly_report_limit,
     enqueue_job,
     finalize_export_response,
     generate_workspace_ai_reply,
+    get_plan_code_for_stripe_price,
+    get_plan_entitlements,
     get_workspace_plan,
+    get_workspace_subscription,
     get_plan_limits,
+    get_remaining_reports,
+    get_stripe_price_plan_mapping,
+    get_subscription_entitlements,
     hash_client_ip,
+    normalize_workspace_plan,
     report_branding_mode_for_plan,
     resolve_account_display_name,
     resolve_report_slide_limits,
@@ -243,7 +273,10 @@ from .services import (
     generate_pdf_from_export_page,
     normalize_report_locale,
     normalize_meta_recent_posts,
+    apply_plan_entitlements,
     build_report_pdf_export_url,
+    can_schedule_report,
+    can_use_multi_platform_report,
     resolve_report_branding,
     resolve_workspace_branding,
     store_report_thumbnail,
@@ -254,10 +287,647 @@ from .services import (
 logger = logging.getLogger(__name__)
 DEFAULT_GENERATED_REPORT_SLIDE_COUNT = 2
 INTEGRATIONS_TOTAL_AVAILABLE = 3
+FREE_REPORT_LIMIT_CODE = "FREE_REPORT_LIMIT_REACHED"
+FREE_REPORT_LIMIT_MESSAGE = "Has alcanzado el límite de 10 reportes gratuitos."
+FREE_REPORT_LIMIT_UPGRADE_URL = "https://measurableapp.com/wishlist"
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _workspace_account_display_payload(workspace: Workspace | None, user: User | None) -> dict[str, str | None]:
     return resolve_account_display_name(workspace, user)
+
+
+def _free_report_limit_payload() -> dict[str, str]:
+    return {
+        "code": FREE_REPORT_LIMIT_CODE,
+        "detail": FREE_REPORT_LIMIT_MESSAGE,
+        "message": FREE_REPORT_LIMIT_MESSAGE,
+        "upgrade_url": FREE_REPORT_LIMIT_UPGRADE_URL,
+    }
+
+
+def _enforce_report_creation_limit_or_response(
+    db: Session,
+    workspace_id: int,
+) -> JSONResponse | None:
+    try:
+        enforce_report_creation_limit(db, workspace_id)
+    except FreeReportLimitReachedError:
+        return JSONResponse(status_code=403, content=_free_report_limit_payload())
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if exc.status_code == 403 and str(detail.get("code") or "").strip() == "monthly_report_limit_reached":
+            message = str(detail.get("message") or "Monthly report limit reached for current plan.")
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "code": "monthly_report_limit_reached",
+                    "detail": message,
+                    "message": message,
+                },
+            )
+        raise
+    return None
+
+
+def _wishlist_lead_out(lead: WishlistLead) -> WishlistLeadOut:
+    return WishlistLeadOut(
+        id=lead.id,
+        user_id=lead.user_id,
+        workspace_id=lead.workspace_id,
+        name=lead.name,
+        email=lead.email,
+        company=lead.company,
+        message=lead.message,
+        source=lead.source,
+        created_at=lead.created_at,
+    )
+
+
+def _frontend_url() -> str:
+    return str(settings.frontend_url or settings.frontend_base_url or "").strip().rstrip("/")
+
+
+def _pdf_render_base_url() -> str:
+    configured = str(
+        settings.report_export_base_url or settings.frontend_url or settings.frontend_base_url or ""
+    ).strip().rstrip("/")
+    if configured:
+        return configured
+    raise http_error(
+        500,
+        "frontend_url_not_configured",
+        "FRONTEND_URL or REPORT_EXPORT_BASE_URL is required for PDF export.",
+    )
+
+
+def _billing_portal_return_url() -> str:
+    configured = str(settings.stripe_billing_portal_return_url or "").strip()
+    if configured:
+        return configured
+    frontend_url = _frontend_url()
+    return frontend_url or "http://localhost:3000"
+
+
+def _stripe_checkout_success_url() -> str:
+    frontend_url = _frontend_url()
+    if not frontend_url:
+        raise http_error(500, "frontend_url_not_configured", "FRONTEND_URL is required for Stripe checkout.")
+    return f"{frontend_url}/billing/success?session_id={{CHECKOUT_SESSION_ID}}"
+
+
+def _stripe_checkout_cancel_url() -> str:
+    frontend_url = _frontend_url()
+    if not frontend_url:
+        raise http_error(500, "frontend_url_not_configured", "FRONTEND_URL is required for Stripe checkout.")
+    return f"{frontend_url}/billing/cancel"
+
+
+def _get_stripe_module():
+    try:
+        return importlib.import_module("stripe")
+    except ImportError as exc:
+        raise http_error(500, "stripe_unavailable", "Stripe dependency is not installed.") from exc
+
+
+def _require_stripe_configuration() -> None:
+    required_values = {
+        "STRIPE_SECRET_KEY": settings.stripe_secret_key,
+        "STRIPE_WEBHOOK_SECRET": settings.stripe_webhook_secret,
+        "STRIPE_PRICE_STARTER_MONTHLY": settings.stripe_price_starter_monthly,
+        "STRIPE_PRICE_PRO_MONTHLY": settings.stripe_price_pro_monthly,
+        "STRIPE_PRICE_ADVANCED_MONTHLY": settings.stripe_price_advanced_monthly,
+    }
+    missing = [key for key, value in required_values.items() if not str(value or "").strip()]
+    if missing:
+        raise http_error(
+            500,
+            "stripe_not_configured",
+            f"Missing Stripe configuration: {', '.join(missing)}.",
+        )
+
+
+def _configure_stripe():
+    _require_stripe_configuration()
+    stripe = _get_stripe_module()
+    stripe.api_key = str(settings.stripe_secret_key or "").strip()
+    return stripe
+
+
+def _billing_status_for_subscription(subscription: Subscription | None) -> str:
+    if subscription is None:
+        return "free"
+    explicit = str(subscription.billing_status or "").strip()
+    if explicit:
+        return explicit
+    if normalize_workspace_plan(subscription.plan or "free") == "free":
+        return "free"
+    return str(subscription.status or "active").strip() or "active"
+
+
+def _billing_me_out(db: Session, subscription: Subscription | None, workspace_id: int) -> BillingMeOut:
+    entitlements = get_subscription_entitlements(subscription)
+    return BillingMeOut(
+        plan_code=str(entitlements["plan_code"]),
+        plan_name=_plan_display_name(str(entitlements["plan_code"])),
+        billing_status=_billing_status_for_subscription(subscription),
+        current_period_end=subscription.current_period_end if subscription is not None else None,
+        price_monthly_usd=int(entitlements["price_monthly_usd"]),
+        cancel_at_period_end=bool(subscription.cancel_at_period_end) if subscription is not None else False,
+        reports_limit_monthly=entitlements["reports_limit_monthly"],
+        reports_used_current_month=count_workspace_reports_this_month(db, workspace_id),
+        slides_per_report_limit=int(entitlements["slides_per_report_limit"]),
+        platform_report_type=str(entitlements["platform_report_type"]),
+        ai_chat_with_data=bool(entitlements["ai_chat_with_data"]),
+        storage_limit_gb=int(entitlements["storage_limit_gb"]),
+        export_pdf=bool(entitlements["export_pdf"]),
+        export_pptx=bool(entitlements["export_pptx"]),
+        brand_personalization=bool(entitlements["brand_personalization"]),
+        measurable_watermark=bool(entitlements["measurable_watermark"]),
+        scheduled_reports_limit=entitlements["scheduled_reports_limit"],
+        trial_new_features=bool(entitlements["trial_new_features"]),
+    )
+
+
+def _resolve_workspace_subscription_for_user(db: Session, current_user: User) -> tuple[Workspace, Subscription]:
+    workspace, subscription = _ensure_user_workspace_and_subscription(db, user=current_user)
+    apply_plan_entitlements(subscription, subscription.plan or "free")
+    return workspace, subscription
+
+
+def _plan_display_name(plan_code: str | None) -> str:
+    normalized = normalize_workspace_plan(plan_code or "free")
+    if normalized == "free":
+        return "Free"
+    if normalized == "starter":
+        return "Starter"
+    if normalized == "pro":
+        return "Pro"
+    if normalized == "advanced":
+        return "Advanced"
+    return normalized.replace("_", " ").title()
+
+
+def _billing_plan_snapshot(plan_code: str) -> BillingPlanSnapshotOut:
+    entitlements = get_plan_entitlements(plan_code)
+    return BillingPlanSnapshotOut(
+        plan_code=str(entitlements["plan_code"]),
+        plan_name=_plan_display_name(str(entitlements["plan_code"])),
+        price_monthly_usd=int(entitlements["price_monthly_usd"]),
+        reports_limit_monthly=entitlements["reports_limit_monthly"],
+        slides_per_report_limit=int(entitlements["slides_per_report_limit"]),
+        export_pdf=bool(entitlements["export_pdf"]),
+        export_pptx=bool(entitlements["export_pptx"]),
+        brand_personalization=bool(entitlements["brand_personalization"]),
+        measurable_watermark=bool(entitlements["measurable_watermark"]),
+        scheduled_reports_limit=entitlements["scheduled_reports_limit"],
+    )
+
+
+def _find_subscription_by_stripe_customer(db: Session, customer_id: str | None) -> Subscription | None:
+    normalized_customer_id = str(customer_id or "").strip()
+    if not normalized_customer_id:
+        return None
+    return (
+        db.query(Subscription)
+        .filter(Subscription.stripe_customer_id == normalized_customer_id)
+        .order_by(Subscription.updated_at.desc(), Subscription.id.desc())
+        .first()
+    )
+
+
+def _find_subscription_by_stripe_subscription(db: Session, stripe_subscription_id: str | None) -> Subscription | None:
+    normalized_subscription_id = str(stripe_subscription_id or "").strip()
+    if not normalized_subscription_id:
+        return None
+    return (
+        db.query(Subscription)
+        .filter(Subscription.stripe_subscription_id == normalized_subscription_id)
+        .order_by(Subscription.updated_at.desc(), Subscription.id.desc())
+        .first()
+    )
+
+
+def _find_subscription_for_stripe_event(
+    db: Session,
+    *,
+    stripe_subscription_id: str | None,
+    stripe_customer_id: str | None,
+) -> Subscription | None:
+    return _find_subscription_by_stripe_subscription(db, stripe_subscription_id) or _find_subscription_by_stripe_customer(
+        db, stripe_customer_id
+    )
+
+
+ACTIVE_STRIPE_BILLING_STATUSES = {"active", "trialing", "past_due"}
+
+
+def _stripe_object_get(value: Any, *path: str) -> Any:
+    current = value
+    for key in path:
+        if isinstance(current, dict):
+            current = current.get(key)
+        else:
+            current = getattr(current, key, None)
+        if current is None:
+            return None
+    return current
+
+
+def _stripe_subscription_status(value: Any) -> str | None:
+    status = str(_stripe_object_get(value, "status") or "").strip().lower()
+    return status or None
+
+
+def _stripe_subscription_price_id(value: Any) -> str | None:
+    items = _stripe_object_get(value, "items", "data")
+    if not isinstance(items, list) or not items:
+        return None
+    return str(_stripe_object_get(items[0], "price", "id") or "").strip() or None
+
+
+def _stripe_subscription_item_id(value: Any) -> str | None:
+    items = _stripe_object_get(value, "items", "data")
+    if not isinstance(items, list) or not items:
+        return None
+    return str(_stripe_object_get(items[0], "id") or "").strip() or None
+
+
+def _is_reusable_stripe_subscription(value: Any) -> bool:
+    return str(_stripe_subscription_status(value) or "") in ACTIVE_STRIPE_BILLING_STATUSES
+
+
+def _is_missing_stripe_subscription_error(exc: Exception) -> bool:
+    code = str(getattr(exc, "code", "") or "").strip().lower()
+    if code == "resource_missing":
+        return True
+    message = str(exc).lower()
+    return "no such subscription" in message or "resource_missing" in message
+
+
+def _retrieve_existing_stripe_subscription(
+    stripe: Any,
+    *,
+    stripe_subscription_id: str | None,
+) -> Any | None:
+    normalized_subscription_id = str(stripe_subscription_id or "").strip()
+    if not normalized_subscription_id:
+        return None
+    try:
+        return stripe.Subscription.retrieve(normalized_subscription_id)
+    except Exception as exc:
+        if _is_missing_stripe_subscription_error(exc):
+            return None
+        raise http_error(502, "stripe_subscription_retrieve_failed", "Stripe subscription could not be retrieved.") from exc
+
+
+def _list_customer_stripe_subscriptions(
+    stripe: Any,
+    *,
+    customer_id: str | None,
+) -> list[Any]:
+    normalized_customer_id = str(customer_id or "").strip()
+    if not normalized_customer_id:
+        return []
+    try:
+        response = stripe.Subscription.list(customer=normalized_customer_id, status="all", limit=10)
+    except AttributeError:
+        return []
+    except Exception as exc:
+        raise http_error(502, "stripe_subscription_list_failed", "Stripe subscriptions could not be listed.") from exc
+    items = _stripe_object_get(response, "data")
+    return items if isinstance(items, list) else []
+
+
+def _find_reusable_stripe_subscription(
+    stripe: Any,
+    *,
+    subscription: Subscription,
+) -> Any | None:
+    retrieved = _retrieve_existing_stripe_subscription(
+        stripe,
+        stripe_subscription_id=subscription.stripe_subscription_id,
+    )
+    if retrieved is not None:
+        if _is_reusable_stripe_subscription(retrieved):
+            return retrieved
+        return None
+
+    candidates = _list_customer_stripe_subscriptions(
+        stripe,
+        customer_id=subscription.stripe_customer_id,
+    )
+    for candidate in candidates:
+        if _is_reusable_stripe_subscription(candidate):
+            return candidate
+    return None
+
+
+def _sync_local_subscription_from_stripe_object(
+    db: Session,
+    *,
+    subscription: Subscription,
+    stripe_subscription: Any,
+) -> Subscription:
+    price_id = _stripe_subscription_price_id(stripe_subscription)
+    plan_code = get_plan_code_for_stripe_price(price_id) or subscription.plan or "free"
+    _apply_stripe_subscription_state(
+        subscription,
+        plan_code=plan_code,
+        billing_status=_stripe_subscription_status(stripe_subscription) or "active",
+        stripe_customer_id=_stripe_object_get(stripe_subscription, "customer"),
+        stripe_subscription_id=_stripe_object_get(stripe_subscription, "id"),
+        stripe_price_id=price_id,
+        current_period_start=_stripe_object_get(stripe_subscription, "current_period_start"),
+        current_period_end=_stripe_object_get(stripe_subscription, "current_period_end"),
+        cancel_at_period_end=_stripe_object_get(stripe_subscription, "cancel_at_period_end"),
+    )
+    db.add(subscription)
+    db.commit()
+    db.refresh(subscription)
+    return subscription
+
+
+def _set_subscription_period_dates(
+    subscription: Subscription,
+    *,
+    current_period_start: Any,
+    current_period_end: Any,
+) -> None:
+    subscription.current_period_start = (
+        datetime.fromtimestamp(int(current_period_start), tz=timezone.utc)
+        if current_period_start is not None
+        else None
+    )
+    subscription.current_period_end = (
+        datetime.fromtimestamp(int(current_period_end), tz=timezone.utc)
+        if current_period_end is not None
+        else None
+    )
+
+
+def _downgrade_subscription_to_free(subscription: Subscription) -> Subscription:
+    apply_plan_entitlements(subscription, "free")
+    subscription.status = "active"
+    subscription.billing_status = "free"
+    subscription.stripe_subscription_id = None
+    subscription.stripe_price_id = None
+    subscription.current_period_start = None
+    subscription.current_period_end = None
+    subscription.cancel_at_period_end = False
+    return subscription
+
+
+def _apply_stripe_subscription_state(
+    subscription: Subscription,
+    *,
+    plan_code: str,
+    billing_status: str | None,
+    stripe_customer_id: str | None,
+    stripe_subscription_id: str | None,
+    stripe_price_id: str | None,
+    current_period_start: Any,
+    current_period_end: Any,
+    cancel_at_period_end: Any,
+) -> Subscription:
+    apply_plan_entitlements(subscription, plan_code)
+    subscription.status = "active"
+    subscription.billing_status = str(billing_status or "active").strip() or "active"
+    subscription.stripe_customer_id = str(stripe_customer_id or "").strip() or subscription.stripe_customer_id
+    subscription.stripe_subscription_id = str(stripe_subscription_id or "").strip() or None
+    subscription.stripe_price_id = str(stripe_price_id or "").strip() or None
+    subscription.cancel_at_period_end = bool(cancel_at_period_end)
+    _set_subscription_period_dates(
+        subscription,
+        current_period_start=current_period_start,
+        current_period_end=current_period_end,
+    )
+    return subscription
+
+
+def _latest_report_version(db: Session, report_id: int) -> ReportVersion | None:
+    return (
+        db.query(ReportVersion)
+        .filter(ReportVersion.report_id == report_id)
+        .order_by(ReportVersion.version.desc(), ReportVersion.id.desc())
+        .first()
+    )
+
+
+def _clean_pdf_file_name(report_name: str | None) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", str(report_name or "").strip())
+    normalized = re.sub(r"_+", "_", normalized).strip("._-")
+    return normalized or "Report"
+
+
+def _frontend_share_base_url(request: Request) -> str:
+    frontend_url = _frontend_url()
+    if frontend_url:
+        return frontend_url
+    return str(request.base_url).rstrip("/")
+
+
+def _public_pdf_frontend_base_url() -> str:
+    return _pdf_render_base_url()
+
+
+def _active_report_share(db: Session, report_id: int) -> ReportShare | None:
+    now = datetime.now(timezone.utc)
+    return (
+        db.query(ReportShare)
+        .filter(
+            ReportShare.report_id == report_id,
+            ReportShare.is_active.is_(True),
+            ReportShare.revoked_at.is_(None),
+            or_(ReportShare.expires_at.is_(None), ReportShare.expires_at > now),
+        )
+        .order_by(ReportShare.created_at.desc(), ReportShare.id.desc())
+        .first()
+    )
+
+
+def _latest_report_share(db: Session, report_id: int) -> ReportShare | None:
+    return (
+        db.query(ReportShare)
+        .filter(ReportShare.report_id == report_id)
+        .order_by(ReportShare.created_at.desc(), ReportShare.id.desc())
+        .first()
+    )
+
+
+def _valid_report_share_by_token(db: Session, share_token: str) -> ReportShare | None:
+    now = datetime.now(timezone.utc)
+    return (
+        db.query(ReportShare)
+        .filter(
+            ReportShare.token == str(share_token or "").strip(),
+            ReportShare.is_active.is_(True),
+            ReportShare.revoked_at.is_(None),
+            or_(ReportShare.expires_at.is_(None), ReportShare.expires_at > now),
+        )
+        .order_by(ReportShare.created_at.desc(), ReportShare.id.desc())
+        .first()
+    )
+
+
+def _resolve_shared_report_context(
+    db: Session,
+    share_token: str,
+) -> tuple[ReportShare, Report, ReportVersion]:
+    share = _valid_report_share_by_token(db, share_token)
+    if share is None:
+        raise http_error(404, "share_link_not_found", "Share link not found.")
+
+    report = db.get(Report, share.report_id)
+    if report is None:
+        raise http_error(404, "share_link_not_found", "Share link not found.")
+    report_version = _latest_report_version(db, report.id)
+    if report_version is None:
+        raise http_error(404, "share_link_not_found", "Share link not found.")
+    return share, report, report_version
+
+
+def _normalize_report_template_value(value: Any) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", normalized):
+        return None
+    return normalized
+
+
+def _stored_report_template(report: Report) -> str | None:
+    return _normalize_report_template_value(_report_metadata(report).get("template"))
+
+
+def _effective_report_template(report: Report, incoming_template: Any = None) -> tuple[str | None, str]:
+    requested = _normalize_report_template_value(incoming_template)
+    if requested:
+        return requested, "query"
+    stored = _stored_report_template(report)
+    if stored:
+        return stored, "report"
+    return None, "default"
+
+
+def _pdf_export_timestamp(incoming_ts: Any = None) -> str:
+    normalized = str(incoming_ts or "").strip()
+    if normalized:
+        return normalized
+    return str(int(datetime.now(timezone.utc).timestamp()))
+
+
+def _pdf_cache_key(
+    *,
+    report_id: int,
+    version_id: int,
+    effective_template: str | None,
+    report_updated_at: datetime | None,
+    version_updated_at: datetime | None,
+) -> str:
+    return "|".join(
+        [
+            f"report_id={report_id}",
+            f"version_id={version_id}",
+            f"effective_template={effective_template or 'default'}",
+            "report_updated_at="
+            + (report_updated_at.isoformat() if isinstance(report_updated_at, datetime) else "none"),
+            "version_updated_at="
+            + (version_updated_at.isoformat() if isinstance(version_updated_at, datetime) else "none"),
+        ]
+    )
+
+
+def _public_report_out(
+    db: Session,
+    report: Report,
+    report_version: ReportVersion,
+    *,
+    template_override: Any = None,
+) -> PublicReportOut:
+    metadata = _report_metadata(report)
+    timeframe = _report_timeframe(report)
+    report_branding = _report_branding(db, report)
+    integration_metadata = derive_report_integration_metadata(db, report)
+    effective_template, _template_source = _effective_report_template(report, template_override)
+    period_start = (
+        str(
+            (timeframe or {}).get("since")
+            or (timeframe or {}).get("current_since")
+            or (timeframe or {}).get("start_date")
+            or (timeframe or {}).get("start")
+            or ""
+        )[:10]
+        or None
+    )
+    period_end = (
+        str(
+            (timeframe or {}).get("until")
+            or (timeframe or {}).get("current_until")
+            or (timeframe or {}).get("end_date")
+            or (timeframe or {}).get("end")
+            or ""
+        )[:10]
+        or None
+    )
+    blocks = (
+        db.query(ReportBlock)
+        .filter(ReportBlock.report_version_id == report_version.id)
+        .order_by(ReportBlock.order.asc(), ReportBlock.id.asc())
+        .all()
+    )
+    logger.info(
+        "[PUBLIC_REPORT_PAYLOAD_AUDIT]",
+        extra={
+            "share_token": None,
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "version_id": report_version.id,
+            "has_blocks": bool(blocks),
+            "blocks_count": len(blocks),
+            "report_title": report.name,
+            "integration_type": integration_metadata.integration_type,
+            "integration_label": integration_metadata.integration_display_name,
+            "source_name": integration_metadata.source_name,
+            "brand_name": report_branding.get("resolved_brand_name"),
+            "logo_url": report_branding.get("resolved_logo_url"),
+            "period_start": period_start,
+            "period_end": period_end,
+            "template": effective_template,
+        },
+    )
+    return PublicReportOut(
+        report=PublicSharedReportOut(
+            id=report.id,
+            workspace_id=report.workspace_id,
+            title=report.name,
+            integration_type=integration_metadata.integration_type,
+            integration_label=integration_metadata.integration_display_name,
+            source_name=integration_metadata.source_name,
+            channel=integration_metadata.channel,
+            brand_name=str(report_branding.get("resolved_brand_name") or "").strip() or None,
+            logo_url=str(report_branding.get("resolved_logo_url") or "").strip() or None,
+            period_start=period_start,
+            period_end=period_end,
+            template=effective_template,
+            description=metadata,
+            timeframe=timeframe,
+            locale=_report_locale(report),
+            branding=report_branding,
+            thumbnail_url=_report_thumbnail_url(report),
+            created_at=report.created_at,
+            updated_at=report.updated_at,
+        ),
+        version=PublicSharedReportVersionOut(
+            id=report_version.id,
+            report_id=report.id,
+            version=report_version.version,
+            created_at=report_version.created_at,
+            updated_at=report_version.updated_at,
+        ),
+        blocks=[_report_block_out(block, report_branding) for block in blocks],
+        is_public_share=True,
+    )
 
 
 def _workspace_plan_snapshot(db: Session, workspace_id: int) -> dict[str, object]:
@@ -276,12 +946,19 @@ def _workspace_plan_snapshot(db: Session, workspace_id: int) -> dict[str, object
 def _workspace_summary_out(db: Session, workspace: Workspace, user: User | None) -> AccountSummaryOut:
     plan_snapshot = _workspace_plan_snapshot(db, workspace.id)
     plan_limits = dict(plan_snapshot["plan_limits"])
-    reports_created_count = int(
-        db.query(func.count(Report.id)).filter(Report.workspace_id == workspace.id).scalar() or 0
-    )
+    reports_created_count = count_workspace_reports_total(db, workspace.id)
     reports_this_month = count_workspace_reports_this_month(db, workspace.id)
     report_limit = plan_limits.get("reports_per_month")
-    reports_remaining = None if report_limit is None else max(int(report_limit) - int(reports_this_month), 0)
+    reports_remaining_this_month = (
+        None if report_limit is None else max(int(report_limit) - int(reports_this_month), 0)
+    )
+    reports_available_count = reports_remaining_this_month
+    if bool(plan_snapshot["is_free_plan"]):
+        free_reports_remaining = max(FREE_REPORTS_LIMIT - reports_created_count, 0)
+        if reports_available_count is None:
+            reports_available_count = free_reports_remaining
+        else:
+            reports_available_count = min(int(reports_available_count), free_reports_remaining)
     integrations_connected_count = int(
         db.query(func.count(Integration.id))
         .filter(Integration.workspace_id == workspace.id, func.lower(Integration.status) == "connected")
@@ -291,8 +968,8 @@ def _workspace_summary_out(db: Session, workspace: Workspace, user: User | None)
     account_display = _workspace_account_display_payload(workspace, user)
     return AccountSummaryOut(
         reports_created_count=reports_created_count,
-        reports_available_count=reports_remaining,
-        reports_remaining_this_month=reports_remaining,
+        reports_available_count=reports_available_count,
+        reports_remaining_this_month=reports_remaining_this_month,
         reports_limit_this_month=int(report_limit) if report_limit is not None else None,
         integrations_connected_count=integrations_connected_count,
         integrations_total_available=INTEGRATIONS_TOTAL_AVAILABLE,
@@ -317,14 +994,15 @@ def _workspace_out(db: Session, workspace: Workspace) -> WorkspaceOut:
         plan,
     )
     account_display = _workspace_account_display_payload(workspace, None)
+    workspace_branding = resolve_workspace_branding(workspace.id)
     return WorkspaceOut(
         id=workspace.id,
         name=workspace.name,
         account_display_name=account_display["account_display_name"],
         account_display_name_effective=str(account_display["account_display_name_effective"]),
-        logo_url=workspace.logo_url,
+        logo_url=workspace_branding.get("logo_url"),
         brand_name=workspace.name or None,
-        brand_logo_url=workspace.logo_url,
+        brand_logo_url=workspace_branding.get("logo_url"),
         branding=branding,
         plan=plan,
         plan_limits=plan_limits,
@@ -333,6 +1011,60 @@ def _workspace_out(db: Session, workspace: Workspace) -> WorkspaceOut:
         created_at=workspace.created_at,
         updated_at=workspace.updated_at,
     )
+
+
+def _update_workspace_from_payload(workspace: Workspace, payload: WorkspaceUpdateIn) -> tuple[bool, bool]:
+    branding_changed = False
+    account_changed = False
+    if "account_display_name" in payload.model_fields_set:
+        workspace.account_display_name = str(payload.account_display_name or "").strip() or None
+        account_changed = True
+    if payload.name is not None:
+        workspace.name = payload.name
+        branding_changed = True
+    if "brand_name" in payload.model_fields_set:
+        workspace.name = payload.brand_name or ""
+        branding_changed = True
+    if "logo_url" in payload.model_fields_set:
+        workspace.logo_url = payload.logo_url
+        branding_changed = True
+    if "brand_logo_url" in payload.model_fields_set:
+        workspace.logo_url = payload.brand_logo_url
+        branding_changed = True
+    return branding_changed, account_changed
+
+
+def _resolve_workspace_branding_update_payload(
+    payload: WorkspaceBrandingUpdateIn,
+) -> tuple[bool, str | None, bool, str | None]:
+    brand_name_provided = False
+    resolved_brand_name: str | None = None
+    for field_name in ("brand_name", "brandName", "name"):
+        if field_name in payload.model_fields_set:
+            brand_name_provided = True
+            value = getattr(payload, field_name, None)
+            resolved_brand_name = str(value or "").strip() or ""
+            break
+
+    logo_provided = False
+    resolved_logo_url: str | None = None
+    remove_logo = bool(payload.remove_logo) if "remove_logo" in payload.model_fields_set else False
+    if remove_logo:
+        logo_provided = True
+        resolved_logo_url = None
+    else:
+        for field_name in ("brand_logo_url", "logo_url", "logoUrl"):
+            if field_name in payload.model_fields_set:
+                logo_provided = True
+                value = getattr(payload, field_name, None)
+                if value is None:
+                    resolved_logo_url = None
+                else:
+                    cleaned = str(value).strip()
+                    resolved_logo_url = cleaned or None
+                break
+
+    return brand_name_provided, resolved_brand_name, logo_provided, resolved_logo_url
 
 
 def _get_conversation_for_workspace(
@@ -1117,7 +1849,7 @@ def _canonical_report_integration_type(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"instagram", "instagram_business", "instagram_account"}:
         return "instagram"
-    if normalized in {"facebook", "facebook_page", "facebook_pages", "meta_pages"}:
+    if normalized in {"facebook", "facebook_page", "facebook_pages", "meta_pages", "meta_pages_v1", "meta_pages_v2"}:
         return "facebook"
     if normalized in {"meta", "meta_ads"}:
         return "meta"
@@ -1133,7 +1865,7 @@ def _canonical_report_integration_type(value: Any) -> str:
 def _report_integration_display_name(integration_type: str) -> str:
     mapping = {
         "instagram": "Instagram Business",
-        "facebook": "Facebook Page",
+        "facebook": "Facebook Pages",
         "meta": "Meta",
         "csv": "CSV Upload",
         "upload": "File Upload",
@@ -1148,6 +1880,66 @@ def _report_source_handle(payload: dict[str, Any]) -> str | None:
         if not value:
             continue
         return value if value.startswith("@") else f"@{value}" if key in {"username", "instagram_username"} else value
+    return None
+
+
+def _report_integration_type_from_payload(payload: dict[str, Any]) -> Any:
+    for key in (
+        "integration_type",
+        "integration",
+        "platform",
+        "channel",
+        "social_network",
+        "source_type",
+        "report_type",
+        "generation_mode",
+        "source",
+    ):
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    if payload.get("facebook_page_id") or payload.get("facebook_pages"):
+        return "facebook_pages"
+    if payload.get("instagram_business_account_id") or payload.get("instagram_username"):
+        return "instagram_business"
+    return None
+
+
+def _infer_report_integration_from_text(*values: Any) -> dict[str, str | None] | None:
+    text_parts = [str(value or "").strip() for value in values if str(value or "").strip()]
+    if not text_parts:
+        return None
+    haystack = " ".join(text_parts).lower()
+    has_facebook = any(token in haystack for token in ("facebook pages report", "facebook pages", "facebook_page", "facebook"))
+    has_instagram = any(token in haystack for token in ("instagram business", "instagram report", "instagram_business", "instagram"))
+    if has_facebook and has_instagram:
+        return {
+            "integration_type": "meta",
+            "integration_display_name": "Multi-source Report",
+            "social_network": None,
+            "channel": "meta",
+        }
+    if has_facebook:
+        return {
+            "integration_type": "facebook",
+            "integration_display_name": "Facebook Pages",
+            "social_network": "facebook",
+            "channel": "facebook",
+        }
+    if has_instagram:
+        return {
+            "integration_type": "instagram",
+            "integration_display_name": "Instagram Business",
+            "social_network": "instagram",
+            "channel": "instagram",
+        }
+    if any(token in haystack for token in ("csv upload", ".csv", "spreadsheet", "upload")):
+        return {
+            "integration_type": "csv",
+            "integration_display_name": "CSV Upload",
+            "social_network": None,
+            "channel": "csv",
+        }
     return None
 
 
@@ -1213,7 +2005,7 @@ def derive_report_integration_metadata(
     if dataset_data:
         payload_candidates.append(
             {
-                "integration_type": dataset_data.get("integration_type"),
+                "integration_type": _report_integration_type_from_payload(dataset_data),
                 "integration_display_name": dataset_data.get("integration_display_name"),
                 "source_name": (
                     dataset_data.get("page_name")
@@ -1227,17 +2019,110 @@ def derive_report_integration_metadata(
                 "channel": dataset_data.get("channel") or dataset_data.get("integration_type"),
             }
         )
+    payload_candidates.append(
+        {
+            "integration_type": _report_integration_type_from_payload(metadata) or _report_integration_type_from_payload(dataset_data),
+            "integration_display_name": metadata.get("integration_display_name"),
+            "source_name": (
+                metadata.get("sourceSummary")
+                or metadata.get("page_name")
+                or metadata.get("account_name")
+                or (
+                    metadata.get("claude_payload", {}).get("page_name")
+                    if isinstance(metadata.get("claude_payload"), dict)
+                    else None
+                )
+                or dataset_data.get("page_name")
+                or dataset_data.get("account_name")
+            ),
+            "source_handle": _report_source_handle(metadata),
+            "social_network": metadata.get("social_network"),
+            "channel": metadata.get("channel"),
+        }
+    )
+
+    text_hint_values: list[Any] = [
+        report.name,
+        metadata.get("sourceSummary"),
+        metadata.get("subtitle"),
+        metadata.get("report_type"),
+        metadata.get("integration_display_name"),
+        metadata.get("integration_type"),
+    ]
+    if dataset_data:
+        text_hint_values.extend(
+            [
+                dataset_data.get("subtitle"),
+                dataset_data.get("sourceSummary"),
+                dataset_data.get("integration_display_name"),
+                dataset_data.get("integration_type"),
+                dataset_data.get("platform"),
+                dataset_data.get("integration"),
+            ]
+        )
+
+    try:
+        latest_report_version = (
+            db.query(ReportVersion)
+            .filter(ReportVersion.report_id == report.id)
+            .order_by(ReportVersion.version.desc(), ReportVersion.id.desc())
+            .first()
+        )
+    except SQLAlchemyError:
+        latest_report_version = None
+    if latest_report_version is not None:
+        try:
+            cover_block = (
+                db.query(ReportBlock)
+                .filter(ReportBlock.report_version_id == latest_report_version.id)
+                .order_by(ReportBlock.order.asc(), ReportBlock.id.asc())
+                .first()
+            )
+        except SQLAlchemyError:
+            cover_block = None
+        if cover_block is not None and cover_block.data_json:
+            try:
+                cover_data = json.loads(cover_block.data_json)
+            except json.JSONDecodeError:
+                cover_data = {}
+            if isinstance(cover_data, dict):
+                text_hint_values.extend(
+                    [
+                        cover_data.get("subtitle"),
+                        cover_data.get("title"),
+                        cover_data.get("text"),
+                    ]
+                )
+
+    text_inferred = _infer_report_integration_from_text(*text_hint_values)
+    if text_inferred:
+        payload_candidates.append(
+            {
+                **text_inferred,
+                "source_name": (
+                    metadata.get("page_name")
+                    or metadata.get("sourceSummary")
+                    or dataset_data.get("page_name")
+                    or dataset_data.get("account_name")
+                ),
+            }
+        )
 
     chosen: dict[str, Any] | None = None
+    legacy_fallback: dict[str, Any] | None = None
     for candidate in payload_candidates:
         integration_type = _canonical_report_integration_type(candidate.get("integration_type"))
-        if integration_type != "legacy" or any(candidate.get(key) for key in ("source_name", "source_handle", "channel")):
+        has_context = any(candidate.get(key) for key in ("source_name", "source_handle", "channel"))
+        if integration_type != "legacy":
             chosen = dict(candidate)
             chosen["integration_type"] = integration_type
             break
+        if has_context and legacy_fallback is None:
+            legacy_fallback = dict(candidate)
+            legacy_fallback["integration_type"] = integration_type
 
     if chosen is None:
-        chosen = {"integration_type": "legacy"}
+        chosen = legacy_fallback or {"integration_type": "legacy"}
 
     integration_type = _canonical_report_integration_type(chosen.get("integration_type"))
     if integration_type == "meta":
@@ -1394,6 +2279,32 @@ def _update_report_metadata(db: Session, report: Report, updates: dict[str, obje
     return report
 
 
+def _sync_workspace_branding_to_reports(
+    db: Session,
+    *,
+    workspace_id: int,
+    resolved_branding: dict[str, Any],
+) -> int:
+    reports = (
+        db.query(Report)
+        .filter(Report.workspace_id == workspace_id)
+        .order_by(Report.id.asc())
+        .all()
+    )
+    updated_count = 0
+    for report in reports:
+        metadata = _report_metadata(report)
+        metadata["branding"] = dict(resolved_branding)
+        metadata.pop("thumbnail_s3_key", None)
+        metadata.pop("thumbnail_generated_at", None)
+        report.description = json.dumps(metadata)
+        db.add(report)
+        updated_count += 1
+    if updated_count:
+        db.commit()
+    return updated_count
+
+
 def _generate_and_store_report_thumbnail(
     *,
     db: Session,
@@ -1472,11 +2383,32 @@ def _generate_and_store_report_thumbnail(
             "report_version": report_version.version,
         },
     )
-    screenshot_bytes, thumbnail_debug = generate_thumbnail_from_export_page(
-        export_url=export_url,
-        report_id=report.id,
-        auth_token=export_token,
-    )
+    try:
+        screenshot_bytes, thumbnail_debug = generate_thumbnail_from_export_page(
+            export_url=export_url,
+            report_id=report.id,
+            auth_token=export_token,
+        )
+    except HTTPException:
+        logger.exception(
+            "Report thumbnail generation failed but report creation will continue",
+            extra={
+                "report_id": report.id,
+                "report_version": report_version.version,
+                "export_url": export_url,
+            },
+        )
+        return None
+    except Exception:
+        logger.exception(
+            "Unexpected report thumbnail generation failure but report creation will continue",
+            extra={
+                "report_id": report.id,
+                "report_version": report_version.version,
+                "export_url": export_url,
+            },
+        )
+        return None
     thumbnail_s3_key = store_report_thumbnail(report.id, screenshot_bytes)
     _update_report_metadata(
         db,
@@ -1737,9 +2669,17 @@ def _ensure_user_workspace_and_subscription(
         db.flush()
         db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
     if subscription is None:
-        subscription = Subscription(workspace_id=workspace.id, plan="free", status="active")
+        subscription = Subscription(
+            workspace_id=workspace.id,
+            plan="free",
+            status="active",
+            billing_status="free",
+        )
+        apply_plan_entitlements(subscription, "free")
         db.add(subscription)
         db.flush()
+    else:
+        apply_plan_entitlements(subscription, subscription.plan or "free")
     return workspace, subscription
 
 
@@ -2561,6 +3501,293 @@ def account_summary(
     return _workspace_summary_out(db, workspace, current_user)
 
 
+@app.get("/billing/me", response_model=BillingMeOut)
+def billing_me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BillingMeOut:
+    workspace, subscription = _resolve_workspace_subscription_for_user(db, current_user)
+    db.add(subscription)
+    db.commit()
+    db.refresh(subscription)
+    return _billing_me_out(db, subscription, workspace.id)
+
+
+@app.post("/billing/plan-change-preview", response_model=BillingPlanChangePreviewOut)
+def billing_plan_change_preview(
+    payload: BillingCheckoutSessionIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BillingPlanChangePreviewOut:
+    workspace, subscription = _resolve_workspace_subscription_for_user(db, current_user)
+    current_plan_code = normalize_workspace_plan(subscription.plan or "free")
+    target_plan_code = normalize_workspace_plan(payload.plan_code)
+    if target_plan_code == "free":
+        raise http_error(400, "invalid_plan_code", "Free plan does not require checkout.")
+
+    action_mode: str = "checkout"
+    requires_confirmation = False
+    if current_plan_code != "free":
+        stripe = _configure_stripe()
+        reusable_stripe_subscription = _find_reusable_stripe_subscription(
+            stripe,
+            subscription=subscription,
+        )
+        if reusable_stripe_subscription is not None:
+            current_price_id = _stripe_subscription_price_id(reusable_stripe_subscription)
+            reusable_plan_code = normalize_workspace_plan(
+                get_plan_code_for_stripe_price(current_price_id) or current_plan_code
+            )
+            cancel_at_period_end = bool(_stripe_object_get(reusable_stripe_subscription, "cancel_at_period_end"))
+            if reusable_plan_code == target_plan_code and not cancel_at_period_end:
+                action_mode = "already_on_plan"
+            else:
+                action_mode = "updated"
+            requires_confirmation = True
+
+    return BillingPlanChangePreviewOut(
+        action_mode=cast(Literal["checkout", "updated", "already_on_plan"], action_mode),
+        requires_confirmation=requires_confirmation,
+        billing_status=_billing_status_for_subscription(subscription),
+        current_period_end=subscription.current_period_end,
+        billing_note=(
+            "Your subscription will be updated in Stripe. Any prorated adjustment will be handled automatically by Stripe."
+        ),
+        current_plan=_billing_plan_snapshot(current_plan_code),
+        new_plan=_billing_plan_snapshot(target_plan_code),
+    )
+
+
+@app.post("/billing/create-checkout-session", response_model=BillingCheckoutSessionOut)
+def create_billing_checkout_session(
+    payload: BillingCheckoutSessionIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BillingCheckoutSessionOut:
+    stripe = _configure_stripe()
+    workspace, subscription = _resolve_workspace_subscription_for_user(db, current_user)
+    plan_code = normalize_workspace_plan(payload.plan_code)
+    if plan_code == "free":
+        raise http_error(400, "invalid_plan_code", "Free plan does not require checkout.")
+
+    entitlements = get_plan_entitlements(plan_code)
+    if int(entitlements["price_monthly_usd"]) <= 0:
+        raise http_error(400, "invalid_plan_code", "Selected plan is not billable.")
+
+    price_mapping = get_stripe_price_plan_mapping()
+    reverse_mapping = {plan: price for price, plan in price_mapping.items()}
+    price_id = reverse_mapping.get(plan_code)
+    if not price_id:
+        raise http_error(500, "stripe_price_not_configured", f"Missing Stripe price for plan {plan_code}.")
+
+    reusable_stripe_subscription = _find_reusable_stripe_subscription(
+        stripe,
+        subscription=subscription,
+    )
+    if reusable_stripe_subscription is not None:
+        current_price_id = _stripe_subscription_price_id(reusable_stripe_subscription)
+        current_plan_code = get_plan_code_for_stripe_price(current_price_id)
+        cancel_at_period_end = bool(_stripe_object_get(reusable_stripe_subscription, "cancel_at_period_end"))
+        if current_plan_code == plan_code and not cancel_at_period_end:
+            return BillingCheckoutSessionOut(
+                mode="already_on_plan",
+                plan_code=plan_code,
+                billing_status=_stripe_subscription_status(reusable_stripe_subscription) or "active",
+                plan_name=_plan_display_name(plan_code),
+                price_monthly_usd=int(entitlements["price_monthly_usd"]),
+                current_period_end=subscription.current_period_end,
+            )
+
+        subscription_item_id = _stripe_subscription_item_id(reusable_stripe_subscription)
+        if not subscription_item_id:
+            raise http_error(502, "stripe_subscription_invalid", "Stripe subscription items could not be resolved.")
+        try:
+            updated_subscription = stripe.Subscription.modify(
+                str(_stripe_object_get(reusable_stripe_subscription, "id") or "").strip(),
+                items=[{"id": subscription_item_id, "price": price_id}],
+                cancel_at_period_end=False,
+                proration_behavior="create_prorations",
+            )
+        except Exception as exc:
+            raise http_error(502, "stripe_subscription_update_failed", "Stripe subscription could not be updated.") from exc
+        _sync_local_subscription_from_stripe_object(
+            db,
+            subscription=subscription,
+            stripe_subscription=updated_subscription,
+        )
+        db.refresh(subscription)
+        return BillingCheckoutSessionOut(
+            mode="updated",
+            plan_code=plan_code,
+            billing_status=_stripe_subscription_status(updated_subscription) or "active",
+            plan_name=_plan_display_name(plan_code),
+            price_monthly_usd=int(entitlements["price_monthly_usd"]),
+            current_period_end=subscription.current_period_end,
+        )
+
+    customer_id = str(subscription.stripe_customer_id or "").strip()
+    if not customer_id:
+        customer = stripe.Customer.create(
+            email=current_user.email,
+            name=current_user.full_name,
+            metadata={
+                "user_id": str(current_user.id),
+                "workspace_id": str(workspace.id),
+            },
+        )
+        customer_id = str(customer.get("id"))
+        subscription.stripe_customer_id = customer_id
+        db.add(subscription)
+        db.commit()
+        db.refresh(subscription)
+
+    session = stripe.checkout.Session.create(
+        mode="subscription",
+        customer=customer_id,
+        line_items=[{"price": price_id, "quantity": 1}],
+        metadata={
+            "user_id": str(current_user.id),
+            "workspace_id": str(workspace.id),
+            "plan_code": plan_code,
+        },
+        success_url=_stripe_checkout_success_url(),
+        cancel_url=_stripe_checkout_cancel_url(),
+    )
+    checkout_url = str(session.get("url") or "").strip()
+    if not checkout_url:
+        raise http_error(502, "stripe_checkout_failed", "Stripe did not return a checkout URL.")
+    return BillingCheckoutSessionOut(
+        mode="checkout",
+        checkout_url=checkout_url,
+        plan_code=plan_code,
+        plan_name=_plan_display_name(plan_code),
+        price_monthly_usd=int(entitlements["price_monthly_usd"]),
+    )
+
+
+@app.post("/billing/create-portal-session", response_model=BillingPortalSessionOut)
+def create_billing_portal_session(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BillingPortalSessionOut:
+    stripe = _configure_stripe()
+    workspace, subscription = _resolve_workspace_subscription_for_user(db, current_user)
+    customer_id = str(subscription.stripe_customer_id or "").strip()
+    if not customer_id:
+        raise http_error(400, "stripe_customer_not_found", "No Stripe customer found for this account.")
+    session = stripe.billing_portal.Session.create(
+        customer=customer_id,
+        return_url=_billing_portal_return_url(),
+    )
+    portal_url = str(session.get("url") or "").strip()
+    if not portal_url:
+        raise http_error(502, "stripe_portal_failed", "Stripe did not return a portal URL.")
+    return BillingPortalSessionOut(portal_url=portal_url)
+
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request, db: Session = Depends(get_db)) -> dict[str, bool]:
+    stripe = _configure_stripe()
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature")
+    if not signature:
+        raise http_error(400, "missing_stripe_signature", "Missing Stripe signature.")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload=payload,
+            sig_header=signature,
+            secret=str(settings.stripe_webhook_secret or "").strip(),
+        )
+    except Exception as exc:
+        raise http_error(400, "invalid_stripe_signature", "Invalid Stripe signature.") from exc
+
+    event_type = str(event.get("type") or "").strip()
+    data_object = event.get("data", {}).get("object", {})
+
+    if event_type == "checkout.session.completed":
+        metadata = data_object.get("metadata") or {}
+        user_id_raw = str(metadata.get("user_id") or "").strip()
+        if user_id_raw.isdigit():
+            user = db.get(User, int(user_id_raw))
+            if user is not None:
+                workspace, subscription = _resolve_workspace_subscription_for_user(db, user)
+                subscription.stripe_customer_id = str(data_object.get("customer") or "").strip() or subscription.stripe_customer_id
+                subscription.stripe_subscription_id = str(data_object.get("subscription") or "").strip() or subscription.stripe_subscription_id
+                db.add(subscription)
+                db.commit()
+        return {"received": True}
+
+    if event_type in {"customer.subscription.created", "customer.subscription.updated"}:
+        price_id = (
+            data_object.get("items", {})
+            .get("data", [{}])[0]
+            .get("price", {})
+            .get("id")
+        )
+        plan_code = get_plan_code_for_stripe_price(price_id)
+        if plan_code:
+            subscription = _find_subscription_for_stripe_event(
+                db,
+                stripe_subscription_id=data_object.get("id"),
+                stripe_customer_id=data_object.get("customer"),
+            )
+            if subscription is not None:
+                _apply_stripe_subscription_state(
+                    subscription,
+                    plan_code=plan_code,
+                    billing_status=str(data_object.get("status") or "active"),
+                    stripe_customer_id=data_object.get("customer"),
+                    stripe_subscription_id=data_object.get("id"),
+                    stripe_price_id=price_id,
+                    current_period_start=data_object.get("current_period_start"),
+                    current_period_end=data_object.get("current_period_end"),
+                    cancel_at_period_end=data_object.get("cancel_at_period_end"),
+                )
+                db.add(subscription)
+                db.commit()
+        return {"received": True}
+
+    if event_type == "customer.subscription.deleted":
+        subscription = _find_subscription_for_stripe_event(
+            db,
+            stripe_subscription_id=data_object.get("id"),
+            stripe_customer_id=data_object.get("customer"),
+        )
+        if subscription is not None:
+            _downgrade_subscription_to_free(subscription)
+            db.add(subscription)
+            db.commit()
+        return {"received": True}
+
+    if event_type == "invoice.paid":
+        subscription = _find_subscription_for_stripe_event(
+            db,
+            stripe_subscription_id=data_object.get("subscription"),
+            stripe_customer_id=data_object.get("customer"),
+        )
+        if subscription is not None and normalize_workspace_plan(subscription.plan or "free") != "free":
+            subscription.billing_status = "active"
+            subscription.status = "active"
+            db.add(subscription)
+            db.commit()
+        return {"received": True}
+
+    if event_type == "invoice.payment_failed":
+        subscription = _find_subscription_for_stripe_event(
+            db,
+            stripe_subscription_id=data_object.get("subscription"),
+            stripe_customer_id=data_object.get("customer"),
+        )
+        if subscription is not None:
+            subscription.billing_status = "past_due"
+            db.add(subscription)
+            db.commit()
+        return {"received": True}
+
+    return {"received": True}
+
+
 def _suggestion_out(suggestion: UserSuggestion) -> UserSuggestionOut:
     return UserSuggestionOut(
         id=suggestion.id,
@@ -2574,6 +3801,37 @@ def _suggestion_out(suggestion: UserSuggestion) -> UserSuggestionOut:
         created_at=suggestion.created_at,
         updated_at=suggestion.updated_at,
     )
+
+
+def _validate_wishlist_payload(payload: WishlistCreateIn) -> dict[str, str | None]:
+    name = str(payload.name or "").strip()
+    email = str(payload.email or "").strip().lower()
+    company = str(payload.company or "").strip() or None
+    message = str(payload.message or "").strip()
+    source = str(payload.source or "").strip() or "upgrade_page"
+
+    if not name:
+        raise http_error(400, "invalid_name", "Name is required.")
+    if len(name) > 255:
+        raise http_error(400, "name_too_long", "Name must be 255 characters or fewer.")
+    if not email or not EMAIL_PATTERN.match(email):
+        raise http_error(400, "invalid_email", "Valid email is required.")
+    if company and len(company) > 255:
+        raise http_error(400, "company_too_long", "Company must be 255 characters or fewer.")
+    if not message:
+        raise http_error(400, "invalid_message", "Message is required.")
+    if len(message) > 2000:
+        raise http_error(400, "message_too_long", "Message must be 2000 characters or fewer.")
+    if len(source) > 100:
+        raise http_error(400, "source_too_long", "Source must be 100 characters or fewer.")
+
+    return {
+        "name": name,
+        "email": email,
+        "company": company,
+        "message": message,
+        "source": source,
+    }
 
 
 @app.post("/suggestions", response_model=SuggestionCreateOut, status_code=201)
@@ -2599,6 +3857,29 @@ def create_suggestion(
     db.commit()
     db.refresh(suggestion)
     return SuggestionCreateOut(success=True, suggestion=_suggestion_out(suggestion))
+
+
+@app.post("/wishlist", response_model=WishlistCreateOut, status_code=201)
+def create_wishlist_lead(
+    payload: WishlistCreateIn,
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> WishlistCreateOut:
+    normalized = _validate_wishlist_payload(payload)
+    workspace_ids = _workspace_ids_for_user(db, current_user.id) if current_user is not None else []
+    lead = WishlistLead(
+        user_id=current_user.id if current_user is not None else None,
+        workspace_id=workspace_ids[0] if workspace_ids else None,
+        name=str(normalized["name"]),
+        email=str(normalized["email"]),
+        company=str(normalized["company"]) if normalized["company"] is not None else None,
+        message=str(normalized["message"]),
+        source=str(normalized["source"]),
+    )
+    db.add(lead)
+    db.commit()
+    db.refresh(lead)
+    return WishlistCreateOut(success=True, lead=_wishlist_lead_out(lead))
 
 
 @app.get("/admin/suggestions", response_model=list[AdminSuggestionOut])
@@ -2630,6 +3911,37 @@ def admin_list_suggestions(
             workspace_name=workspace_name,
         )
         for suggestion, user_email, user_name, workspace_name in rows
+    ]
+
+
+@app.get("/admin/wishlist", response_model=list[AdminWishlistLeadOut])
+def admin_list_wishlist_leads(
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> list[AdminWishlistLeadOut]:
+    rows = (
+        db.query(WishlistLead, User.email, User.full_name, Workspace.name)
+        .outerjoin(User, User.id == WishlistLead.user_id)
+        .outerjoin(Workspace, Workspace.id == WishlistLead.workspace_id)
+        .order_by(WishlistLead.created_at.desc(), WishlistLead.id.desc())
+        .all()
+    )
+    return [
+        AdminWishlistLeadOut(
+            id=lead.id,
+            user_id=lead.user_id,
+            workspace_id=lead.workspace_id,
+            name=lead.name,
+            email=lead.email,
+            company=lead.company,
+            message=lead.message,
+            source=lead.source,
+            created_at=lead.created_at,
+            user_email=user_email,
+            user_name=user_name,
+            workspace_name=workspace_name,
+        )
+        for lead, user_email, user_name, workspace_name in rows
     ]
 
 
@@ -3738,18 +5050,137 @@ def update_me(
 
 @app.patch("/me/workspace", response_model=WorkspaceOut)
 def update_my_workspace_account_display_name(
-    payload: WorkspaceAccountDisplayNameUpdateIn,
+    payload: WorkspaceUpdateIn,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WorkspaceOut:
     workspace, _subscription = _find_user_workspace_and_subscription(db, user_id=current_user.id)
     if workspace is None:
         raise http_error(404, "workspace_not_found", "No workspace found for current user.")
-    workspace.account_display_name = str(payload.account_display_name or "").strip() or None
+    _update_workspace_from_payload(workspace, payload)
     db.add(workspace)
     db.commit()
     db.refresh(workspace)
     return _workspace_out(db, workspace)
+
+
+@app.patch("/workspace", response_model=WorkspaceOut)
+def patch_current_workspace(
+    payload: WorkspaceUpdateIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceOut:
+    return update_my_workspace_account_display_name(payload=payload, current_user=current_user, db=db)
+
+
+@app.patch("/workspace/branding", response_model=WorkspaceOut)
+def patch_current_workspace_branding(
+    payload: WorkspaceBrandingUpdateIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceOut:
+    workspace, _subscription = _find_user_workspace_and_subscription(db, user_id=current_user.id)
+    if workspace is None:
+        raise http_error(404, "workspace_not_found", "No workspace found for current user.")
+    return update_workspace_branding(
+        workspace_id=workspace.id,
+        payload=payload,
+        current_user=current_user,
+        db=db,
+    )
+
+
+@app.post("/workspace/branding/logo", response_model=WorkspaceBrandingLogoUploadOut)
+def upload_workspace_branding_logo(
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceBrandingLogoUploadOut:
+    workspace, _subscription = _find_user_workspace_and_subscription(db, user_id=current_user.id)
+    if workspace is None:
+        raise http_error(404, "workspace_not_found", "No workspace found for current user.")
+    _require_workspace_access(db, current_user.id, workspace.id)
+
+    size_bytes, extension, content_type = _validate_brand_logo_upload(file)
+    storage_key, asset_name = _workspace_brand_logo_storage_key(workspace.id, extension)
+    s3 = boto3.client("s3", region_name=settings.aws_region)
+
+    try:
+        file.file.seek(0)
+        payload = file.file.read()
+        s3.put_object(
+            Bucket=settings.s3_outputs_bucket,
+            Key=storage_key,
+            Body=payload,
+            ContentType=content_type,
+            CacheControl="public, max-age=300",
+        )
+    except Exception as exc:
+        logger.exception(
+            "[BrandAssets][logo.upload_failed]",
+            extra={
+                "endpoint": "/workspace/branding/logo",
+                "workspace_id": workspace.id,
+                "filename": file.filename,
+                "content_type": content_type,
+                "size_bytes": size_bytes,
+            },
+        )
+        raise http_error(502, "brand_logo_upload_failed", "Failed to upload brand logo.") from exc
+
+    logo_url = _workspace_brand_logo_public_url(
+        workspace.id,
+        asset_name,
+        base_url_override=str(request.base_url).rstrip("/"),
+    )
+    logger.info(
+        "[BrandAssets][logo.uploaded]",
+        extra={
+            "endpoint": "/workspace/branding/logo",
+            "workspace_id": workspace.id,
+            "filename": file.filename,
+            "content_type": content_type,
+            "size_bytes": size_bytes,
+            "storage_key": storage_key,
+            "logo_url": logo_url,
+        },
+    )
+    return WorkspaceBrandingLogoUploadOut(logo_url=logo_url)
+
+
+@app.get("/workspace/branding/logo/{workspace_id}/{asset_name}")
+def get_workspace_branding_logo(
+    workspace_id: int,
+    asset_name: str,
+) -> Response:
+    sanitized_asset_name = os.path.basename(str(asset_name or "").strip())
+    if not sanitized_asset_name:
+        raise http_error(404, "brand_logo_not_found", "Brand logo not found.")
+
+    storage_key = f"brand-assets/{workspace_id}/{sanitized_asset_name}"
+    s3 = boto3.client("s3", region_name=settings.aws_region)
+    try:
+        result = s3.get_object(Bucket=settings.s3_outputs_bucket, Key=storage_key)
+    except (ClientError, BotoCoreError, NoCredentialsError, PartialCredentialsError) as exc:
+        logger.warning(
+            "[BrandAssets][logo.fetch_failed]",
+            extra={
+                "endpoint": "/workspace/branding/logo/{workspace_id}/{asset_name}",
+                "workspace_id": workspace_id,
+                "asset_name": sanitized_asset_name,
+                "storage_key": storage_key,
+            },
+        )
+        raise http_error(404, "brand_logo_not_found", "Brand logo not found.") from exc
+
+    body = _read_s3_object_bytes(result.get("Body"))
+    media_type = str(result.get("ContentType") or "application/octet-stream")
+    headers = {}
+    cache_control = result.get("CacheControl")
+    if cache_control:
+        headers["Cache-Control"] = str(cache_control)
+    return Response(content=body, media_type=media_type, headers=headers)
 
 
 @app.post("/ai/chat", response_model=ChatReplyOut)
@@ -3778,23 +5209,48 @@ def ai_chat(
     workspace_id: int | None = None
     report: Report | None = None
     dataset: Dataset | None = None
+    existing_conversation: Conversation | None = None
+
+    if payload.conversation_id is not None:
+        candidate_conversation = db.get(Conversation, int(payload.conversation_id))
+        if candidate_conversation is None:
+            raise http_error(404, "conversation_not_found", "Conversation not found.")
+        _require_workspace_access(db, current_user.id, candidate_conversation.workspace_id)
+        existing_conversation = candidate_conversation
+        workspace_id = candidate_conversation.workspace_id
 
     if payload.report_id is not None:
         report = db.get(Report, int(payload.report_id))
         if report is None:
             raise http_error(404, "report_not_found", "Report not found.")
         _require_workspace_access(db, current_user.id, report.workspace_id)
+        if workspace_id is not None and workspace_id != report.workspace_id:
+            raise http_error(403, "invalid_workspace_context", "report_id does not belong to conversation workspace.")
         workspace_id = report.workspace_id
         if payload.workspace_id is not None and int(payload.workspace_id) != workspace_id:
             raise http_error(403, "invalid_workspace_context", "report_id does not belong to workspace_id.")
-        if payload.dataset_id is not None and int(payload.dataset_id) != report.dataset_id:
-            raise http_error(400, "invalid_context", "dataset_id does not match report_id.")
         dataset = db.get(Dataset, report.dataset_id)
+        if dataset is None:
+            raise http_error(404, "dataset_not_found", "No dataset found for this report.")
+        logger.info(
+            "ai_chat_report_context_resolved",
+            extra={
+                "user_id": current_user.id,
+                "payload_report_id": payload.report_id,
+                "payload_dataset_id": payload.dataset_id,
+                "resolved_report_id": report.id,
+                "resolved_report_dataset_id": report.dataset_id,
+                "resolved_dataset_id": dataset.id,
+                "workspace_id": workspace_id,
+            },
+        )
     elif payload.dataset_id is not None:
         dataset = db.get(Dataset, int(payload.dataset_id))
         if dataset is None:
             raise http_error(404, "dataset_not_found", "Dataset not found.")
         _require_workspace_access(db, current_user.id, dataset.workspace_id)
+        if workspace_id is not None and workspace_id != dataset.workspace_id:
+            raise http_error(403, "invalid_workspace_context", "dataset_id does not belong to conversation workspace.")
         workspace_id = dataset.workspace_id
         if payload.workspace_id is not None and int(payload.workspace_id) != workspace_id:
             raise http_error(403, "invalid_workspace_context", "dataset_id does not belong to workspace_id.")
@@ -3804,7 +5260,7 @@ def ai_chat(
             .order_by(Report.created_at.desc(), Report.id.desc())
             .first()
         )
-    else:
+    elif workspace_id is None:
         accessible_workspace_ids = [
             row[0]
             for row in (
@@ -3861,6 +5317,23 @@ def ai_chat(
     if workspace_id is None:
         raise http_error(404, "workspace_not_found", "No workspace found for current user.")
 
+    if existing_conversation is not None and report is None and dataset is None:
+        report = (
+            db.query(Report)
+            .filter(Report.workspace_id == workspace_id)
+            .order_by(Report.created_at.desc(), Report.id.desc())
+            .first()
+        )
+        if report is not None:
+            dataset = db.get(Dataset, report.dataset_id)
+        else:
+            dataset = (
+                db.query(Dataset)
+                .filter(Dataset.workspace_id == workspace_id)
+                .order_by(Dataset.created_at.desc(), Dataset.id.desc())
+                .first()
+            )
+
     chat_context = build_ai_chat_context_snapshot(
         db,
         workspace_id=workspace_id,
@@ -3873,6 +5346,7 @@ def ai_chat(
         "ai_chat_context_loaded",
         extra={
             "workspace_id": workspace_id,
+            "conversation_workspace_id": existing_conversation.workspace_id if existing_conversation else None,
             "report_id": report.id if report else None,
             "dataset_id": dataset.id if dataset else None,
             "has_report": bool(report),
@@ -3892,7 +5366,7 @@ def ai_chat(
         db.add(conversation)
         db.flush()
     else:
-        conversation = _get_conversation_for_workspace(
+        conversation = existing_conversation if existing_conversation is not None else _get_conversation_for_workspace(
             db,
             workspace_id=workspace_id,
             conversation_id=payload.conversation_id,
@@ -3924,8 +5398,19 @@ def ai_chat(
     except HTTPException:
         db.rollback()
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        logger.exception(
+            "ai_chat_generation_failed",
+            extra={
+                "user_id": current_user.id,
+                "workspace_id": workspace_id,
+                "conversation_id": conversation.id if 'conversation' in locals() else payload.conversation_id,
+                "report_id": report.id if report else None,
+                "dataset_id": dataset.id if dataset else None,
+                "exception_type": exc.__class__.__name__,
+            },
+        )
         raise http_error(500, "ai_generation_failed", "AI assistant failed to generate a reply.")
 
     assistant_message = Message(
@@ -3979,6 +5464,15 @@ def list_ai_conversation_messages(
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
+MAX_BRAND_LOGO_UPLOAD_BYTES = 5 * 1024 * 1024
+ALLOWED_BRAND_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
+ALLOWED_BRAND_LOGO_CONTENT_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/svg+xml",
+    "image/svg",
+}
 META_TOKEN_ACCOUNT_PREFIX = "__meta_token__:"
 META_PAGE_ACCOUNT_PREFIX = "__meta_page__:"
 META_RECORD_TYPE_FACEBOOK_PAGE = "facebook_page"
@@ -3999,6 +5493,78 @@ def _validate_upload(file: UploadFile) -> int:
     if size > MAX_UPLOAD_BYTES:
         raise http_error(413, "file_too_large", "File exceeds size limit.")
     return size
+
+
+def _backend_public_base_url() -> str:
+    configured = str(settings.report_export_base_url or "").strip().rstrip("/")
+    return configured
+
+
+def _workspace_brand_logo_public_path(workspace_id: int, asset_name: str) -> str:
+    return f"/workspace/branding/logo/{workspace_id}/{asset_name}"
+
+
+def _workspace_brand_logo_public_url(
+    workspace_id: int,
+    asset_name: str,
+    *,
+    base_url_override: str | None = None,
+) -> str:
+    path = _workspace_brand_logo_public_path(workspace_id, asset_name)
+    base_url = str(base_url_override or "").strip().rstrip("/") or _backend_public_base_url()
+    if not base_url:
+        return path
+    return f"{base_url}{path}"
+
+
+def _validate_brand_logo_upload(file: UploadFile) -> tuple[int, str, str]:
+    if not file.filename:
+        raise http_error(400, "missing_filename", "File name is required.")
+    extension = os.path.splitext(file.filename)[1].lower()
+    if extension not in ALLOWED_BRAND_LOGO_EXTENSIONS:
+        raise http_error(
+            400,
+            "invalid_brand_logo_type",
+            "Only PNG, JPG, JPEG, WEBP, or SVG files are allowed.",
+        )
+    content_type = str(file.content_type or "").strip().lower()
+    if content_type and content_type not in ALLOWED_BRAND_LOGO_CONTENT_TYPES:
+        raise http_error(
+            400,
+            "invalid_brand_logo_type",
+            "Only PNG, JPG, JPEG, WEBP, or SVG files are allowed.",
+        )
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size <= 0:
+        raise http_error(400, "empty_file", "File is empty.")
+    if size > MAX_BRAND_LOGO_UPLOAD_BYTES:
+        raise http_error(413, "brand_logo_too_large", "Brand logo exceeds 5 MB limit.")
+    normalized_content_type = content_type or {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+    }[extension]
+    return size, extension, normalized_content_type
+
+
+def _workspace_brand_logo_storage_key(workspace_id: int, extension: str) -> tuple[str, str]:
+    asset_name = (
+        f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-"
+        f"{secrets.token_hex(8)}{extension}"
+    )
+    return f"brand-assets/{workspace_id}/{asset_name}", asset_name
+
+
+def _read_s3_object_bytes(body: Any) -> bytes:
+    if hasattr(body, "read"):
+        return body.read()
+    if isinstance(body, bytes):
+        return body
+    return bytes(body)
 
 
 def _enforce_workspace_storage_for_upload(db: Session, workspace_id: int, incoming_bytes: int) -> None:
@@ -4178,8 +5744,8 @@ def _resolve_meta_connect_workspace_id(
 
 
 def _require_pro_plan(db: Session, workspace_id: int) -> None:
-    if get_workspace_plan(db, workspace_id) == "free":
-        raise http_error(403, "plan_required", "Pro plan required for schedules.")
+    if not can_schedule_report(db, workspace_id):
+        raise http_error(403, "plan_required", "Current plan does not allow more scheduled reports.")
 
 
 def _meta_token_account_external_id(integration_id: int) -> str:
@@ -5999,7 +7565,7 @@ def _safe_meta_callback_payload(
 
 
 def _meta_frontend_base_url() -> str:
-    configured_base = str(settings.frontend_base_url or settings.report_export_base_url or "").strip()
+    configured_base = str(settings.frontend_url or settings.frontend_base_url or "").strip()
     if configured_base:
         return configured_base.rstrip("/")
     return "http://localhost:3000"
@@ -6046,6 +7612,88 @@ def _meta_oauth_frontend_redirect_response(
     return RedirectResponse(url=target_url, status_code=307)
 
 
+def _meta_oauth_popup_response(
+    *,
+    status: str,
+    source: str | None = None,
+    integration_id: int | None = None,
+    error: str | None = None,
+) -> HTMLResponse:
+    target_url = _meta_oauth_frontend_callback_url(
+        status=status,
+        source=source,
+        integration_id=integration_id,
+        error=error,
+    )
+    frontend_origin = _meta_frontend_base_url()
+    event_type = "MEASURABLE_META_CONNECT_SUCCESS" if status == "connected" else "MEASURABLE_META_CONNECT_ERROR"
+    fallback_message = (
+        "Conexion completada. Puedes cerrar esta pestana."
+        if status == "connected"
+        else "No pudimos completar la conexion. Puedes cerrar esta pestana e intentarlo de nuevo."
+    )
+    payload: dict[str, Any] = {
+        "type": event_type,
+        "provider": "meta",
+        "status": status,
+    }
+    if integration_id is not None:
+        payload["integrationId"] = integration_id
+    if source:
+        payload["source"] = source
+    if error:
+        payload["error"] = error
+        payload["message"] = "No pudimos completar la conexion con Meta."
+
+    html = f"""<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Meta connection</title>
+  </head>
+  <body>
+    <main style="font-family: Arial, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5;">
+      <h1 style="font-size: 1.25rem;">{fallback_message}</h1>
+      <p>Si esta ventana no se cierra automaticamente, puedes volver a Measurable.</p>
+      <p><a href="{target_url}">Volver a Measurable</a></p>
+    </main>
+    <script>
+      (function () {{
+        const payload = {json.dumps(payload)};
+        const targetOrigin = {json.dumps(frontend_origin)};
+        const fallbackUrl = {json.dumps(target_url)};
+        try {{
+          if (window.opener && !window.opener.closed) {{
+            window.opener.postMessage(payload, targetOrigin);
+            window.setTimeout(function () {{
+              window.close();
+            }}, 600);
+            window.setTimeout(function () {{
+              document.body.setAttribute("data-close-fallback", "true");
+            }}, 900);
+            return;
+          }}
+        }} catch (error) {{
+          console.error("Meta popup callback failed", error);
+        }}
+        window.location.replace(fallbackUrl);
+      }})();
+    </script>
+  </body>
+</html>"""
+    logger.warning(
+        "Meta Pages callback returning popup close page status=%s integration_id=%s source=%s error=%s redirect_target=%s frontend_origin=%s",
+        status,
+        integration_id,
+        source,
+        error,
+        target_url,
+        frontend_origin,
+    )
+    return HTMLResponse(content=html, status_code=200)
+
+
 def _meta_api_error_details(exc: HTTPException) -> dict[str, Any]:
     detail = exc.detail if isinstance(exc.detail, dict) else {}
     meta_error = detail.get("meta_error") if isinstance(detail.get("meta_error"), dict) else {}
@@ -6087,7 +7735,7 @@ def _run_meta_pages_oauth_callback(
     except ValueError:
         logger.warning("Meta Pages OAuth callback received invalid state")
         if redirect_to_frontend:
-            return _meta_oauth_frontend_redirect_response(status="error", error="invalid_state")
+            return _meta_oauth_popup_response(status="error", error="invalid_state")
         return _safe_meta_callback_payload(success=False, pages=[], error="invalid_state")
 
     try:
@@ -6102,7 +7750,7 @@ def _run_meta_pages_oauth_callback(
     except (TypeError, ValueError):
         logger.warning("Meta Pages OAuth callback state could not be parsed", extra={"payload": payload})
         if redirect_to_frontend:
-            return _meta_oauth_frontend_redirect_response(status="error", error="invalid_state")
+            return _meta_oauth_popup_response(status="error", error="invalid_state")
         return _safe_meta_callback_payload(success=False, pages=[], error="invalid_state")
 
     if workspace_id <= 0:
@@ -6111,7 +7759,7 @@ def _run_meta_pages_oauth_callback(
             extra={"workspace_id": workspace_id, "payload": payload},
         )
         if redirect_to_frontend:
-            return _meta_oauth_frontend_redirect_response(status="error", error="invalid_state")
+            return _meta_oauth_popup_response(status="error", error="invalid_state")
         return _safe_meta_callback_payload(success=False, pages=[], error="invalid_state")
 
     effective_user_id = current_user.id if current_user is not None else state_user_id
@@ -6121,7 +7769,7 @@ def _run_meta_pages_oauth_callback(
             extra={"state_user_id": state_user_id, "current_user_id": current_user.id if current_user else None},
         )
         if redirect_to_frontend:
-            return _meta_oauth_frontend_redirect_response(status="error", error="invalid_state")
+            return _meta_oauth_popup_response(status="error", error="invalid_state")
         return _safe_meta_callback_payload(success=False, pages=[], error="invalid_state")
 
     integration_id: int | None = None
@@ -6189,7 +7837,7 @@ def _run_meta_pages_oauth_callback(
             if integration is not None:
                 _set_meta_integration_status(db, integration, status="disconnected")
             if redirect_to_frontend:
-                return _meta_oauth_frontend_redirect_response(
+                return _meta_oauth_popup_response(
                     status="error",
                     source=state_source,
                     integration_id=integration_id,
@@ -6296,7 +7944,7 @@ def _run_meta_pages_oauth_callback(
         if debug_token_summary["is_valid"] is not True:
             _set_meta_integration_status(db, integration, status="disconnected")
             if redirect_to_frontend:
-                return _meta_oauth_frontend_redirect_response(
+                return _meta_oauth_popup_response(
                     status="error",
                     source=state_source,
                     integration_id=integration.id,
@@ -6359,7 +8007,7 @@ def _run_meta_pages_oauth_callback(
             len(instagram_accounts),
         )
         if redirect_to_frontend:
-            return _meta_oauth_frontend_redirect_response(
+            return _meta_oauth_popup_response(
                 status="connected",
                 source=state_source,
                 integration_id=integration.id,
@@ -6385,7 +8033,7 @@ def _run_meta_pages_oauth_callback(
         if integration is not None:
             _set_meta_integration_status(db, integration, status="disconnected")
         if redirect_to_frontend:
-            return _meta_oauth_frontend_redirect_response(
+            return _meta_oauth_popup_response(
                 status="error",
                 source=state_source,
                 integration_id=integration_id,
@@ -6405,7 +8053,7 @@ def _run_meta_pages_oauth_callback(
         if integration is not None:
             _set_meta_integration_status(db, integration, status="disconnected")
         if redirect_to_frontend:
-            return _meta_oauth_frontend_redirect_response(
+            return _meta_oauth_popup_response(
                 status="error",
                 source=state_source,
                 integration_id=integration_id,
@@ -10747,7 +12395,9 @@ def create_report(
     if not dataset:
         raise http_error(404, "dataset_not_found", "Dataset not found.")
     _require_workspace_access(db, current_user.id, dataset.workspace_id)
-    enforce_monthly_report_limit(db, dataset.workspace_id)
+    report_limit_response = _enforce_report_creation_limit_or_response(db, dataset.workspace_id)
+    if report_limit_response is not None:
+        return report_limit_response
     requested_slides = (
         payload.requested_slides
         if payload.requested_slides is not None
@@ -11190,6 +12840,15 @@ def create_multi_source_report(
             "first_source_dataset_required",
             "The first source must include dataset_id for backwards-compatible report creation.",
         )
+    if len(resolved_sources) >= 2 and not can_use_multi_platform_report(db, first_dataset.workspace_id):
+        raise http_error(
+            403,
+            "plan_restricted",
+            "Current plan does not allow multi-platform reports.",
+        )
+    report_limit_response = _enforce_report_creation_limit_or_response(db, first_dataset.workspace_id)
+    if report_limit_response is not None:
+        return report_limit_response
 
     locale = normalize_report_locale(payload.locale)
     ai_mode = normalize_ai_mode(payload.ai_mode)
@@ -11351,7 +13010,9 @@ def _create_meta_dataset_report(
     dataset_file = _get_latest_dataset_file(db, dataset.id)
     if not dataset_file:
         raise http_error(404, "dataset_file_not_found", "Dataset file not found.")
-    enforce_monthly_report_limit(db, dataset.workspace_id)
+    report_limit_response = _enforce_report_creation_limit_or_response(db, dataset.workspace_id)
+    if report_limit_response is not None:
+        return report_limit_response
     requested_slides = (
         payload.requested_slides
         if payload.requested_slides is not None
@@ -12323,12 +13984,7 @@ def get_report(
     if not report:
         raise http_error(404, "report_not_found", "Report not found.")
     _require_workspace_access(db, current_user.id, report.workspace_id)
-    latest_version = (
-        db.query(ReportVersion)
-        .filter(ReportVersion.report_id == report.id)
-        .order_by(ReportVersion.version.desc())
-        .first()
-    )
+    latest_version = _latest_report_version(db, report.id)
     metadata = _report_metadata(report)
     logger.info(
         "[MetaTimeframeBackend] report detail",
@@ -12357,6 +14013,373 @@ def get_report(
         thumbnail_url=_report_thumbnail_url(report),
         created_at=report.created_at,
         updated_at=report.updated_at,
+    )
+
+
+@app.post("/reports/{report_id}/share", response_model=ReportShareCreateOut)
+def create_report_share(
+    report_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReportShareCreateOut:
+    report = db.get(Report, report_id)
+    if not report:
+        raise http_error(404, "report_not_found", "Report not found.")
+    _require_workspace_access(db, current_user.id, report.workspace_id)
+
+    latest_share = _latest_report_share(db, report.id)
+    share = _active_report_share(db, report.id)
+    existing_share_found = latest_share is not None
+    existing_share_expired = bool(
+        latest_share is not None
+        and latest_share.is_active
+        and latest_share.revoked_at is None
+        and latest_share.expires_at is not None
+        and latest_share.expires_at <= datetime.now(timezone.utc)
+    )
+    new_share_created = False
+    if share is None:
+        share = ReportShare(
+            report_id=report.id,
+            workspace_id=report.workspace_id,
+            token=secrets.token_urlsafe(32),
+            is_active=True,
+            created_by_user_id=current_user.id,
+        )
+        db.add(share)
+        db.commit()
+        db.refresh(share)
+
+    share_url = f"{_frontend_share_base_url(request)}/share/reports/{share.token}"
+    return ReportShareCreateOut(
+        report_id=report.id,
+        share_token=share.token,
+        share_url=share_url,
+    )
+
+
+@app.delete("/reports/{report_id}/share", response_model=ReportShareRevokeOut)
+def revoke_report_share(
+    report_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReportShareRevokeOut:
+    report = db.get(Report, report_id)
+    if not report:
+        raise http_error(404, "report_not_found", "Report not found.")
+    _require_workspace_access(db, current_user.id, report.workspace_id)
+
+    share = _active_report_share(db, report.id)
+    if share is not None:
+        share.is_active = False
+        share.revoked_at = datetime.now(timezone.utc)
+        db.add(share)
+        db.commit()
+
+    return ReportShareRevokeOut(report_id=report.id, revoked=True)
+
+
+@app.get("/public/reports/{share_token}", response_model=PublicReportOut)
+def get_public_report(
+    share_token: str,
+    template: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> PublicReportOut:
+    share, report, report_version = _resolve_shared_report_context(db, share_token)
+    effective_template, template_source = _effective_report_template(report, template)
+    payload = _public_report_out(db, report, report_version, template_override=effective_template)
+    logger.info(
+        "[PUBLIC_REPORT_PAYLOAD_AUDIT]",
+        extra={
+            "share_token": share.token,
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "version_id": report_version.id,
+            "has_blocks": bool(payload.blocks),
+            "blocks_count": len(payload.blocks),
+            "report_title": payload.report.title,
+            "integration_type": payload.report.integration_type,
+            "integration_label": payload.report.integration_label,
+            "source_name": payload.report.source_name,
+            "brand_name": payload.report.brand_name,
+            "logo_url": payload.report.logo_url,
+            "period_start": payload.report.period_start,
+            "period_end": payload.report.period_end,
+            "template": payload.report.template,
+        },
+    )
+    logger.info(
+        "[PDF_TEMPLATE_AUDIT]",
+        extra={
+            "report_id": report.id,
+            "incoming_template": template,
+            "stored_template": _stored_report_template(report),
+            "effective_template": effective_template,
+            "source": template_source,
+        },
+    )
+    return payload
+
+
+@app.get("/public/reports/{share_token}/download/pdf")
+def download_public_report_pdf(
+    share_token: str,
+    request: Request,
+    template: str | None = Query(default=None),
+    request_ts: str | None = Query(default=None, alias="_ts"),
+    db: Session = Depends(get_db),
+) -> Response:
+    normalized_share_token = str(share_token or "").strip()
+    logger.info(
+        "[PublicPDFExport][request]",
+        extra={"share_token": normalized_share_token},
+    )
+    try:
+        share, report, report_version = _resolve_shared_report_context(db, share_token)
+    except HTTPException:
+        logger.warning(
+            "[PublicPDFExport][failure]",
+            extra={
+                "share_token": normalized_share_token,
+                "reason": "share_link_not_found",
+            },
+        )
+        raise
+
+    logger.info(
+        "[PublicPDFExport][share.lookup]",
+        extra={
+            "share_token": share.token,
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "version_id": report_version.id,
+            "version": report_version.version,
+        },
+    )
+
+    frontend_url_env = _frontend_url()
+    request_base_url = str(request.base_url).rstrip("/")
+    try:
+        frontend_url_used = _public_pdf_frontend_base_url()
+    except HTTPException:
+        logger.error(
+            "[PublicPDFExport][config]",
+            extra={
+                "share_token": share.token,
+                "frontend_url_env": frontend_url_env or None,
+                "request_base_url": request_base_url,
+                "final_render_url": None,
+            },
+        )
+        raise
+    effective_template, _template_source = _effective_report_template(report, template)
+    timestamp = _pdf_export_timestamp(request_ts)
+    export_query = {
+        "export": "pdf",
+        "_ts": timestamp,
+    }
+    if effective_template:
+        export_query["template"] = effective_template
+    export_url = f"{frontend_url_used}/share/reports/{share.token}?{urlencode(export_query)}"
+    cache_key = _pdf_cache_key(
+        report_id=report.id,
+        version_id=report_version.id,
+        effective_template=effective_template,
+        report_updated_at=getattr(report, "updated_at", None),
+        version_updated_at=getattr(report_version, "updated_at", None),
+    )
+    logger.info(
+        "[PDF_CACHE_AUDIT]",
+        extra={
+            "report_id": report.id,
+            "version_id": report_version.id,
+            "incoming_template": template,
+            "effective_template": effective_template,
+            "cache_enabled": False,
+            "cache_hit": False,
+            "cache_key": cache_key,
+            "regenerated": True,
+            "final_render_url": export_url,
+            "report_updated_at": report.updated_at.isoformat() if getattr(report, "updated_at", None) else None,
+            "version_updated_at": report_version.updated_at.isoformat() if getattr(report_version, "updated_at", None) else None,
+        },
+    )
+    logger.info(
+        "[PDF_TEMPLATE_AUDIT]",
+        extra={
+            "report_id": report.id,
+            "incoming_template": template,
+            "stored_template": _stored_report_template(report),
+            "effective_template": effective_template,
+            "final_render_url": export_url,
+        },
+    )
+    logger.info(
+        "[PublicPDFExport][config]",
+        extra={
+            "share_token": share.token,
+            "frontend_url_env": frontend_url_env or None,
+            "request_base_url": request_base_url,
+            "final_render_url": export_url,
+        },
+    )
+    logger.info(
+        "[PublicPDFExport][render.url]",
+        extra={
+            "share_token": share.token,
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "version_id": report_version.id,
+            "version": report_version.version,
+            "render_url": export_url,
+            "frontend_url_used": frontend_url_used,
+            "status_http": None,
+            "page_title": None,
+            "page_text_excerpt": None,
+        },
+    )
+
+    try:
+        pdf_bytes, pdf_debug = generate_pdf_from_export_page(
+            export_url=export_url,
+            report_id=report.id,
+            auth_token=None,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        logger.info(
+            "[PDF_RENDER_RESPONSE]",
+            extra={
+                "status": detail.get("page_status"),
+                "page_url": detail.get("page_url") or detail.get("export_url") or export_url,
+                "page_title": detail.get("page_title"),
+                "slide_count": detail.get("report_slide_count"),
+                "pdf_bytes": None,
+            },
+        )
+        logger.warning(
+            "[PublicPDFExport][render.url]",
+            extra={
+                "share_token": share.token,
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "version_id": report_version.id,
+                "version": report_version.version,
+                "render_url": export_url,
+                "frontend_url_used": frontend_url_used,
+                "status_http": detail.get("page_status"),
+                "page_title": detail.get("page_title"),
+                "page_text_excerpt": detail.get("page_text_excerpt"),
+            },
+        )
+        logger.warning(
+            "[PublicPDFExport][render.response]",
+            extra={
+                "share_token": share.token,
+                "status": detail.get("page_status"),
+                "url": detail.get("page_url") or detail.get("export_url") or export_url,
+                "title": detail.get("page_title"),
+                "text_excerpt": detail.get("page_text_excerpt"),
+                "data_pdf_ready_exists": detail.get("data_pdf_ready_exists"),
+                "data_pdf_error_exists": detail.get("data_pdf_error_exists"),
+                "report_slide_count": detail.get("report_slide_count"),
+            },
+        )
+        if detail.get("code") == "pdf_render_failed":
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "public_pdf_render_failed",
+                    "message": "PDF render page did not load the shared report content.",
+                },
+            )
+        logger.warning(
+            "[PublicPDFExport][failure]",
+            extra={
+                "share_token": share.token,
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "version_id": report_version.id,
+                "version": report_version.version,
+                "reason": "generate_pdf_failed",
+            },
+        )
+        raise
+    except Exception:
+        logger.exception(
+            "[PublicPDFExport][failure]",
+            extra={
+                "share_token": share.token,
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "version_id": report_version.id,
+                "version": report_version.version,
+                "reason": "unexpected_generate_pdf_failure",
+            },
+        )
+        raise
+
+    file_name = f"{_clean_pdf_file_name(report.name)}.pdf"
+    logger.info(
+        "[PDF_RENDER_RESPONSE]",
+        extra={
+            "status": pdf_debug.get("page_status"),
+            "page_url": pdf_debug.get("page_url") or pdf_debug.get("export_url") or export_url,
+            "page_title": pdf_debug.get("page_title"),
+            "slide_count": pdf_debug.get("report_slide_count") or pdf_debug.get("page_count"),
+            "pdf_bytes": len(pdf_bytes),
+        },
+    )
+    logger.info(
+        "[PublicPDFExport][render.url]",
+        extra={
+            "share_token": share.token,
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "version_id": report_version.id,
+            "version": report_version.version,
+            "render_url": export_url,
+            "frontend_url_used": frontend_url_used,
+            "status_http": pdf_debug.get("page_status"),
+            "page_title": pdf_debug.get("page_title"),
+            "page_text_excerpt": pdf_debug.get("page_text_excerpt"),
+        },
+    )
+    logger.info(
+        "[PublicPDFExport][render.response]",
+        extra={
+            "share_token": share.token,
+            "status": pdf_debug.get("page_status"),
+            "url": pdf_debug.get("page_url") or pdf_debug.get("export_url") or export_url,
+            "title": pdf_debug.get("page_title"),
+            "text_excerpt": pdf_debug.get("page_text_excerpt"),
+            "data_pdf_ready_exists": pdf_debug.get("data_pdf_ready_exists"),
+            "data_pdf_error_exists": pdf_debug.get("data_pdf_error_exists"),
+            "report_slide_count": pdf_debug.get("report_slide_count"),
+        },
+    )
+    logger.info(
+        "[PublicPDFExport][success]",
+        extra={
+            "share_token": share.token,
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "version_id": report_version.id,
+            "version": report_version.version,
+            "auth_strategy": pdf_debug.get("auth_strategy"),
+            "report_fetch_succeeded": pdf_debug.get("report_fetch_succeeded"),
+            "page_count": pdf_debug.get("page_count"),
+            "file_name": file_name,
+        },
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Type": "application/pdf",
+            "Content-Disposition": f'attachment; filename="{file_name}"',
+        },
     )
 
 
@@ -12503,6 +14526,15 @@ def delete_report(
         },
     )
     return ReportDeleteOut(success=True)
+
+
+@app.post("/reports/{report_id}/delete", response_model=ReportDeleteOut)
+def delete_report_compat(
+    report_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReportDeleteOut:
+    return delete_report(report_id=report_id, current_user=current_user, db=db)
 
 
 @app.get("/reports/{report_id}/versions", response_model=list[ReportVersionOut])
@@ -12814,7 +14846,10 @@ def export_report(
 
 @app.get("/reports/{report_id}/download/pdf")
 def download_report_pdf(
+    request: Request,
     report_id: int,
+    template: str | None = Query(default=None),
+    request_ts: str | None = Query(default=None, alias="_ts"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -12822,23 +14857,162 @@ def download_report_pdf(
     if not report:
         raise http_error(404, "report_not_found", "Report not found.")
     _require_workspace_access(db, current_user.id, report.workspace_id)
-    enforce_export_capability(db, report.workspace_id, "pdf")
-
-    report_version = (
-        db.query(ReportVersion)
-        .filter(ReportVersion.report_id == report_id)
-        .order_by(ReportVersion.version.desc())
-        .first()
+    logger.info(
+        "[PDFExport][request]",
+        extra={
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "user_id": current_user.id,
+        },
     )
-    if not report_version:
-        raise http_error(404, "report_version_not_found", "Report version not found.")
+    try:
+        enforce_export_capability(db, report.workspace_id, "pdf")
+    except HTTPException:
+        logger.warning(
+            "[PDFExport][failure]",
+            extra={
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "user_id": current_user.id,
+                "reason": "plan_restricted",
+            },
+        )
+        raise
 
-    locale = _report_locale(report)
-    export_url = build_report_pdf_export_url(report, report_version, locale=locale)
-    export_token = create_report_export_token(
-        str(current_user.id),
+    report_version = _latest_report_version(db, report_id)
+    if not report_version:
+        logger.warning(
+            "[PDFExport][failure]",
+            extra={
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "user_id": current_user.id,
+                "reason": "report_version_not_found",
+            },
+        )
+        raise http_error(404, "report_version_not_found", "Report version not found.")
+    logger.info(
+        "[PDFExport][version]",
+        extra={
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "user_id": current_user.id,
+            "report_version_id": report_version.id,
+            "version": report_version.version,
+        },
+    )
+
+    latest_share = _latest_report_share(db, report.id)
+    share = _active_report_share(db, report.id)
+    existing_share_found = latest_share is not None
+    existing_share_expired = bool(
+        latest_share is not None
+        and latest_share.is_active
+        and latest_share.revoked_at is None
+        and latest_share.expires_at is not None
+        and latest_share.expires_at <= datetime.now(timezone.utc)
+    )
+    new_share_created = False
+    if share is None:
+        share = ReportShare(
+            report_id=report.id,
+            workspace_id=report.workspace_id,
+            token=secrets.token_urlsafe(32),
+            is_active=True,
+            created_by_user_id=current_user.id,
+        )
+        db.add(share)
+        db.commit()
+        db.refresh(share)
+        new_share_created = True
+    frontend_url_env = str(settings.frontend_url or "").strip() or None
+    frontend_base_url_env = str(settings.frontend_base_url or "").strip() or None
+    report_export_base_url_env = str(settings.report_export_base_url or "").strip() or None
+    report_export_path_template = str(settings.report_export_path_template or "").strip() or None
+    export_lambda_url = str(settings.export_lambda_url or "").strip() or None
+    try:
+        frontend_url_used = _pdf_render_base_url()
+    except HTTPException:
+        logger.error(
+            "[PDFExport][env.audit]",
+            extra={
+                "FRONTEND_URL": frontend_url_env,
+                "FRONTEND_BASE_URL": frontend_base_url_env,
+                "REPORT_EXPORT_BASE_URL": report_export_base_url_env,
+                "REPORT_EXPORT_PATH_TEMPLATE": report_export_path_template,
+                "EXPORT_LAMBDA_URL": export_lambda_url,
+                "final_render_url": None,
+                "report_id": report.id,
+                "share_token": share.token,
+                "version_id": report_version.id,
+                "version": report_version.version,
+                "existing_share_found": existing_share_found,
+                "existing_share_expired": existing_share_expired,
+                "new_share_created": new_share_created,
+                "share_expires_at": share.expires_at.isoformat() if share.expires_at else None,
+            },
+        )
+        raise
+    effective_template, _template_source = _effective_report_template(report, template)
+    timestamp = _pdf_export_timestamp(request_ts)
+    export_query = {
+        "export": "pdf",
+        "_ts": timestamp,
+    }
+    if effective_template:
+        export_query["template"] = effective_template
+    export_url = f"{frontend_url_used}/share/reports/{share.token}?{urlencode(export_query)}"
+    cache_key = _pdf_cache_key(
         report_id=report.id,
-        version=report_version.version,
+        version_id=report_version.id,
+        effective_template=effective_template,
+        report_updated_at=getattr(report, "updated_at", None),
+        version_updated_at=getattr(report_version, "updated_at", None),
+    )
+    logger.info(
+        "[PDF_CACHE_AUDIT]",
+        extra={
+            "report_id": report.id,
+            "version_id": report_version.id,
+            "incoming_template": template,
+            "effective_template": effective_template,
+            "cache_enabled": False,
+            "cache_hit": False,
+            "cache_key": cache_key,
+            "regenerated": True,
+            "final_render_url": export_url,
+            "report_updated_at": report.updated_at.isoformat() if getattr(report, "updated_at", None) else None,
+            "version_updated_at": report_version.updated_at.isoformat() if getattr(report_version, "updated_at", None) else None,
+        },
+    )
+    logger.info(
+        "[PDF_TEMPLATE_AUDIT]",
+        extra={
+            "report_id": report.id,
+            "incoming_template": template,
+            "stored_template": _stored_report_template(report),
+            "effective_template": effective_template,
+            "final_render_url": export_url,
+        },
+    )
+    logger.info(
+        "[PDFExport][env.audit]",
+        extra={
+            "FRONTEND_URL": frontend_url_env,
+            "FRONTEND_BASE_URL": frontend_base_url_env,
+            "REPORT_EXPORT_BASE_URL": report_export_base_url_env,
+            "REPORT_EXPORT_PATH_TEMPLATE": report_export_path_template,
+            "EXPORT_LAMBDA_URL": export_lambda_url,
+            "final_render_url": export_url,
+            "report_id": report.id,
+            "share_token": share.token,
+            "version_id": report_version.id,
+            "version": report_version.version,
+            "existing_share_found": existing_share_found,
+            "existing_share_expired": existing_share_expired,
+            "new_share_created": new_share_created,
+            "share_expires_at": share.expires_at.isoformat() if share.expires_at else None,
+        },
     )
     logger.info(
         "[MetaTimeframeBackend][render.pdf]",
@@ -12849,35 +15023,145 @@ def download_report_pdf(
         ),
     )
     logger.info(
-        "PDF download requested",
+        "[PDFExport][render.url]",
         extra={
-            "report_id": report_id,
-            "export_url": export_url,
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
             "version_id": report_version.id,
-            "auth_strategy": "authorization_header_report_export_token",
+            "version": report_version.version,
+            "render_url": export_url,
+            "frontend_url_used": frontend_url_used,
+            "status_http": None,
+            "page_title": None,
+            "page_text_excerpt": None,
         },
     )
-    pdf_bytes, pdf_debug = generate_pdf_from_export_page(
-        export_url=export_url,
-        report_id=report_id,
-        auth_token=export_token,
+    try:
+        pdf_bytes, pdf_debug = generate_pdf_from_export_page(
+            export_url=export_url,
+            report_id=report_id,
+            auth_token=None,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        logger.info(
+            "[PDF_RENDER_RESPONSE]",
+            extra={
+                "status": detail.get("page_status"),
+                "page_url": detail.get("page_url") or detail.get("export_url") or export_url,
+                "page_title": detail.get("page_title"),
+                "slide_count": detail.get("report_slide_count"),
+                "pdf_bytes": None,
+            },
+        )
+        logger.warning(
+            "[PDFExport][render.url]",
+            extra={
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "version_id": report_version.id,
+                "version": report_version.version,
+                "render_url": export_url,
+                "frontend_url_used": frontend_url_used,
+                "status_http": detail.get("page_status"),
+                "page_title": detail.get("page_title"),
+                "page_text_excerpt": detail.get("page_text_excerpt"),
+            },
+        )
+        logger.warning(
+            "[PDFExport][render.response]",
+            extra={
+                "status": detail.get("page_status"),
+                "url": detail.get("page_url") or detail.get("export_url") or export_url,
+                "title": detail.get("page_title"),
+                "text_excerpt": detail.get("page_text_excerpt"),
+                "data_pdf_ready_exists": detail.get("data_pdf_ready_exists"),
+                "data_pdf_error_exists": detail.get("data_pdf_error_exists"),
+                "report_slide_count": detail.get("report_slide_count"),
+            },
+        )
+        logger.warning(
+            "[PDFExport][failure]",
+            extra={
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "user_id": current_user.id,
+                "report_version_id": report_version.id,
+                "version": report_version.version,
+                "reason": "generate_pdf_failed",
+            },
+        )
+        raise
+    except Exception:
+        logger.exception(
+            "[PDFExport][failure]",
+            extra={
+                "report_id": report.id,
+                "workspace_id": report.workspace_id,
+                "user_id": current_user.id,
+                "report_version_id": report_version.id,
+                "version": report_version.version,
+                "reason": "unexpected_generate_pdf_failure",
+            },
+        )
+        raise
+
+    file_name = f"{_clean_pdf_file_name(report.name)}.pdf"
+    logger.info(
+        "[PDF_RENDER_RESPONSE]",
+        extra={
+            "status": pdf_debug.get("page_status"),
+            "page_url": pdf_debug.get("page_url") or pdf_debug.get("export_url") or export_url,
+            "page_title": pdf_debug.get("page_title"),
+            "slide_count": pdf_debug.get("report_slide_count") or pdf_debug.get("page_count"),
+            "pdf_bytes": len(pdf_bytes),
+        },
     )
     logger.info(
-        "PDF generated successfully",
+        "[PDFExport][render.url]",
         extra={
-            "report_id": report_id,
-            "export_url": export_url,
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
             "version_id": report_version.id,
+            "version": report_version.version,
+            "render_url": export_url,
+            "frontend_url_used": frontend_url_used,
+            "status_http": pdf_debug.get("page_status"),
+            "page_title": pdf_debug.get("page_title"),
+            "page_text_excerpt": pdf_debug.get("page_text_excerpt"),
+        },
+    )
+    logger.info(
+        "[PDFExport][render.response]",
+        extra={
+            "status": pdf_debug.get("page_status"),
+            "url": pdf_debug.get("page_url") or pdf_debug.get("export_url") or export_url,
+            "title": pdf_debug.get("page_title"),
+            "text_excerpt": pdf_debug.get("page_text_excerpt"),
+            "data_pdf_ready_exists": pdf_debug.get("data_pdf_ready_exists"),
+            "data_pdf_error_exists": pdf_debug.get("data_pdf_error_exists"),
+            "report_slide_count": pdf_debug.get("report_slide_count"),
+        },
+    )
+    logger.info(
+        "[PDFExport][success]",
+        extra={
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "user_id": current_user.id,
+            "report_version_id": report_version.id,
+            "version": report_version.version,
             "auth_strategy": pdf_debug.get("auth_strategy"),
             "report_fetch_succeeded": pdf_debug.get("report_fetch_succeeded"),
             "page_count": pdf_debug.get("page_count"),
+            "file_name": file_name,
         },
     )
-    file_name = f"measurable-report-{report_id}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
+            "Content-Type": "application/pdf",
             "Content-Disposition": f'attachment; filename="{file_name}"',
         },
     )
@@ -13034,24 +15318,12 @@ def update_workspace(
 
     original_brand_name = workspace.name
     original_brand_logo_url = workspace.logo_url
-    if payload.name is not None:
-        workspace.name = payload.name
-    if "brand_name" in payload.model_fields_set:
-        workspace.name = payload.brand_name or ""
-    if "logo_url" in payload.model_fields_set:
-        workspace.logo_url = payload.logo_url
-    if "brand_logo_url" in payload.model_fields_set:
-        workspace.logo_url = payload.brand_logo_url
+    branding_changed, account_changed = _update_workspace_from_payload(workspace, payload)
 
     db.add(workspace)
     db.commit()
     db.refresh(workspace)
-    if (
-        "name" in payload.model_fields_set
-        or "brand_name" in payload.model_fields_set
-        or "logo_url" in payload.model_fields_set
-        or "brand_logo_url" in payload.model_fields_set
-    ):
+    if branding_changed or account_changed:
         resolved_branding = resolve_report_branding_for_workspace(db, workspace.id)
         logger.info(
             "[BrandAssets][workspace.saved]",
@@ -13059,6 +15331,7 @@ def update_workspace(
                 "workspace_id": workspace.id,
                 "original_brand_name": original_brand_name,
                 "saved_brand_name": workspace.name,
+                "saved_account_display_name": workspace.account_display_name,
                 "original_brand_logo_url": original_brand_logo_url,
                 "saved_brand_logo_url": workspace.logo_url,
                 "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
@@ -13082,28 +15355,57 @@ def update_workspace_branding(
 
     original_brand_name = workspace.name
     original_brand_logo_url = workspace.logo_url
-    if "brand_name" in payload.model_fields_set:
-        workspace.name = payload.brand_name or ""
-    if "brand_logo_url" in payload.model_fields_set:
-        workspace.logo_url = payload.brand_logo_url
+    brand_name_provided, resolved_brand_name, logo_provided, resolved_logo_url = (
+        _resolve_workspace_branding_update_payload(payload)
+    )
+    if brand_name_provided:
+        workspace.name = resolved_brand_name or ""
+    if logo_provided:
+        workspace.logo_url = resolved_logo_url
 
     db.add(workspace)
     db.commit()
     db.refresh(workspace)
     resolved_branding = resolve_report_branding_for_workspace(db, workspace.id)
+    synced_reports = _sync_workspace_branding_to_reports(
+        db,
+        workspace_id=workspace.id,
+        resolved_branding=resolved_branding,
+    )
     logger.info(
         "[BrandAssets][workspace.saved]",
         extra={
+            "endpoint": "/workspaces/{workspace_id}/branding",
             "workspace_id": workspace.id,
+            "received_fields": sorted(payload.model_fields_set),
+            "brand_name_provided": brand_name_provided,
+            "logo_provided": logo_provided,
+            "remove_logo": bool(payload.remove_logo) if "remove_logo" in payload.model_fields_set else False,
             "original_brand_name": original_brand_name,
             "saved_brand_name": workspace.name,
             "original_brand_logo_url": original_brand_logo_url,
             "saved_brand_logo_url": workspace.logo_url,
             "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
             "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
+            "reports_branding_synced_count": synced_reports,
         },
     )
     return _workspace_out(db, workspace)
+
+
+@app.patch("/workspaces/{workspace_id}", response_model=WorkspaceOut)
+def patch_workspace(
+    workspace_id: int,
+    payload: WorkspaceUpdateIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkspaceOut:
+    return update_workspace(
+        workspace_id=workspace_id,
+        payload=payload,
+        current_user=current_user,
+        db=db,
+    )
 
 
 @app.get("/workspaces/{workspace_id}", response_model=WorkspaceOut)

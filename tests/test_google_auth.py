@@ -242,6 +242,40 @@ def test_google_callback_creates_workspace_for_existing_user_without_membership(
     finally:
         db.close()
 
+    monkeypatch.setattr(
+        "app.main._exchange_google_code_for_tokens",
+        lambda code: {"id_token": "fake-id-token"},
+    )
+    monkeypatch.setattr(
+        "app.main._verify_google_id_token",
+        lambda token: {
+            "email": "orphan@example.com",
+            "name": "Orphan User",
+            "sub": "google-sub-orphan",
+            "picture": "https://example.com/orphan-avatar.png",
+            "email_verified": True,
+        },
+    )
+
+    state = create_oauth_state(purpose="google_oauth")
+    response = client.get(
+        f"/auth/google/callback?code=google-code&state={state}",
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("http://localhost:3000/login#")
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "orphan@example.com").one()
+        membership = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == user.id).one()
+        subscription = db.query(Subscription).filter(Subscription.workspace_id == membership.workspace_id).one()
+        assert membership.role == "owner"
+        assert subscription.plan == "free"
+        assert subscription.status == "active"
+    finally:
+        db.close()
+
 
 def test_meta_connect_pages_uses_single_available_workspace_when_request_is_stale(client, monkeypatch):
     db = SessionLocal()
@@ -331,36 +365,17 @@ def test_meta_connect_pages_rejects_invalid_workspace_when_user_has_multiple_wor
     assert response.json()["detail"]["code"] == "workspace_access_denied"
     assert response.json()["detail"]["message"] == "Requested workspace does not belong to the authenticated user."
 
-    monkeypatch.setattr(
-        "app.main._exchange_google_code_for_tokens",
-        lambda code: {"id_token": "fake-id-token"},
-    )
-    monkeypatch.setattr(
-        "app.main._verify_google_id_token",
-        lambda token: {
-            "email": "orphan@example.com",
-            "name": "Orphan User",
-            "sub": "google-sub-orphan",
-            "picture": "https://example.com/orphan-avatar.png",
-            "email_verified": True,
-        },
-    )
 
-    state = create_oauth_state(purpose="google_oauth")
-    response = client.get(
-        f"/auth/google/callback?code=google-code&state={state}",
-        follow_redirects=False,
-    )
-    assert response.status_code == 302
-    assert response.headers["location"].startswith("http://localhost:3000/login#")
+def test_meta_callback_pages_returns_popup_close_html_for_invalid_state(client):
+    response = client.get("/integrations/meta/callback-pages?code=meta-code&state=bad-state")
 
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.email == "orphan@example.com").one()
-        membership = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == user.id).one()
-        subscription = db.query(Subscription).filter(Subscription.workspace_id == membership.workspace_id).one()
-        assert membership.role == "owner"
-        assert subscription.plan == "free"
-        assert subscription.status == "active"
-    finally:
-        db.close()
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    body = response.text
+    assert "window.opener.postMessage" in body
+    assert "\"MEASURABLE_META_CONNECT_ERROR\"" in body
+    assert "\"provider\": \"meta\"" in body
+    assert "\"http://localhost:3000\"" in body
+    assert "window.close()" in body
+    assert "window.location.replace" in body
+    assert "Volver a Measurable" in body

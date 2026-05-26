@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+from io import BytesIO
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
@@ -184,6 +187,8 @@ def _seed_workspace_fixture() -> dict[str, int]:
             "user_id": user.id,
             "workspace_id": workspace.id,
             "integration_id": integration.id,
+            "instagram_dataset_id": instagram_dataset.id,
+            "csv_dataset_id": csv_dataset.id,
             "instagram_report_id": instagram_report.id,
             "csv_report_id": csv_report.id,
         }
@@ -226,9 +231,9 @@ def test_account_summary_and_account_display_name_update_do_not_change_brand_ass
     assert summary.status_code == 200
     payload = summary.json()
     assert payload["reports_created_count"] == 2
-    assert payload["reports_limit_this_month"] == 5
-    assert payload["reports_remaining_this_month"] == 3
-    assert payload["reports_available_count"] == 3
+    assert payload["reports_limit_this_month"] == 10
+    assert payload["reports_remaining_this_month"] == 8
+    assert payload["reports_available_count"] == 8
     assert payload["integrations_connected_count"] == 1
     assert payload["integrations_total_available"] == 3
     assert payload["current_plan_name"] == "free"
@@ -238,6 +243,101 @@ def test_account_summary_and_account_display_name_update_do_not_change_brand_ass
     assert payload["report_branding_mode"] == "measurable"
     assert payload["account_display_name"] == "Acme Header"
     assert payload["account_display_name_effective"] == "Acme Header"
+
+    compat_patch = client.patch(
+        "/workspace",
+        headers=_auth_headers(refs["user_id"]),
+        json={"brand_name": "Acme Brand Updated", "brand_logo_url": "https://example.com/logo-2.png"},
+    )
+    assert compat_patch.status_code == 200
+    assert compat_patch.json()["brand_name"] == "Acme Brand Updated"
+    assert compat_patch.json()["brand_logo_url"] == "https://example.com/logo-2.png"
+    assert compat_patch.json()["account_display_name"] == "Acme Header"
+
+    branding_alias_patch = client.patch(
+        "/workspace/branding",
+        headers=_auth_headers(refs["user_id"]),
+        json={"brandName": "Hola", "logoUrl": "https://example.com/logo-3.png"},
+    )
+    assert branding_alias_patch.status_code == 200
+    assert branding_alias_patch.json()["brand_name"] == "Hola"
+    assert branding_alias_patch.json()["logo_url"] == "https://example.com/logo-3.png"
+    assert branding_alias_patch.json()["brand_logo_url"] == "https://example.com/logo-3.png"
+    assert branding_alias_patch.json()["account_display_name"] == "Acme Header"
+
+    remove_logo_patch = client.patch(
+        "/workspace/branding",
+        headers=_auth_headers(refs["user_id"]),
+        json={"remove_logo": True},
+    )
+    assert remove_logo_patch.status_code == 200
+    assert remove_logo_patch.json()["brand_name"] == "Hola"
+    assert remove_logo_patch.json()["logo_url"] is None
+    assert remove_logo_patch.json()["brand_logo_url"] is None
+
+
+def test_workspace_brand_logo_upload_and_save_flow(client, monkeypatch):
+    refs = _seed_workspace_fixture()
+    stored_objects: dict[tuple[str, str], dict[str, object]] = {}
+
+    class _Body:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+
+        def read(self):
+            return self._payload
+
+    class FakeS3Client:
+        def put_object(self, *, Bucket, Key, Body, ContentType=None, CacheControl=None):
+            stored_objects[(Bucket, Key)] = {
+                "Body": Body,
+                "ContentType": ContentType,
+                "CacheControl": CacheControl,
+            }
+
+        def get_object(self, *, Bucket, Key):
+            item = stored_objects[(Bucket, Key)]
+            return {
+                "Body": _Body(item["Body"]),
+                "ContentType": item["ContentType"],
+                "CacheControl": item["CacheControl"],
+            }
+
+    monkeypatch.setattr("app.main.boto3.client", lambda *_args, **_kwargs: FakeS3Client())
+
+    upload = client.post(
+        "/workspace/branding/logo",
+        headers=_auth_headers(refs["user_id"]),
+        files={"file": ("logo.png", BytesIO(b"fake-png-binary"), "image/png")},
+    )
+    assert upload.status_code == 200
+    logo_url = upload.json()["logo_url"]
+    assert "/workspace/branding/logo/1/" in logo_url
+
+    logo_fetch = client.get(logo_url)
+    assert logo_fetch.status_code == 200
+    assert logo_fetch.content == b"fake-png-binary"
+    assert logo_fetch.headers["content-type"] == "image/png"
+
+    save = client.patch(
+        "/workspace/branding",
+        headers=_auth_headers(refs["user_id"]),
+        json={"brand_name": "Uploaded Brand", "logo_url": logo_url},
+    )
+    assert save.status_code == 200
+    payload = save.json()
+    assert payload["brand_name"] == "Uploaded Brand"
+    assert payload["logo_url"] == logo_url
+    assert payload["brand_logo_url"] == logo_url
+    assert payload["account_display_name"] is None
+
+    workspace_response = client.get(
+        f"/workspaces/{refs['workspace_id']}",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    assert workspace_response.status_code == 200
+    assert workspace_response.json()["brand_name"] == "Uploaded Brand"
+    assert workspace_response.json()["logo_url"] == logo_url
 
 
 def test_reports_expose_integration_metadata_filters_and_folder_update(client):
@@ -337,3 +437,204 @@ def test_meta_instagram_accounts_include_display_label_from_username(client, mon
     assert payload[0]["username"] == "botaneronl"
     assert payload[0]["display_label"] == "@botaneronl"
     assert payload[0]["profile_picture_url"] == "https://example.com/ig.png"
+
+
+def test_reports_facebook_pages_fallback_to_dataset_metadata_not_legacy(client):
+    refs = _seed_workspace_fixture()
+    db = SessionLocal()
+    try:
+        facebook_dataset = Dataset(
+            workspace_id=refs["workspace_id"],
+            name="Facebook dataset",
+            description="Test",
+            data={
+                "integration_type": "facebook_pages",
+                "page_name": "Botanero NL",
+            },
+        )
+        db.add(facebook_dataset)
+        db.flush()
+
+        facebook_report = Report(
+            workspace_id=refs["workspace_id"],
+            dataset_id=facebook_dataset.id,
+            name="Botanero NL Overview",
+            description='{"source_name":"Botanero NL"}',
+        )
+        db.add(facebook_report)
+        db.flush()
+        db.add(ReportVersion(report_id=facebook_report.id, version=1))
+        db.commit()
+        facebook_report_id = facebook_report.id
+    finally:
+        db.close()
+
+    reports_response = client.get("/reports", headers=_auth_headers(refs["user_id"]))
+    assert reports_response.status_code == 200
+    facebook_item = next(item for item in reports_response.json() if item["id"] == facebook_report_id)
+    assert facebook_item["integration_metadata"]["integration_type"] == "facebook"
+    assert facebook_item["integration_metadata"]["integration_display_name"] == "Facebook Pages"
+    assert facebook_item["integration_metadata"]["source_name"] == "Botanero NL"
+    assert facebook_item["integration_metadata"]["source_handle"] is None
+    assert facebook_item["integration_metadata"]["social_network"] == "facebook"
+    assert facebook_item["integration_metadata"]["channel"] == "facebook"
+
+    detail_response = client.get(
+        f"/reports/{facebook_report_id}",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    assert detail_response.status_code == 200
+    assert detail_response.json()["integration_metadata"]["integration_type"] == "facebook"
+    assert detail_response.json()["integration_metadata"]["channel"] == "facebook"
+
+
+def test_reports_facebook_pages_fallback_to_cover_subtitle_not_legacy(client):
+    refs = _seed_workspace_fixture()
+    db = SessionLocal()
+    try:
+        facebook_dataset = Dataset(
+            workspace_id=refs["workspace_id"],
+            name="Facebook fallback dataset",
+            description="Test",
+            data={
+                "page_name": "Botanero NL",
+            },
+        )
+        db.add(facebook_dataset)
+        db.flush()
+
+        facebook_report = Report(
+            workspace_id=refs["workspace_id"],
+            dataset_id=facebook_dataset.id,
+            name="Botanero NL Overview",
+            description='{"sourceSummary":"Botanero NL","subtitle":"Facebook Pages Report - Summary & Insights"}',
+        )
+        db.add(facebook_report)
+        db.flush()
+
+        report_version = ReportVersion(report_id=facebook_report.id, version=1)
+        db.add(report_version)
+        db.commit()
+        facebook_report_id = facebook_report.id
+    finally:
+        db.close()
+
+    reports_response = client.get("/reports", headers=_auth_headers(refs["user_id"]))
+    assert reports_response.status_code == 200
+    facebook_item = next(item for item in reports_response.json() if item["id"] == facebook_report_id)
+    assert facebook_item["integration_metadata"]["integration_type"] == "facebook"
+    assert facebook_item["integration_metadata"]["integration_display_name"] == "Facebook Pages"
+    assert facebook_item["integration_metadata"]["source_name"] == "Botanero NL"
+    assert facebook_item["integration_metadata"]["social_network"] == "facebook"
+    assert facebook_item["integration_metadata"]["channel"] == "facebook"
+
+
+def test_reports_facebook_pages_fallback_to_generation_mode_not_legacy(client):
+    refs = _seed_workspace_fixture()
+    db = SessionLocal()
+    try:
+        facebook_dataset = Dataset(
+            workspace_id=refs["workspace_id"],
+            name="Facebook generation mode dataset",
+            description="Test",
+            data={
+                "page_name": "Botanero NL",
+            },
+        )
+        db.add(facebook_dataset)
+        db.flush()
+
+        facebook_report = Report(
+            workspace_id=refs["workspace_id"],
+            dataset_id=facebook_dataset.id,
+            name="Botanero NL Overview",
+            description='{"source":"meta_pages_v2","generation_mode":"meta_pages","sourceSummary":"Botanero NL"}',
+        )
+        db.add(facebook_report)
+        db.flush()
+        db.add(ReportVersion(report_id=facebook_report.id, version=1))
+        db.commit()
+        facebook_report_id = facebook_report.id
+    finally:
+        db.close()
+
+    reports_response = client.get("/reports", headers=_auth_headers(refs["user_id"]))
+    assert reports_response.status_code == 200
+    facebook_item = next(item for item in reports_response.json() if item["id"] == facebook_report_id)
+    assert facebook_item["integration_metadata"]["integration_type"] == "facebook"
+    assert facebook_item["integration_metadata"]["integration_display_name"] == "Facebook Pages"
+    assert facebook_item["integration_metadata"]["source_name"] == "Botanero NL"
+    assert facebook_item["integration_metadata"]["social_network"] == "facebook"
+    assert facebook_item["integration_metadata"]["channel"] == "facebook"
+
+
+def test_refresh_report_thumbnail_does_not_fail_when_export_ready_selector_times_out(client, monkeypatch):
+    refs = _seed_workspace_fixture()
+
+    def _raise_thumbnail_timeout(**_kwargs):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "thumbnail_ready_timeout",
+                "message": "Thumbnail page did not reach the ready state before timeout.",
+            },
+        )
+
+    monkeypatch.setattr("app.main.generate_thumbnail_from_export_page", _raise_thumbnail_timeout)
+
+    response = client.post(
+        f"/reports/{refs['instagram_report_id']}/thumbnail",
+        headers=_auth_headers(refs["user_id"]),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["report_id"] == refs["instagram_report_id"]
+    assert payload["thumbnail_s3_key"] is None
+    assert payload["thumbnail_url"] is None
+
+
+def test_report_creation_limit_returns_monthly_limit_code_and_detail(client):
+    refs = _seed_workspace_fixture()
+    db = SessionLocal()
+    try:
+        subscription = (
+            db.query(Subscription)
+            .filter(Subscription.workspace_id == refs["workspace_id"])
+            .one()
+        )
+        subscription.plan = "starter"
+        db.add(subscription)
+        db.commit()
+
+        base_time = datetime.now(timezone.utc) - timedelta(days=1)
+        for index in range(8):
+            db.add(
+                Report(
+                    workspace_id=refs["workspace_id"],
+                    dataset_id=refs["csv_dataset_id"],
+                    name=f"Monthly limit report {index}",
+                    description="{}",
+                    created_at=base_time + timedelta(minutes=index + 1),
+                    updated_at=base_time + timedelta(minutes=index + 1),
+                )
+            )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post(
+        "/reports",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "dataset_id": refs["csv_dataset_id"],
+            "title": "Blocked by monthly limit",
+            "requested_slides": 2,
+            "locale": "en",
+        },
+    )
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["code"] == "monthly_report_limit_reached"
+    assert payload["detail"] == "Monthly report limit reached for current plan."
+    assert payload["message"] == "Monthly report limit reached for current plan."

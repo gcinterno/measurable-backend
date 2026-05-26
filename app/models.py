@@ -107,6 +107,29 @@ class UserSuggestion(Base):
     )
 
 
+class WishlistLead(Base):
+    __tablename__ = "wishlist_leads"
+    __table_args__ = (
+        Index("ix_wishlist_leads_user_id", "user_id"),
+        Index("ix_wishlist_leads_workspace_id", "workspace_id"),
+        Index("ix_wishlist_leads_email", "email"),
+        Index("ix_wishlist_leads_source", "source"),
+        Index("ix_wishlist_leads_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    workspace_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workspaces.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    company: Mapped[Optional[str]] = mapped_column(String(255))
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(100), nullable=False, default="upgrade_page")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
 
@@ -206,8 +229,25 @@ class Subscription(Base):
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
     plan: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
+    billing_status: Mapped[Optional[str]] = mapped_column(String(50))
+    stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(255))
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(255))
+    stripe_price_id: Mapped[Optional[str]] = mapped_column(String(255))
     current_period_start: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     current_period_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    cancel_at_period_end: Mapped[Optional[bool]] = mapped_column(Boolean)
+    reports_limit_monthly: Mapped[Optional[int]] = mapped_column(Integer)
+    reports_limit_is_temporary: Mapped[Optional[bool]] = mapped_column(Boolean)
+    slides_per_report_limit: Mapped[Optional[int]] = mapped_column(Integer)
+    platform_report_type: Mapped[Optional[str]] = mapped_column(String(100))
+    ai_chat_with_data: Mapped[Optional[bool]] = mapped_column(Boolean)
+    storage_limit_gb: Mapped[Optional[int]] = mapped_column(Integer)
+    export_pdf: Mapped[Optional[bool]] = mapped_column(Boolean)
+    export_pptx: Mapped[Optional[bool]] = mapped_column(Boolean)
+    brand_personalization: Mapped[Optional[bool]] = mapped_column(Boolean)
+    measurable_watermark: Mapped[Optional[bool]] = mapped_column(Boolean)
+    scheduled_reports_limit: Mapped[Optional[int]] = mapped_column(Integer)
+    trial_new_features: Mapped[Optional[bool]] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -532,6 +572,9 @@ class Report(Base):
     schedules: Mapped[list[Schedule]] = relationship(
         back_populates="report", cascade="all, delete-orphan", passive_deletes=True
     )
+    shares: Mapped[list[ReportShare]] = relationship(
+        back_populates="report", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class ReportVersion(Base):
@@ -612,6 +655,31 @@ class ReportBlock(Base):
     )
 
     report_version: Mapped[ReportVersion] = relationship(back_populates="blocks")
+
+
+class ReportShare(Base):
+    __tablename__ = "report_shares"
+    __table_args__ = (
+        Index("ix_report_shares_report_id", "report_id"),
+        Index("ix_report_shares_workspace_id", "workspace_id"),
+        Index("ix_report_shares_token", "token", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    token: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    report: Mapped[Report] = relationship(back_populates="shares")
+    workspace: Mapped[Workspace] = relationship()
+    created_by_user: Mapped[Optional[User]] = relationship()
 
 
 class Export(Base):

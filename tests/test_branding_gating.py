@@ -318,6 +318,72 @@ def test_workspace_brand_assets_patch_are_shared_by_settings_and_reports(client)
         db.close()
 
 
+def test_workspace_branding_patch_syncs_existing_report_branding_and_invalidates_thumbnail(client):
+    refs = _seed_branding_fixture(plan="core")
+
+    create_response = client.post(
+        "/reports",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "dataset_id": refs["dataset_id"],
+            "title": "Existing branded report",
+            "requested_slides": 2,
+            "locale": "en",
+        },
+    )
+    assert create_response.status_code == 200
+    report_id = create_response.json()["id"]
+
+    db = SessionLocal()
+    try:
+        report = db.get(Report, report_id)
+        assert report is not None
+        metadata = json.loads(report.description or "{}")
+        metadata["branding"] = {
+            "brand_name": "Old Brand",
+            "logo_url": "https://custom.example/old-logo.png",
+            "brand_logo_url": "https://custom.example/old-logo.png",
+            "resolved_brand_name": "Old Brand",
+            "resolved_logo_url": "https://custom.example/old-logo.png",
+        }
+        metadata["thumbnail_s3_key"] = "report-thumbnails/1/old-cover.png"
+        report.description = json.dumps(metadata)
+        db.add(report)
+        db.commit()
+    finally:
+        db.close()
+
+    update_response = client.patch(
+        f"/workspaces/{refs['workspace_id']}/branding",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "brand_name": "Refreshed Brand",
+            "brand_logo_url": "https://custom.example/refreshed-logo.png",
+        },
+    )
+    assert update_response.status_code == 200
+
+    report_response = client.get(
+        f"/reports/{report_id}",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    assert report_response.status_code == 200
+    report_payload = report_response.json()
+    assert report_payload["branding"]["resolved_brand_name"] == "Refreshed Brand"
+    assert report_payload["branding"]["resolved_logo_url"] == "https://custom.example/refreshed-logo.png"
+    assert report_payload["thumbnail_url"] is None
+
+    db = SessionLocal()
+    try:
+        report = db.get(Report, report_id)
+        metadata = json.loads(report.description or "{}")
+        assert metadata["branding"]["resolved_brand_name"] == "Refreshed Brand"
+        assert metadata["branding"]["resolved_logo_url"] == "https://custom.example/refreshed-logo.png"
+        assert "thumbnail_s3_key" not in metadata
+    finally:
+        db.close()
+
+
 def test_workspace_update_accepts_brand_asset_aliases(client):
     refs = _seed_branding_fixture(plan="core")
 
@@ -335,6 +401,79 @@ def test_workspace_update_accepts_brand_asset_aliases(client):
     assert payload["logo_url"] == "https://custom.example/new-report-logo.png"
     assert payload["branding"]["resolved_brand_name"] == "New Report Brand"
     assert payload["branding"]["resolved_logo_url"] == "https://custom.example/new-report-logo.png"
+
+
+def test_workspace_and_report_branding_expand_legacy_logo_filename(client):
+    refs = _seed_branding_fixture(plan="core")
+    db = SessionLocal()
+    try:
+        workspace = db.get(Workspace, refs["workspace_id"])
+        assert workspace is not None
+        workspace.logo_url = "20260523165425-2c9ba8fe5d8a890c.png"
+        db.add(workspace)
+        db.commit()
+    finally:
+        db.close()
+
+    workspace_response = client.get(
+        f"/workspaces/{refs['workspace_id']}",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    assert workspace_response.status_code == 200
+    workspace_payload = workspace_response.json()
+    assert workspace_payload["logo_url"] != "20260523165425-2c9ba8fe5d8a890c.png"
+    assert "/workspace/branding/logo/" in str(workspace_payload["logo_url"])
+    assert workspace_payload["brand_logo_url"] == workspace_payload["logo_url"]
+
+    create_response = client.post(
+        "/reports",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "dataset_id": refs["dataset_id"],
+            "title": "Legacy logo report",
+            "requested_slides": 2,
+            "locale": "en",
+        },
+    )
+    assert create_response.status_code == 200
+    report_payload = create_response.json()
+    assert report_payload["branding"]["resolved_logo_url"] != "20260523165425-2c9ba8fe5d8a890c.png"
+    assert "/workspace/branding/logo/" in str(report_payload["branding"]["resolved_logo_url"])
+
+
+def test_workspace_and_report_branding_rewrite_frontend_logo_host_to_backend(client):
+    refs = _seed_branding_fixture(plan="core")
+    db = SessionLocal()
+    try:
+        workspace = db.get(Workspace, refs["workspace_id"])
+        assert workspace is not None
+        workspace.logo_url = "http://localhost:3000/workspace/branding/logo/1/20260523165425-2c9ba8fe5d8a890c.png"
+        db.add(workspace)
+        db.commit()
+    finally:
+        db.close()
+
+    workspace_response = client.get(
+        f"/workspaces/{refs['workspace_id']}",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    assert workspace_response.status_code == 200
+    workspace_payload = workspace_response.json()
+    assert workspace_payload["logo_url"] == "http://localhost:8001/workspace/branding/logo/1/20260523165425-2c9ba8fe5d8a890c.png"
+
+    create_response = client.post(
+        "/reports",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "dataset_id": refs["dataset_id"],
+            "title": "Frontend host rewrite report",
+            "requested_slides": 2,
+            "locale": "en",
+        },
+    )
+    assert create_response.status_code == 200
+    report_payload = create_response.json()
+    assert report_payload["branding"]["resolved_logo_url"] == "http://localhost:8001/workspace/branding/logo/1/20260523165425-2c9ba8fe5d8a890c.png"
 
 
 def test_paid_workspace_reports_fallback_to_measurable_logo_and_default_brand_name(client):

@@ -479,6 +479,37 @@ class AdminSuggestionOut(UserSuggestionOut):
     workspace_name: Optional[str] = None
 
 
+class WishlistCreateIn(BaseModel):
+    name: str
+    email: str
+    company: Optional[str] = None
+    message: str
+    source: str = "upgrade_page"
+
+
+class WishlistLeadOut(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    workspace_id: Optional[int] = None
+    name: str
+    email: str
+    company: Optional[str] = None
+    message: str
+    source: str
+    created_at: datetime
+
+
+class WishlistCreateOut(BaseModel):
+    success: bool = True
+    lead: WishlistLeadOut
+
+
+class AdminWishlistLeadOut(WishlistLeadOut):
+    user_email: Optional[str] = None
+    user_name: Optional[str] = None
+    workspace_name: Optional[str] = None
+
+
 class AdminInsightsOut(BaseModel):
     onboarding: AdminOnboardingInsightsOut
     deletions: AdminDeletionInsightsOut
@@ -558,10 +589,88 @@ class SubscriptionSchema(BaseSchema):
     workspace_id: int
     plan: str
     status: str
+    billing_status: Optional[str] = None
+    stripe_customer_id: Optional[str] = None
+    stripe_subscription_id: Optional[str] = None
+    stripe_price_id: Optional[str] = None
     current_period_start: Optional[datetime]
     current_period_end: Optional[datetime]
+    cancel_at_period_end: Optional[bool] = None
+    reports_limit_monthly: Optional[int] = None
+    slides_per_report_limit: Optional[int] = None
+    platform_report_type: Optional[str] = None
+    ai_chat_with_data: Optional[bool] = None
+    storage_limit_gb: Optional[int] = None
+    export_pdf: Optional[bool] = None
+    export_pptx: Optional[bool] = None
+    brand_personalization: Optional[bool] = None
+    measurable_watermark: Optional[bool] = None
+    scheduled_reports_limit: Optional[int] = None
+    trial_new_features: Optional[bool] = None
     created_at: datetime
     updated_at: datetime
+
+
+class BillingMeOut(BaseModel):
+    plan_code: str = "free"
+    plan_name: str = "Free"
+    billing_status: str = "free"
+    current_period_end: Optional[datetime] = None
+    price_monthly_usd: int = 0
+    cancel_at_period_end: bool = False
+    reports_limit_monthly: Optional[int] = None
+    reports_used_current_month: int = 0
+    slides_per_report_limit: int = 5
+    platform_report_type: str = "single_platform"
+    ai_chat_with_data: bool = True
+    storage_limit_gb: int = 1
+    export_pdf: bool = True
+    export_pptx: bool = False
+    brand_personalization: bool = False
+    measurable_watermark: bool = True
+    scheduled_reports_limit: Optional[int] = 0
+    trial_new_features: bool = False
+
+
+class BillingCheckoutSessionIn(BaseModel):
+    plan_code: Literal["starter", "pro", "advanced"]
+
+
+class BillingPlanSnapshotOut(BaseModel):
+    plan_code: str
+    plan_name: str
+    price_monthly_usd: int
+    reports_limit_monthly: Optional[int] = None
+    slides_per_report_limit: int
+    export_pdf: bool
+    export_pptx: bool
+    brand_personalization: bool
+    measurable_watermark: bool
+    scheduled_reports_limit: Optional[int] = 0
+
+
+class BillingPlanChangePreviewOut(BaseModel):
+    action_mode: Literal["checkout", "updated", "already_on_plan"] = "checkout"
+    requires_confirmation: bool = False
+    billing_status: str = "free"
+    current_period_end: Optional[datetime] = None
+    billing_note: str
+    current_plan: BillingPlanSnapshotOut
+    new_plan: BillingPlanSnapshotOut
+
+
+class BillingCheckoutSessionOut(BaseModel):
+    mode: Literal["checkout", "updated", "already_on_plan"] = "checkout"
+    checkout_url: Optional[str] = None
+    plan_code: Optional[Literal["starter", "pro", "advanced"]] = None
+    billing_status: Optional[str] = None
+    plan_name: Optional[str] = None
+    price_monthly_usd: Optional[int] = None
+    current_period_end: Optional[datetime] = None
+
+
+class BillingPortalSessionOut(BaseModel):
+    portal_url: str
 
 
 class DatasetSchema(BaseSchema):
@@ -702,6 +811,7 @@ class WorkspaceCreateIn(BaseModel):
 
 class WorkspaceUpdateIn(BaseModel):
     name: Optional[str] = None
+    account_display_name: Optional[str] = None
     logo_url: Optional[str] = None
     brand_name: Optional[str] = None
     brand_logo_url: Optional[str] = None
@@ -714,6 +824,15 @@ class WorkspaceAccountDisplayNameUpdateIn(BaseModel):
 class WorkspaceBrandingUpdateIn(BaseModel):
     brand_name: Optional[str] = None
     brand_logo_url: Optional[str] = None
+    brandName: Optional[str] = None
+    name: Optional[str] = None
+    logo_url: Optional[str] = None
+    logoUrl: Optional[str] = None
+    remove_logo: Optional[bool] = None
+
+
+class WorkspaceBrandingLogoUploadOut(BaseModel):
+    logo_url: str
 
 
 class PlanLimitsOut(BaseModel):
@@ -1044,6 +1163,56 @@ class ReportExportOut(BaseModel):
     status: str
     download_url: str
     file_name: str
+
+
+class ReportShareCreateOut(BaseModel):
+    status: str = "ok"
+    report_id: int
+    share_token: str
+    share_url: str
+
+
+class ReportShareRevokeOut(BaseModel):
+    status: str = "ok"
+    report_id: int
+    revoked: bool = True
+
+
+class PublicSharedReportOut(BaseModel):
+    id: int
+    workspace_id: int
+    title: str
+    integration_type: Optional[str] = None
+    integration_label: Optional[str] = None
+    source_name: Optional[str] = None
+    channel: Optional[str] = None
+    brand_name: Optional[str] = None
+    logo_url: Optional[str] = None
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    template: Optional[str] = None
+    description: Optional[dict] = None
+    timeframe: Optional[dict] = None
+    locale: str = "en"
+    branding: BrandingOut = BrandingOut()
+    thumbnail_url: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PublicSharedReportVersionOut(BaseModel):
+    id: int
+    report_id: int
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class PublicReportOut(BaseModel):
+    report: PublicSharedReportOut
+    version: PublicSharedReportVersionOut
+    blocks: list[ReportBlockOut] = Field(default_factory=list)
+    is_public_share: bool = True
 
 
 class ReportBlockUpdateIn(BaseModel):

@@ -3,7 +3,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
+from time import perf_counter
 from decimal import Decimal, ROUND_HALF_UP
 from functools import lru_cache
 from datetime import date, datetime, timedelta, timezone
@@ -37,6 +39,7 @@ from .models import (
     Report,
     ReportBlock,
     ReportVersion,
+    Schedule,
     Subscription,
     User,
     UserAttribution,
@@ -48,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_REPORT_LOCALES = {"en", "es"}
 DEFAULT_WORKSPACE_PLAN = "free"
+FREE_REPORTS_LIMIT = 10
 OPTIONAL_REFERRAL_TABLES = frozenset(
     {
         "user_attributions",
@@ -99,48 +103,79 @@ def _log_optional_referral_table_unavailable(
         },
     )
 
-
-PLAN_ALIASES = {"pro": "advanced"}
-PLAN_LIMITS = {
+PLAN_ALIASES = {"core": "pro"}
+PLAN_ENTITLEMENTS = {
     "free": {
-        "reports_per_month": 5,
-        "max_slides_per_report": 5,
-        "max_slides": 5,
-        "storage_limit_bytes": 1 * 1024 * 1024 * 1024,
-        "allow_pdf_export": True,
-        "allow_pptx_export": False,
-        "allow_ai_agents": False,
-        "allow_custom_branding": False,
+        "plan_code": "free",
+        "price_monthly_usd": 0,
+        "reports_limit_monthly": 10,
+        "reports_limit_is_temporary": True,
+        "slides_per_report_limit": 5,
+        "platform_report_type": "single_platform",
+        "ai_chat_with_data": True,
+        "storage_limit_gb": 1,
+        "export_pdf": True,
+        "export_pptx": False,
+        "brand_personalization": False,
+        "measurable_watermark": True,
+        "scheduled_reports_limit": 0,
+        "trial_new_features": False,
+        "unlimited_reports": False,
+        "unlimited_scheduled_reports": False,
     },
     "starter": {
-        "reports_per_month": 10,
-        "max_slides_per_report": 10,
-        "max_slides": 10,
-        "storage_limit_bytes": 5 * 1024 * 1024 * 1024,
-        "allow_pdf_export": True,
-        "allow_pptx_export": False,
-        "allow_ai_agents": False,
-        "allow_custom_branding": True,
+        "plan_code": "starter",
+        "price_monthly_usd": 19,
+        "reports_limit_monthly": 10,
+        "reports_limit_is_temporary": False,
+        "slides_per_report_limit": 10,
+        "platform_report_type": "two_to_three_platforms",
+        "ai_chat_with_data": True,
+        "storage_limit_gb": 3,
+        "export_pdf": True,
+        "export_pptx": True,
+        "brand_personalization": True,
+        "measurable_watermark": False,
+        "scheduled_reports_limit": 0,
+        "trial_new_features": True,
+        "unlimited_reports": False,
+        "unlimited_scheduled_reports": False,
     },
-    "core": {
-        "reports_per_month": 30,
-        "max_slides_per_report": 15,
-        "max_slides": 15,
-        "storage_limit_bytes": 15 * 1024 * 1024 * 1024,
-        "allow_pdf_export": True,
-        "allow_pptx_export": True,
-        "allow_ai_agents": True,
-        "allow_custom_branding": True,
+    "pro": {
+        "plan_code": "pro",
+        "price_monthly_usd": 39,
+        "reports_limit_monthly": 30,
+        "reports_limit_is_temporary": False,
+        "slides_per_report_limit": 15,
+        "platform_report_type": "multi_platform",
+        "ai_chat_with_data": True,
+        "storage_limit_gb": 5,
+        "export_pdf": True,
+        "export_pptx": True,
+        "brand_personalization": True,
+        "measurable_watermark": False,
+        "scheduled_reports_limit": 3,
+        "trial_new_features": True,
+        "unlimited_reports": False,
+        "unlimited_scheduled_reports": False,
     },
     "advanced": {
-        "reports_per_month": None,
-        "max_slides_per_report": 30,
-        "max_slides": 30,
-        "storage_limit_bytes": 30 * 1024 * 1024 * 1024,
-        "allow_pdf_export": True,
-        "allow_pptx_export": True,
-        "allow_ai_agents": True,
-        "allow_custom_branding": True,
+        "plan_code": "advanced",
+        "price_monthly_usd": 99,
+        "reports_limit_monthly": None,
+        "reports_limit_is_temporary": False,
+        "slides_per_report_limit": 30,
+        "platform_report_type": "multi_platform",
+        "ai_chat_with_data": True,
+        "storage_limit_gb": 10,
+        "export_pdf": True,
+        "export_pptx": True,
+        "brand_personalization": True,
+        "measurable_watermark": False,
+        "scheduled_reports_limit": None,
+        "trial_new_features": True,
+        "unlimited_reports": True,
+        "unlimited_scheduled_reports": True,
     },
 }
 
@@ -154,36 +189,72 @@ MEASURABLE_BRANDING_LOGO_URL: str = str(
 def normalize_workspace_plan(plan: Any) -> str:
     normalized = str(plan or DEFAULT_WORKSPACE_PLAN).strip().lower()
     normalized = PLAN_ALIASES.get(normalized, normalized)
-    if normalized in PLAN_LIMITS:
+    if normalized in PLAN_ENTITLEMENTS:
         return normalized
     return DEFAULT_WORKSPACE_PLAN
 
 
-def get_workspace_plan(db: Session, workspace_id: int) -> str:
+def get_plan_entitlements(plan_code: str) -> dict[str, Any]:
+    normalized_plan = normalize_workspace_plan(plan_code)
+    return dict(PLAN_ENTITLEMENTS[normalized_plan])
+
+
+def get_plan_limits(plan: str) -> dict[str, Any]:
+    entitlements = get_plan_entitlements(plan)
+    storage_limit_gb = int(entitlements["storage_limit_gb"])
+    reports_limit_monthly = entitlements["reports_limit_monthly"]
+    return {
+        **entitlements,
+        "reports_per_month": reports_limit_monthly,
+        "max_slides_per_report": int(entitlements["slides_per_report_limit"]),
+        "max_slides": int(entitlements["slides_per_report_limit"]),
+        "storage_limit_bytes": storage_limit_gb * 1024 * 1024 * 1024,
+        "allow_pdf_export": bool(entitlements["export_pdf"]),
+        "allow_pptx_export": bool(entitlements["export_pptx"]),
+        "allow_custom_branding": bool(entitlements["brand_personalization"]),
+        "allow_ai_agents": normalize_workspace_plan(plan) in {"pro", "advanced"},
+    }
+
+
+def get_stripe_price_plan_mapping() -> dict[str, str]:
+    mapping = {
+        str(settings.stripe_price_starter_monthly or "").strip(): "starter",
+        str(settings.stripe_price_pro_monthly or "").strip(): "pro",
+        str(settings.stripe_price_advanced_monthly or "").strip(): "advanced",
+    }
+    return {price_id: plan_code for price_id, plan_code in mapping.items() if price_id}
+
+
+def get_plan_code_for_stripe_price(price_id: str | None) -> str | None:
+    normalized_price_id = str(price_id or "").strip()
+    if not normalized_price_id:
+        return None
+    return get_stripe_price_plan_mapping().get(normalized_price_id)
+
+
+def get_workspace_subscription(db: Session, workspace_id: int) -> Subscription | None:
     active_subscription = (
         db.query(Subscription)
         .filter(Subscription.workspace_id == workspace_id, Subscription.status == "active")
         .order_by(Subscription.created_at.desc(), Subscription.id.desc())
         .first()
     )
-    if active_subscription:
-        return normalize_workspace_plan(active_subscription.plan)
-
-    latest_subscription = (
+    if active_subscription is not None:
+        return active_subscription
+    return (
         db.query(Subscription)
         .filter(Subscription.workspace_id == workspace_id)
         .order_by(Subscription.created_at.desc(), Subscription.id.desc())
         .first()
     )
-    if latest_subscription:
-        return normalize_workspace_plan(latest_subscription.plan)
+
+
+def get_workspace_plan(db: Session, workspace_id: int) -> str:
+    active_subscription = get_workspace_subscription(db, workspace_id)
+    if active_subscription:
+        return normalize_workspace_plan(active_subscription.plan)
 
     return DEFAULT_WORKSPACE_PLAN
-
-
-def get_plan_limits(plan: str) -> dict[str, Any]:
-    normalized_plan = normalize_workspace_plan(plan)
-    return dict(PLAN_LIMITS[normalized_plan])
 
 
 def get_plan_capabilities(plan: str) -> dict[str, Any]:
@@ -209,6 +280,81 @@ def get_workspace_plan_capabilities(db: Session, workspace_id: int) -> dict[str,
 def get_workspace_plan_details(db: Session, workspace_id: int) -> dict[str, Any]:
     plan = get_workspace_plan(db, workspace_id)
     return {"plan": plan, "limits": get_plan_limits(plan)}
+
+
+def apply_plan_entitlements(subscription: Subscription, plan_code: str) -> Subscription:
+    normalized_plan = normalize_workspace_plan(plan_code)
+    entitlements = get_plan_entitlements(normalized_plan)
+    subscription.plan = normalized_plan
+    subscription.reports_limit_monthly = entitlements["reports_limit_monthly"]
+    subscription.reports_limit_is_temporary = bool(entitlements["reports_limit_is_temporary"])
+    subscription.slides_per_report_limit = int(entitlements["slides_per_report_limit"])
+    subscription.platform_report_type = str(entitlements["platform_report_type"])
+    subscription.ai_chat_with_data = bool(entitlements["ai_chat_with_data"])
+    subscription.storage_limit_gb = int(entitlements["storage_limit_gb"])
+    subscription.export_pdf = bool(entitlements["export_pdf"])
+    subscription.export_pptx = bool(entitlements["export_pptx"])
+    subscription.brand_personalization = bool(entitlements["brand_personalization"])
+    subscription.measurable_watermark = bool(entitlements["measurable_watermark"])
+    subscription.scheduled_reports_limit = entitlements["scheduled_reports_limit"]
+    subscription.trial_new_features = bool(entitlements["trial_new_features"])
+    return subscription
+
+
+def get_subscription_entitlements(subscription: Subscription | None) -> dict[str, Any]:
+    if subscription is None:
+        return get_plan_entitlements(DEFAULT_WORKSPACE_PLAN)
+    fallback = get_plan_entitlements(subscription.plan or DEFAULT_WORKSPACE_PLAN)
+    return {
+        **fallback,
+        "plan_code": normalize_workspace_plan(subscription.plan or DEFAULT_WORKSPACE_PLAN),
+        "reports_limit_monthly": (
+            subscription.reports_limit_monthly
+            if subscription.reports_limit_monthly is not None or fallback["reports_limit_monthly"] is None
+            else fallback["reports_limit_monthly"]
+        ),
+        "reports_limit_is_temporary": (
+            bool(subscription.reports_limit_is_temporary)
+            if subscription.reports_limit_is_temporary is not None
+            else bool(fallback["reports_limit_is_temporary"])
+        ),
+        "slides_per_report_limit": int(subscription.slides_per_report_limit or fallback["slides_per_report_limit"]),
+        "platform_report_type": str(subscription.platform_report_type or fallback["platform_report_type"]),
+        "ai_chat_with_data": (
+            bool(subscription.ai_chat_with_data)
+            if subscription.ai_chat_with_data is not None
+            else bool(fallback["ai_chat_with_data"])
+        ),
+        "storage_limit_gb": int(subscription.storage_limit_gb or fallback["storage_limit_gb"]),
+        "export_pdf": bool(subscription.export_pdf) if subscription.export_pdf is not None else bool(fallback["export_pdf"]),
+        "export_pptx": (
+            bool(subscription.export_pptx)
+            if subscription.export_pptx is not None
+            else bool(fallback["export_pptx"])
+        ),
+        "brand_personalization": (
+            bool(subscription.brand_personalization)
+            if subscription.brand_personalization is not None
+            else bool(fallback["brand_personalization"])
+        ),
+        "measurable_watermark": (
+            bool(subscription.measurable_watermark)
+            if subscription.measurable_watermark is not None
+            else bool(fallback["measurable_watermark"])
+        ),
+        "scheduled_reports_limit": (
+            subscription.scheduled_reports_limit
+            if subscription.scheduled_reports_limit is not None or fallback["scheduled_reports_limit"] is None
+            else fallback["scheduled_reports_limit"]
+        ),
+        "trial_new_features": (
+            bool(subscription.trial_new_features)
+            if subscription.trial_new_features is not None
+            else bool(fallback["trial_new_features"])
+        ),
+        "unlimited_reports": bool(fallback["unlimited_reports"]),
+        "unlimited_scheduled_reports": bool(fallback["unlimited_scheduled_reports"]),
+    }
 
 
 def get_workspace_storage_limit(db: Session, workspace_id: int) -> int:
@@ -256,6 +402,55 @@ def count_workspace_reports_this_month(
     return int(count or 0)
 
 
+def count_workspace_reports_total(db: Session, workspace_id: int) -> int:
+    count = db.query(func.count(Report.id)).filter(Report.workspace_id == workspace_id).scalar()
+    return int(count or 0)
+
+
+def get_remaining_reports(db: Session, workspace_id: int) -> int | None:
+    plan = get_workspace_plan(db, workspace_id)
+    limits = get_plan_limits(plan)
+    monthly_limit = limits["reports_per_month"]
+    if monthly_limit is None:
+        return None
+    monthly_remaining = max(int(monthly_limit) - count_workspace_reports_this_month(db, workspace_id), 0)
+    if normalize_workspace_plan(plan) == "free":
+        total_remaining = max(FREE_REPORTS_LIMIT - count_workspace_reports_total(db, workspace_id), 0)
+        return min(monthly_remaining, total_remaining)
+    return monthly_remaining
+
+
+def can_create_report(db: Session, workspace_id: int) -> bool:
+    return get_remaining_reports(db, workspace_id) != 0
+
+
+def can_export_pptx(db: Session, workspace_id: int) -> bool:
+    return bool(get_plan_limits(get_workspace_plan(db, workspace_id))["export_pptx"])
+
+
+def can_use_brand_personalization(db: Session, workspace_id: int) -> bool:
+    return bool(get_plan_limits(get_workspace_plan(db, workspace_id))["brand_personalization"])
+
+
+def can_use_multi_platform_report(db: Session, workspace_id: int) -> bool:
+    return str(get_plan_limits(get_workspace_plan(db, workspace_id))["platform_report_type"]) != "single_platform"
+
+
+def can_schedule_report(db: Session, workspace_id: int) -> bool:
+    limits = get_plan_limits(get_workspace_plan(db, workspace_id))
+    scheduled_limit = limits["scheduled_reports_limit"]
+    if scheduled_limit is None:
+        return True
+    if int(scheduled_limit) <= 0:
+        return False
+    existing_count = (
+        db.query(func.count(Schedule.id))
+        .filter(Schedule.workspace_id == workspace_id, Schedule.enabled.is_(True))
+        .scalar()
+    )
+    return int(existing_count or 0) < int(scheduled_limit)
+
+
 def enforce_monthly_report_limit(db: Session, workspace_id: int) -> dict[str, Any]:
     plan_details = get_workspace_plan_details(db, workspace_id)
     report_limit = plan_details["limits"]["reports_per_month"]
@@ -269,6 +464,28 @@ def enforce_monthly_report_limit(db: Session, workspace_id: int) -> dict[str, An
             "monthly_report_limit_reached",
             "Monthly report limit reached for current plan.",
         )
+    return plan_details
+
+
+class FreeReportLimitReachedError(Exception):
+    def __init__(self, *, workspace_id: int, reports_created: int, report_limit: int) -> None:
+        super().__init__("Free report limit reached.")
+        self.workspace_id = workspace_id
+        self.reports_created = reports_created
+        self.report_limit = report_limit
+
+
+def enforce_report_creation_limit(db: Session, workspace_id: int) -> dict[str, Any]:
+    plan_details = get_workspace_plan_details(db, workspace_id)
+    if normalize_workspace_plan(plan_details["plan"]) == "free":
+        reports_created = count_workspace_reports_total(db, workspace_id)
+        if reports_created >= FREE_REPORTS_LIMIT:
+            raise FreeReportLimitReachedError(
+                workspace_id=workspace_id,
+                reports_created=reports_created,
+                report_limit=FREE_REPORTS_LIMIT,
+            )
+    enforce_monthly_report_limit(db, workspace_id)
     return plan_details
 
 
@@ -439,7 +656,9 @@ def register_user_with_default_workspace(
         workspace_id=workspace.id,
         plan=DEFAULT_WORKSPACE_PLAN,
         status="active",
+        billing_status="free",
     )
+    apply_plan_entitlements(subscription, DEFAULT_WORKSPACE_PLAN)
     db.add(subscription)
     return user, workspace, subscription
 
@@ -1073,7 +1292,29 @@ def build_conversation_title(message: str) -> str:
 
 
 def build_workspace_ai_no_data_response() -> str:
-    return "No report or dataset is available for this workspace yet. Please sync data or select a report first."
+    return "No report context is available yet. Open a report and ask me about its metrics."
+
+
+AI_PRODUCT_REDIRECT_RESPONSE = (
+    "Desde este asistente puedo ayudarte a interpretar el reporte abierto y relacionarlo con datos adicionales "
+    "que me compartas aquí. Para funciones de carga, generación o configuración de la plataforma, revisa el flujo principal de Measurable."
+)
+
+AI_PRODUCT_QUESTION_PATTERNS = (
+    re.compile(r"\b(subir|cargar|adjuntar)\b.*\b(excel|csv|archivo)\b", re.IGNORECASE),
+    re.compile(r"\b(excel|csv)\b.*\b(reporte|report)\b", re.IGNORECASE),
+    re.compile(r"\b(conectar|integrar|integration|integraci[oó]n)\b", re.IGNORECASE),
+    re.compile(r"\b(exportar|descargar)\b.*\b(pptx|pdf|powerpoint)\b", re.IGNORECASE),
+    re.compile(r"\b(automatizar|programar|schedule|scheduled)\b.*\b(reportes|reporte|reports|report)\b", re.IGNORECASE),
+    re.compile(r"\b(onboarding|pricing|planes|plan upgrade|upgrade)\b", re.IGNORECASE),
+)
+
+
+def _is_ai_product_question(user_message: str) -> bool:
+    text = " ".join(str(user_message or "").strip().split())
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in AI_PRODUCT_QUESTION_PATTERNS)
 
 
 def _extract_workspace_metric_value(data: dict[str, Any], key: str) -> Any:
@@ -1134,6 +1375,127 @@ def build_workspace_data_snapshot(db: Session, workspace_id: int) -> dict[str, A
     }
 
 
+def _truncate_text_for_ai(value: Any, limit: int = 280) -> Any:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return value
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"...[truncated {len(text) - limit} chars]"
+
+
+def _summarize_ai_value(value: Any, *, list_limit: int = 5, text_limit: int = 280) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _truncate_text_for_ai(value, text_limit)
+    if isinstance(value, list):
+        items = [_summarize_ai_value(item, list_limit=3, text_limit=160) for item in value[:list_limit]]
+        if len(value) > list_limit:
+            items.append({"truncated_items": len(value) - list_limit})
+        return items
+    if isinstance(value, dict):
+        summary: dict[str, Any] = {}
+        for key in list(value.keys())[:12]:
+            summary[str(key)] = _summarize_ai_value(value.get(key), list_limit=3, text_limit=160)
+        if len(value) > 12:
+            summary["_truncated_keys"] = len(value) - 12
+        return summary
+    return _truncate_text_for_ai(value, text_limit)
+
+
+def _extract_dataset_sample_rows(dataset_data: dict[str, Any], *, limit: int = 20) -> list[dict[str, Any]]:
+    for key in ("rows", "records", "items", "data"):
+        candidate = dataset_data.get(key)
+        if isinstance(candidate, list) and candidate and all(isinstance(item, dict) for item in candidate[: min(len(candidate), 3)]):
+            return [
+                _summarize_ai_value(item, list_limit=3, text_limit=160)
+                for item in candidate[:limit]
+                if isinstance(item, dict)
+            ]
+    return []
+
+
+def _build_dataset_snapshot_for_ai(resolved_dataset: Dataset | None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    dataset_data = resolved_dataset.data if resolved_dataset and isinstance(resolved_dataset.data, dict) else {}
+    report_inputs = extract_meta_pages_report_inputs(dataset_data) if dataset_data else {}
+    normalized_metrics = (
+        dataset_data.get("normalized_report_metrics")
+        if isinstance(dataset_data.get("normalized_report_metrics"), dict)
+        else {}
+    )
+    metric_summary: dict[str, Any] = {}
+    for key in (
+        "reach",
+        "engagement",
+        "followers",
+        "impressions",
+        "profile_visits",
+        "link_clicks",
+        "interactions_total",
+        "impressions_total",
+        "followers_growth_total",
+        "page_visits_total",
+    ):
+        value = dataset_data.get(key)
+        if value is None:
+            value = normalized_metrics.get(key)
+        if value is not None:
+            metric_summary[key] = value
+
+    dataset_summary: dict[str, Any] = {
+        "integration_type": dataset_data.get("integration_type"),
+        "page_name": dataset_data.get("page_name"),
+        "account_name": dataset_data.get("account_name") or dataset_data.get("name"),
+        "username": dataset_data.get("username") or dataset_data.get("instagram_username"),
+        "timeframe": _summarize_ai_value(dataset_data.get("timeframe"), list_limit=4, text_limit=120),
+        "metrics": metric_summary,
+        "sample_rows": _extract_dataset_sample_rows(dataset_data),
+    }
+
+    report_inputs_for_ai = _summarize_ai_value(report_inputs, list_limit=6, text_limit=180)
+    if not isinstance(report_inputs_for_ai, dict):
+        report_inputs_for_ai = {}
+    if resolved_dataset is not None:
+        report_inputs_for_ai.setdefault("dataset_id", resolved_dataset.id)
+        report_inputs_for_ai.setdefault("dataset_name", resolved_dataset.name)
+        report_inputs_for_ai.setdefault("dataset_description", _truncate_text_for_ai(resolved_dataset.description, 180))
+        report_inputs_for_ai.setdefault("dataset_summary", dataset_summary)
+
+    dataset_snapshot: dict[str, Any] = {
+        "id": resolved_dataset.id if resolved_dataset is not None else None,
+        "name": resolved_dataset.name if resolved_dataset is not None else None,
+        "description": resolved_dataset.description if resolved_dataset is not None else None,
+        "summary": dataset_summary,
+        "file": {},
+    }
+    return dataset_snapshot, report_inputs_for_ai, dataset_data
+
+
+def _build_report_blocks_snapshot_for_ai(report_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summarized_blocks: list[dict[str, Any]] = []
+    for block in report_blocks[:20]:
+        block_data = block.get("data") if isinstance(block.get("data"), dict) else {}
+        summarized_blocks.append(
+            {
+                "id": block.get("id"),
+                "type": block.get("type"),
+                "order": block.get("order"),
+                "title": _truncate_text_for_ai(block_data.get("title"), 180),
+                "subtitle": _truncate_text_for_ai(block_data.get("subtitle"), 220),
+                "metric_key": block_data.get("metric_key"),
+                "current_value": block_data.get("current_value", block_data.get("value")),
+                "insight": _truncate_text_for_ai(
+                    block_data.get("insight_short") or block_data.get("insight") or block_data.get("summary"),
+                    260,
+                ),
+            }
+        )
+    return summarized_blocks
+
+
 def build_ai_chat_context_snapshot(
     db: Session,
     *,
@@ -1151,14 +1513,18 @@ def build_ai_chat_context_snapshot(
     report_description = _load_json(report.description, {}) if report and report.description else {}
     report_version = None
     report_blocks: list[dict[str, Any]] = []
-    if report is not None:
+    try:
+        available_tables = set(inspect(engine).get_table_names())
+    except SQLAlchemyError:
+        available_tables = set()
+    if report is not None and "report_versions" in available_tables:
         report_version = (
             db.query(ReportVersion)
             .filter(ReportVersion.report_id == report.id)
             .order_by(ReportVersion.version.desc(), ReportVersion.id.desc())
             .first()
         )
-        if report_version is not None:
+        if report_version is not None and "report_blocks" in available_tables:
             blocks = (
                 db.query(ReportBlock)
                 .filter(ReportBlock.report_version_id == report_version.id)
@@ -1178,36 +1544,25 @@ def build_ai_chat_context_snapshot(
                     }
                 )
 
-    dataset_data = resolved_dataset.data if resolved_dataset and isinstance(resolved_dataset.data, dict) else {}
-    report_inputs = extract_meta_pages_report_inputs(dataset_data) if dataset_data else {}
-    report_inputs_for_ai = dict(report_inputs)
-    if resolved_dataset is not None:
-        report_inputs_for_ai.setdefault("dataset_id", resolved_dataset.id)
-        report_inputs_for_ai.setdefault("dataset_name", resolved_dataset.name)
-        report_inputs_for_ai.setdefault("dataset_description", resolved_dataset.description)
-        report_inputs_for_ai.setdefault("dataset_data", dataset_data)
+    dataset_snapshot, report_inputs_for_ai, dataset_data = _build_dataset_snapshot_for_ai(resolved_dataset)
+    summarized_report_blocks = _build_report_blocks_snapshot_for_ai(report_blocks)
 
     report_snapshot: dict[str, Any] = {
         "id": report.id if report is not None else None,
         "title": report.name if report is not None else None,
         "name": report.name if report is not None else None,
-        "description": report_description if isinstance(report_description, dict) else {},
+        "description": _summarize_ai_value(report_description, list_limit=6, text_limit=220)
+        if isinstance(report_description, dict)
+        else {},
         "timeframe": report_description.get("timeframe") if isinstance(report_description, dict) else None,
         "latest_version": {
             "id": report_version.id if report_version is not None else None,
             "version": report_version.version if report_version is not None else None,
         },
-        "slides": report_blocks,
-        "blocks": report_blocks,
+        "slides": summarized_report_blocks,
+        "blocks": summarized_report_blocks,
     }
-    dataset_snapshot: dict[str, Any] = {
-        "id": resolved_dataset.id if resolved_dataset is not None else None,
-        "name": resolved_dataset.name if resolved_dataset is not None else None,
-        "description": resolved_dataset.description if resolved_dataset is not None else None,
-        "data": dataset_data,
-        "file": {},
-    }
-    if resolved_dataset is not None:
+    if resolved_dataset is not None and "dataset_files" in available_tables:
         latest_file = (
             db.query(DatasetFile)
             .filter(DatasetFile.dataset_id == resolved_dataset.id)
@@ -1229,7 +1584,7 @@ def build_ai_chat_context_snapshot(
         },
         "route_context": {
             "current_route": current_route,
-            "page_context": page_context or {},
+            "page_context": _summarize_ai_value(page_context or {}, list_limit=4, text_limit=180),
         },
         "report": report_snapshot,
         "dataset": dataset_snapshot,
@@ -1240,11 +1595,18 @@ def build_ai_chat_context_snapshot(
 def _build_ai_system_prompt(chat_context: dict[str, Any]) -> str:
     context_json = json.dumps(chat_context, ensure_ascii=False, default=str, indent=2)
     return (
-        "You are the AI assistant inside Measurable.\n"
-        "Answer only with the information provided in the context below.\n"
-        "Do not invent metrics, dates, report names, or dataset values.\n"
+        "You are Measurable's Report Analysis Assistant.\n"
+        "Your only job is to help the user interpret the open report using the report context below and any extra data the user writes in the chat.\n"
+        "Focus on report metrics, slides, summaries, trends, comparisons, and analysis.\n"
+        "Do not invent product features, onboarding steps, roadmap items, integrations, exports, uploads, or platform capabilities.\n"
+        "If the user asks about product/platform functions outside the report, redirect them briefly toward report interpretation instead of answering with feature guidance.\n"
+        "Use only the information in the context plus the user's manual inputs.\n"
+        "Do not invent metrics, dates, report names, dataset values, costs, or causal claims.\n"
+        "If the user provides outside business data manually, use it only for calculations and analysis related to this report.\n"
+        "When discussing relationships between report metrics and outside business data, frame it as correlation or directional evidence, not causation.\n"
+        "If spend or investment is missing, do not calculate cost metrics; say that investment data is required.\n"
         "If a metric is missing or unavailable, say so clearly.\n"
-        "Keep the answer concise, specific, and business-focused.\n\n"
+        "Keep the answer concise, executive, actionable, and grounded in the report.\n\n"
         "Context JSON:\n"
         f"{context_json}"
     )
@@ -1258,6 +1620,9 @@ def generate_workspace_ai_reply(
     user_message: str,
     chat_context: dict[str, Any] | None = None,
 ) -> str:
+    if _is_ai_product_question(user_message):
+        return AI_PRODUCT_REDIRECT_RESPONSE
+
     if not settings.anthropic_api_key:
         logger.error(
             "ai_chat_provider_error",
@@ -1412,29 +1777,83 @@ def normalize_branding_payload(branding: Any) -> dict[str, Optional[str]]:
     }
 
 
-def _normalize_public_logo_url(value: Any) -> str | None:
+def _branding_asset_base_url() -> str:
+    configured_api_base = str(settings.api_base_url or "").strip().rstrip("/")
+    if configured_api_base:
+        return configured_api_base
+    configured_export_base = str(settings.report_export_base_url or "").strip().rstrip("/")
+    frontend_base = str(settings.frontend_url or settings.frontend_base_url or "").strip().rstrip("/")
+    if configured_export_base and configured_export_base != frontend_base:
+        return configured_export_base
+    if frontend_base.startswith("http://localhost:3000"):
+        return frontend_base.replace("http://localhost:3000", "http://localhost:8001", 1)
+    if frontend_base.startswith("http://127.0.0.1:3000"):
+        return frontend_base.replace("http://127.0.0.1:3000", "http://127.0.0.1:8001", 1)
+    return ""
+
+
+def _frontend_base_url() -> str:
+    return str(settings.frontend_url or settings.frontend_base_url or "").strip().rstrip("/")
+
+
+def _workspace_brand_logo_path(workspace_id: int, asset_name: str) -> str:
+    return f"/workspace/branding/logo/{workspace_id}/{asset_name}"
+
+
+def _normalize_public_logo_url(value: Any, *, workspace_id: int | None = None) -> str | None:
     raw = str(value or "").strip()
     if not raw:
         return None
     parsed = urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
-    return raw
+    base_url = _branding_asset_base_url()
+    if parsed.path.startswith("/workspace/branding/logo/"):
+        raw_origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/") if parsed.scheme and parsed.netloc else ""
+        frontend_origin = _frontend_base_url()
+        if raw_origin and frontend_origin and raw_origin == frontend_origin and base_url:
+            return f"{base_url}{parsed.path}"
+        if raw_origin:
+            return raw
+        if base_url:
+            return f"{base_url}{parsed.path}"
+        return parsed.path
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return raw
+    if raw.startswith("/"):
+        return f"{base_url}{raw}" if base_url else raw
+
+    normalized_path = raw
+    if raw.startswith("workspace/branding/logo/"):
+        normalized_path = f"/{raw}"
+        return f"{base_url}{normalized_path}" if base_url else normalized_path
+
+    file_name = os.path.basename(raw)
+    if (
+        workspace_id
+        and "/" not in raw
+        and file_name == raw
+        and "." in file_name
+    ):
+        normalized_path = _workspace_brand_logo_path(workspace_id, file_name)
+        return f"{base_url}{normalized_path}" if base_url else normalized_path
+
+    return None
 
 
 def _normalize_workspace_branding_source(workspace: Workspace | dict[str, Any] | None) -> dict[str, Optional[str]]:
     if workspace is None:
         return normalize_branding_payload({})
     if isinstance(workspace, dict):
+        workspace_id = workspace.get("id")
         brand_name = workspace.get("brand_name") or workspace.get("name")
         logo_url = workspace.get("brand_logo_url") or workspace.get("logo_url")
     else:
+        workspace_id = workspace.id
         brand_name = workspace.name
         logo_url = workspace.logo_url
     return normalize_branding_payload(
         {
             "brand_name": str(brand_name).strip() if brand_name else None,
-            "logo_url": _normalize_public_logo_url(logo_url),
+            "logo_url": _normalize_public_logo_url(logo_url, workspace_id=workspace_id),
         }
     )
 
@@ -1466,6 +1885,12 @@ def resolve_report_branding(
     fallback_brand_name = MEASURABLE_REPORT_BRANDING_NAME
     custom_branding_allowed = bool(get_plan_capabilities(plan).get("allow_custom_branding"))
 
+    workspace_id = None
+    if isinstance(workspace, dict):
+        workspace_id = workspace.get("id")
+    elif workspace is not None:
+        workspace_id = workspace.id
+
     preferred = normalize_branding_payload(preferred_branding)
     workspace_branding = _normalize_workspace_branding_source(workspace)
     user_branding = _normalize_user_branding_source(user)
@@ -1476,8 +1901,8 @@ def resolve_report_branding(
         or user_branding.get("brand_name")
     )
     raw_logo_url = (
-        _normalize_public_logo_url(preferred.get("logo_url"))
-        or _normalize_public_logo_url(workspace_branding.get("logo_url"))
+        _normalize_public_logo_url(preferred.get("logo_url"), workspace_id=workspace_id)
+        or _normalize_public_logo_url(workspace_branding.get("logo_url"), workspace_id=workspace_id)
         or _normalize_public_logo_url(user_branding.get("logo_url"))
     )
 
@@ -1523,7 +1948,7 @@ def resolve_workspace_branding(workspace_id: int | None) -> dict[str, Optional[s
     return normalize_branding_payload(
         {
             "name": str(workspace_name) if workspace_name else None,
-            "logo_url": str(logo_url) if logo_url else None,
+            "logo_url": _normalize_public_logo_url(logo_url, workspace_id=int(workspace_id)),
         }
     )
 
@@ -2714,6 +3139,73 @@ def build_report_pdf_export_url(
     return full_url
 
 
+def _read_pdf_dom_diagnostics(page: Any) -> dict[str, Any]:
+    try:
+        diagnostics = page.evaluate(
+            """
+            () => {
+              const body = document.body;
+              const text = body ? (body.innerText || body.textContent || "") : "";
+              return {
+                url: window.location.href,
+                title: document.title || "",
+                bodyReady: body ? body.getAttribute("data-pdf-ready") : null,
+                bodyError: body ? body.getAttribute("data-pdf-error") : null,
+                bodyErrorReason: body ? body.getAttribute("data-pdf-error-reason") : null,
+                rootReadyExists: Boolean(document.querySelector("[data-pdf-ready='true']")),
+                pdfErrorExists: Boolean(document.querySelector("[data-pdf-error='true'], [data-pdf-error]")),
+                slideCount: document.querySelectorAll("[data-report-slide='true'], [data-report-slide]").length,
+                textExcerpt: String(text || "").trim().slice(0, 1000),
+              };
+            }
+            """
+        )
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
+        body_ready = diagnostics.get("bodyReady")
+        body_error = diagnostics.get("bodyError")
+        root_ready_exists = bool(diagnostics.get("rootReadyExists"))
+        pdf_error_exists = bool(diagnostics.get("pdfErrorExists"))
+        slide_count = diagnostics.get("slideCount")
+        url = diagnostics.get("url")
+        title = diagnostics.get("title")
+        return {
+            "url": url,
+            "title": title,
+            "bodyReady": body_ready,
+            "bodyError": body_error,
+            "bodyErrorReason": diagnostics.get("bodyErrorReason"),
+            "rootReadyExists": root_ready_exists,
+            "pdfErrorExists": pdf_error_exists,
+            "slideCount": slide_count,
+            "textExcerpt": diagnostics.get("textExcerpt"),
+            "diagnostics_error": None,
+            "data_pdf_ready_exists": root_ready_exists or body_ready == "true",
+            "data_pdf_error_exists": pdf_error_exists or body_error == "true",
+            "page_url": url,
+            "page_title": title,
+            "slide_count": slide_count,
+        }
+    except Exception as exc:
+        return {
+            "diagnostics_error": str(exc)[:1000],
+            "data_pdf_ready_exists": False,
+            "data_pdf_error_exists": False,
+            "slide_count": None,
+            "page_url": None,
+            "page_title": None,
+            "url": None,
+            "title": None,
+            "bodyReady": None,
+            "bodyError": None,
+            "bodyErrorReason": None,
+            "rootReadyExists": False,
+            "pdfErrorExists": False,
+            "slideCount": None,
+            "textExcerpt": None,
+        }
+
+
 def generate_thumbnail_from_export_page(
     *,
     export_url: str,
@@ -2733,12 +3225,14 @@ def generate_thumbnail_from_export_page(
 
     timeout_ms = max(int(settings.pdf_export_timeout_ms), 1000)
     ready_selector = settings.pdf_export_ready_selector
-    viewport_width = int(settings.pdf_export_viewport_width)
-    viewport_height = int(settings.pdf_export_viewport_height)
+    viewport_width = 1600
+    viewport_height = 900
     device_scale_factor = float(settings.pdf_export_device_scale_factor)
     auth_strategy = "authorization_header_report_export_token"
     report_fetch_events: list[dict[str, Any]] = []
     slide_selector_used: str | None = None
+    ready_selector_timed_out = False
+    networkidle_timed_out = False
     slide_selectors = [
         "[data-report-slide]",
         "[data-report-page]",
@@ -2790,10 +3284,33 @@ def generate_thumbnail_from_export_page(
 
             page.on("response", _handle_response)
             page.goto(export_url, wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            try:
+                page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            except PlaywrightTimeoutError:
+                networkidle_timed_out = True
+                logger.warning(
+                    "Report thumbnail generation continued without networkidle",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "auth_strategy": auth_strategy,
+                    },
+                )
             page.evaluate("() => document.fonts.ready")
             if ready_selector:
-                page.wait_for_selector(ready_selector, timeout=timeout_ms)
+                try:
+                    page.wait_for_selector(ready_selector, timeout=timeout_ms)
+                except PlaywrightTimeoutError:
+                    ready_selector_timed_out = True
+                    logger.warning(
+                        "Report thumbnail generation continued without export-ready selector",
+                        extra={
+                            "report_id": report_id,
+                            "export_url": export_url,
+                            "auth_strategy": auth_strategy,
+                            "ready_selector": ready_selector,
+                        },
+                    )
 
             screenshot_bytes: bytes | None = None
             for selector in slide_selectors:
@@ -2851,6 +3368,8 @@ def generate_thumbnail_from_export_page(
             "thumbnail_bytes": len(screenshot_bytes),
             "slide_selector_used": slide_selector_used,
             "report_fetch_succeeded": any(event.get("ok") for event in report_fetch_events),
+            "ready_selector_timed_out": ready_selector_timed_out,
+            "networkidle_timed_out": networkidle_timed_out,
         },
     )
     return screenshot_bytes, {
@@ -2858,6 +3377,8 @@ def generate_thumbnail_from_export_page(
         "auth_strategy": auth_strategy,
         "report_fetch_events": report_fetch_events,
         "slide_selector_used": slide_selector_used,
+        "ready_selector_timed_out": ready_selector_timed_out,
+        "networkidle_timed_out": networkidle_timed_out,
     }
 
 
@@ -2865,7 +3386,7 @@ def generate_pdf_from_export_page(
     *,
     export_url: str,
     report_id: int,
-    auth_token: str,
+    auth_token: str | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     try:
         from playwright.sync_api import Error as PlaywrightError
@@ -2878,27 +3399,65 @@ def generate_pdf_from_export_page(
             "Playwright is not installed on the backend.",
         ) from exc
 
-    timeout_ms = max(int(settings.pdf_export_timeout_ms), 1000)
-    ready_selector = settings.pdf_export_ready_selector
+    configured_timeout_ms = max(int(settings.pdf_export_timeout_ms), 1000)
+    timeout_ms = (
+        min(configured_timeout_ms, 15000)
+        if "localhost" in export_url or "127.0.0.1" in export_url
+        else configured_timeout_ms
+    )
+    ready_selector = (
+        str(settings.pdf_export_ready_selector or "").strip()
+        or '[data-pdf-ready="true"], body[data-pdf-ready="true"]'
+    )
+    if ready_selector == '[data-pdf-ready="true"]':
+        ready_selector = '[data-pdf-ready="true"], body[data-pdf-ready="true"]'
     viewport_width = int(settings.pdf_export_viewport_width)
     viewport_height = int(settings.pdf_export_viewport_height)
     device_scale_factor = float(settings.pdf_export_device_scale_factor)
     pdf_scale = float(settings.pdf_export_scale)
     pdf_margins = {
-        "top": settings.pdf_export_margin_top,
-        "right": settings.pdf_export_margin_right,
-        "bottom": settings.pdf_export_margin_bottom,
-        "left": settings.pdf_export_margin_left,
+        "top": "0px",
+        "right": "0px",
+        "bottom": "0px",
+        "left": "0px",
     }
     pdf_options = {
+        "width": "1600px",
+        "height": "900px",
         "print_background": True,
-        "prefer_css_page_size": True,
+        "prefer_css_page_size": False,
         "margin": pdf_margins,
         "scale": pdf_scale,
     }
     page_count: int | None = None
-    auth_strategy = "authorization_header_report_export_token"
+    auth_strategy = "authorization_header_report_export_token" if auth_token else "public_share_url"
     report_fetch_events: list[dict[str, Any]] = []
+    browser_console_events: list[dict[str, Any]] = []
+    browser_page_errors: list[str] = []
+    browser_request_failures: list[dict[str, Any]] = []
+    logo_status: int | None = None
+    main_response_status: int | None = None
+    current_page_url: str | None = None
+    page_title: str | None = None
+    page_text_excerpt: str | None = None
+    body_pdf_ready: str | None = None
+    body_pdf_error: str | None = None
+    body_pdf_error_reason: str | None = None
+    root_ready_exists = False
+    data_pdf_ready_exists = False
+    data_pdf_error_exists = False
+    report_slide_count = 0
+    failure_markers = [
+        "report export unavailable",
+        "the report could not be loaded for export",
+        "404",
+        "unauthorized",
+        "login",
+        "no encontramos este reporte compartido",
+        "el link de este reporte expiró",
+        "share_link_not_found",
+        "share_link_expired",
+    ]
 
     logger.info(
         "Chromium PDF export started",
@@ -2911,7 +3470,7 @@ def generate_pdf_from_export_page(
             "device_scale_factor": device_scale_factor,
             "pdf_scale": pdf_scale,
             "pdf_margins": pdf_margins,
-            "prefer_css_page_size": True,
+            "prefer_css_page_size": False,
             "media_type": "screen",
         },
     )
@@ -2933,10 +3492,14 @@ def generate_pdf_from_export_page(
             context = browser.new_context(
                 viewport={"width": viewport_width, "height": viewport_height},
                 device_scale_factor=device_scale_factor,
-                extra_http_headers={
-                    "Authorization": f"Bearer {auth_token}",
-                    "X-Measurable-Export-Auth": "report_export_token",
-                }
+                extra_http_headers=(
+                    {
+                        "Authorization": f"Bearer {auth_token}",
+                        "X-Measurable-Export-Auth": "report_export_token",
+                    }
+                    if auth_token
+                    else None
+                ),
             )
             page = context.new_page()
             page.emulate_media(media="screen")
@@ -2953,65 +3516,471 @@ def generate_pdf_from_export_page(
                     }
                 )
 
+            def _handle_console(message: Any) -> None:
+                entry = {
+                    "type": str(getattr(message, "type", "")),
+                    "text": str(getattr(message, "text", "") or "")[:1000],
+                }
+                browser_console_events.append(entry)
+                logger.info(
+                    "[PDFExport][browser.console]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "message_type": entry["type"],
+                        "message_text": entry["text"],
+                    },
+                )
+
+            def _handle_page_error(error: Any) -> None:
+                message = str(error or "")[:1000]
+                browser_page_errors.append(message)
+                logger.warning(
+                    "[PDFExport][browser.pageerror]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "message": message,
+                    },
+                )
+
+            def _handle_request_failed(request: Any) -> None:
+                failure = getattr(request, "failure", None)
+                failure_text = None
+                if callable(failure):
+                    failure_info = failure()
+                    if isinstance(failure_info, dict):
+                        failure_text = failure_info.get("errorText")
+                elif isinstance(failure, dict):
+                    failure_text = failure.get("errorText")
+                entry = {
+                    "url": str(getattr(request, "url", "") or "")[:1000],
+                    "method": str(getattr(request, "method", "") or ""),
+                    "resource_type": str(getattr(request, "resource_type", "") or ""),
+                    "failure_text": str(failure_text or "")[:500] or None,
+                }
+                browser_request_failures.append(entry)
+                logger.warning(
+                    "[PDFExport][browser.requestfailed]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "request_url": entry["url"],
+                        "method": entry["method"],
+                        "resource_type": entry["resource_type"],
+                        "failure_text": entry["failure_text"],
+                    },
+                )
+
             page.on("response", _handle_response)
-            page.goto(export_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.on("console", _handle_console)
+            page.on("pageerror", _handle_page_error)
+            page.on("requestfailed", _handle_request_failed)
+            main_response = page.goto(export_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            main_response_status = main_response.status if main_response is not None else None
             page.wait_for_load_state("networkidle", timeout=timeout_ms)
             page.evaluate("() => document.fonts.ready")
             try:
-                if ready_selector:
-                    page.wait_for_selector(ready_selector, timeout=timeout_ms)
-            except PlaywrightTimeoutError as exc:
-                auth_failed = any(event.get("status") == 401 for event in report_fetch_events)
+                page.wait_for_selector(
+                    "[data-report-slide='true'], [data-report-slide]",
+                    timeout=min(timeout_ms, 5000),
+                )
+            except PlaywrightTimeoutError:
+                logger.warning(
+                    "[PDFExport][slide.count]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "status": "selector_timeout",
+                    },
+                )
+            page.wait_for_timeout(400)
+            diagnostics = _read_pdf_dom_diagnostics(page)
+            logger.info(
+                "[PDFExport][dom.diagnostics]",
+                extra={
+                    "report_id": report_id,
+                    "export_url": export_url,
+                    "page_url": diagnostics.get("page_url"),
+                    "page_title": diagnostics.get("page_title"),
+                    "body_ready": diagnostics.get("bodyReady"),
+                    "body_error": diagnostics.get("bodyError"),
+                    "body_error_reason": diagnostics.get("bodyErrorReason"),
+                    "root_ready_exists": diagnostics.get("rootReadyExists"),
+                    "data_pdf_ready_exists": diagnostics.get("data_pdf_ready_exists"),
+                    "data_pdf_error_exists": diagnostics.get("data_pdf_error_exists"),
+                    "slide_count": diagnostics.get("slide_count"),
+                    "diagnostics_error": diagnostics.get("diagnostics_error"),
+                },
+            )
+            current_page_url = str(diagnostics.get("url") or page.url or "").strip() or None
+            page_title = str(diagnostics.get("title") or page.title() or "").strip() or None
+            page_text_excerpt = str(diagnostics.get("textExcerpt") or "").strip() or None
+            body_pdf_ready = str(diagnostics.get("bodyReady") or "").strip() or None
+            body_pdf_error = str(diagnostics.get("bodyError") or "").strip() or None
+            body_pdf_error_reason = str(diagnostics.get("bodyErrorReason") or "").strip() or None
+            root_ready_exists = bool(diagnostics.get("rootReadyExists"))
+            data_pdf_ready_exists = root_ready_exists or body_pdf_ready == "true"
+            data_pdf_error_exists = bool(diagnostics.get("pdfErrorExists")) or body_pdf_error == "true"
+            report_slide_count = int(diagnostics.get("slideCount") or 0)
+            logger.info(
+                "[PDFExport][slide.count]",
+                extra={
+                    "report_id": report_id,
+                    "export_url": export_url,
+                    "slide_count": report_slide_count,
+                    "root_ready_exists": root_ready_exists,
+                    "data_pdf_ready_exists": data_pdf_ready_exists,
+                },
+            )
+            logger.info(
+                "[PDFExport][page.size]",
+                extra={
+                    "report_id": report_id,
+                    "export_url": export_url,
+                    "viewport_width": viewport_width,
+                    "viewport_height": viewport_height,
+                    "pdf_width": pdf_options["width"],
+                    "pdf_height": pdf_options["height"],
+                    "prefer_css_page_size": pdf_options["prefer_css_page_size"],
+                },
+            )
+            if data_pdf_error_exists:
                 logger.error(
-                    "PDF export page did not reach ready state",
+                    "PDF export page reported a frontend render error",
                     extra={
                         "report_id": report_id,
                         "export_url": export_url,
                         "auth_strategy": auth_strategy,
                         "report_fetch_events": report_fetch_events,
+                        "browser_console_events": browser_console_events[-20:],
+                        "browser_page_errors": browser_page_errors[-20:],
+                        "browser_request_failures": browser_request_failures[-20:],
+                        "page_status": main_response_status,
+                        "page_url": current_page_url,
+                        "page_title": page_title,
+                        "page_text_excerpt": page_text_excerpt,
+                        "body_pdf_ready": body_pdf_ready,
+                        "body_pdf_error": body_pdf_error,
+                        "body_pdf_error_reason": body_pdf_error_reason,
+                        "root_ready_exists": root_ready_exists,
+                        "data_pdf_ready_exists": data_pdf_ready_exists,
+                        "data_pdf_error_exists": data_pdf_error_exists,
+                        "report_slide_count": report_slide_count,
+                    },
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "code": "pdf_render_frontend_error",
+                        "message": "PDF export page reported a frontend render error.",
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "auth_strategy": auth_strategy,
+                        "report_fetch_succeeded": any(event.get("ok") for event in report_fetch_events),
+                        "report_fetch_events": report_fetch_events,
+                        "page_status": main_response_status,
+                        "page_url": current_page_url,
+                        "page_title": page_title,
+                        "page_text_excerpt": page_text_excerpt,
+                        "body_pdf_ready": body_pdf_ready,
+                        "body_pdf_error": body_pdf_error,
+                        "body_pdf_error_reason": body_pdf_error_reason,
+                        "root_ready_exists": root_ready_exists,
+                        "data_pdf_ready_exists": data_pdf_ready_exists,
+                        "data_pdf_error_exists": data_pdf_error_exists,
+                        "report_slide_count": report_slide_count,
+                        "browser_console_events": browser_console_events[-20:],
+                        "browser_page_errors": browser_page_errors[-20:],
+                        "browser_request_failures": browser_request_failures[-20:],
+                        "failure_reason": "frontend_reported_pdf_error",
+                    },
+                )
+            try:
+                if ready_selector:
+                    page.wait_for_selector(ready_selector, timeout=timeout_ms)
+            except PlaywrightTimeoutError as exc:
+                diagnostics = _read_pdf_dom_diagnostics(page)
+                logger.info(
+                    "[PDFExport][dom.diagnostics]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "page_url": diagnostics.get("page_url"),
+                        "page_title": diagnostics.get("page_title"),
+                        "body_ready": diagnostics.get("bodyReady"),
+                        "body_error": diagnostics.get("bodyError"),
+                        "body_error_reason": diagnostics.get("bodyErrorReason"),
+                        "root_ready_exists": diagnostics.get("rootReadyExists"),
+                        "data_pdf_ready_exists": diagnostics.get("data_pdf_ready_exists"),
+                        "data_pdf_error_exists": diagnostics.get("data_pdf_error_exists"),
+                        "slide_count": diagnostics.get("slide_count"),
+                        "diagnostics_error": diagnostics.get("diagnostics_error"),
+                    },
+                )
+                current_page_url = str(diagnostics.get("url") or page.url or "").strip() or None
+                page_title = str(diagnostics.get("title") or page.title() or "").strip() or None
+                page_text_excerpt = str(diagnostics.get("textExcerpt") or "").strip() or None
+                body_pdf_ready = str(diagnostics.get("bodyReady") or "").strip() or None
+                body_pdf_error = str(diagnostics.get("bodyError") or "").strip() or None
+                body_pdf_error_reason = str(diagnostics.get("bodyErrorReason") or "").strip() or None
+                root_ready_exists = bool(diagnostics.get("rootReadyExists"))
+                data_pdf_ready_exists = root_ready_exists or body_pdf_ready == "true"
+                data_pdf_error_exists = bool(diagnostics.get("pdfErrorExists")) or body_pdf_error == "true"
+                report_slide_count = int(diagnostics.get("slideCount") or 0)
+                auth_failed = any(event.get("status") == 401 for event in report_fetch_events)
+                logger.error(
+                    "[PDFExport][ready.timeout]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "auth_strategy": auth_strategy,
+                        "report_fetch_events": report_fetch_events,
+                        "browser_console_events": browser_console_events[-20:],
+                        "browser_page_errors": browser_page_errors[-20:],
+                        "browser_request_failures": browser_request_failures[-20:],
                         "auth_failed": auth_failed,
                         "viewport_width": viewport_width,
                         "viewport_height": viewport_height,
                         "device_scale_factor": device_scale_factor,
                         "pdf_scale": pdf_scale,
                         "pdf_margins": pdf_margins,
-                        "prefer_css_page_size": True,
+                        "prefer_css_page_size": False,
                         "media_type": "screen",
+                        "page_status": main_response_status,
+                        "page_url": current_page_url,
+                        "page_title": page_title,
+                        "page_text_excerpt": page_text_excerpt,
+                        "slide_count": report_slide_count,
+                        "bodyReady": body_pdf_ready,
+                        "bodyError": body_pdf_error,
+                        "bodyErrorReason": body_pdf_error_reason,
+                        "rootReadyExists": root_ready_exists,
+                        "data_pdf_ready_exists": data_pdf_ready_exists,
+                        "data_pdf_error_exists": data_pdf_error_exists,
+                        "report_slide_count": report_slide_count,
+                    },
+                )
+                if data_pdf_error_exists:
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "code": "pdf_render_frontend_error",
+                            "message": "PDF export page reported a frontend render error.",
+                            "report_id": report_id,
+                            "export_url": export_url,
+                            "auth_strategy": auth_strategy,
+                            "report_fetch_succeeded": any(event.get("ok") for event in report_fetch_events),
+                            "report_fetch_events": report_fetch_events,
+                            "viewport": {
+                                "width": viewport_width,
+                                "height": viewport_height,
+                                "deviceScaleFactor": device_scale_factor,
+                            },
+                            "page_status": main_response_status,
+                            "page_url": current_page_url,
+                            "page_title": page_title,
+                            "page_text_excerpt": page_text_excerpt,
+                            "body_pdf_ready": body_pdf_ready,
+                            "body_pdf_error": body_pdf_error,
+                            "body_pdf_error_reason": body_pdf_error_reason,
+                            "root_ready_exists": root_ready_exists,
+                            "browser_console_events": browser_console_events[-20:],
+                            "browser_page_errors": browser_page_errors[-20:],
+                            "browser_request_failures": browser_request_failures[-20:],
+                            "data_pdf_ready_exists": data_pdf_ready_exists,
+                            "data_pdf_error_exists": data_pdf_error_exists,
+                            "report_slide_count": report_slide_count,
+                            "failure_reason": "frontend_reported_pdf_error",
+                        },
+                    ) from exc
+                if report_slide_count >= 1:
+                    logger.warning(
+                        "[PDFExport][ready.fallback.slide_count]",
+                        extra={
+                            "report_id": report_id,
+                            "export_url": export_url,
+                            "page_status": main_response_status,
+                            "page_url": current_page_url,
+                            "page_title": page_title,
+                            "page_text_excerpt": page_text_excerpt,
+                            "slideCount": report_slide_count,
+                            "bodyReady": body_pdf_ready,
+                            "bodyError": body_pdf_error,
+                            "bodyErrorReason": body_pdf_error_reason,
+                            "rootReadyExists": root_ready_exists,
+                        },
+                    )
+                else:
+                    logger.error(
+                        "[PDFExport][ready.failed.no_slides]",
+                        extra={
+                            "report_id": report_id,
+                            "export_url": export_url,
+                            "page_status": main_response_status,
+                            "page_url": current_page_url,
+                            "page_title": page_title,
+                            "page_text_excerpt": page_text_excerpt,
+                            "slideCount": report_slide_count,
+                            "bodyReady": body_pdf_ready,
+                            "bodyError": body_pdf_error,
+                            "bodyErrorReason": body_pdf_error_reason,
+                            "rootReadyExists": root_ready_exists,
+                        },
+                    )
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "code": "pdf_export_auth_failed"
+                            if auth_failed
+                            else "pdf_export_ready_timeout",
+                            "message": "Export page failed to load authenticated report data."
+                            if auth_failed
+                            else "Export page did not reach the ready state before timeout.",
+                            "report_id": report_id,
+                            "export_url": export_url,
+                            "auth_strategy": auth_strategy,
+                            "report_fetch_succeeded": any(
+                                event.get("ok") for event in report_fetch_events
+                            ),
+                            "report_fetch_events": report_fetch_events,
+                            "viewport": {
+                                "width": viewport_width,
+                                "height": viewport_height,
+                                "deviceScaleFactor": device_scale_factor,
+                            },
+                            "page_status": main_response_status,
+                            "page_url": current_page_url,
+                            "page_title": page_title,
+                            "page_text_excerpt": page_text_excerpt,
+                            "body_pdf_ready": body_pdf_ready,
+                            "body_pdf_error": body_pdf_error,
+                            "body_pdf_error_reason": body_pdf_error_reason,
+                            "root_ready_exists": root_ready_exists,
+                            "browser_console_events": browser_console_events[-20:],
+                            "browser_page_errors": browser_page_errors[-20:],
+                            "browser_request_failures": browser_request_failures[-20:],
+                            "data_pdf_ready_exists": data_pdf_ready_exists,
+                            "data_pdf_error_exists": data_pdf_error_exists,
+                            "report_slide_count": report_slide_count,
+                            "pdf_options": {
+                                "scale": pdf_scale,
+                                "margin": pdf_margins,
+                                "prefer_css_page_size": False,
+                                "print_background": True,
+                                "media_type": "screen",
+                            },
+                            "failure_reason": "report_fetch_401"
+                            if auth_failed
+                            else "ready_selector_timeout",
+                        },
+                    ) from exc
+
+            combined_text = " ".join(
+                part for part in [page_title or "", page_text_excerpt or ""] if part
+            ).lower()
+            invalid_share_markers = {
+                "no encontramos este reporte compartido",
+                "el link de este reporte expiró",
+                "share_link_not_found",
+                "share_link_expired",
+            }
+            if any(marker in combined_text for marker in invalid_share_markers):
+                logger.error(
+                    "PDF export page rendered invalid share content",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "auth_strategy": auth_strategy,
+                        "report_fetch_events": report_fetch_events,
+                        "page_status": main_response_status,
+                        "page_url": current_page_url,
+                        "page_title": page_title,
+                        "page_text_excerpt": page_text_excerpt,
+                        "body_pdf_ready": body_pdf_ready,
+                        "body_pdf_error": body_pdf_error,
+                        "body_pdf_error_reason": body_pdf_error_reason,
+                        "root_ready_exists": root_ready_exists,
+                        "browser_console_events": browser_console_events[-20:],
+                        "browser_page_errors": browser_page_errors[-20:],
+                        "browser_request_failures": browser_request_failures[-20:],
+                        "data_pdf_ready_exists": data_pdf_ready_exists,
+                        "data_pdf_error_exists": data_pdf_error_exists,
+                        "report_slide_count": report_slide_count,
                     },
                 )
                 raise HTTPException(
                     status_code=502,
                     detail={
-                        "code": "pdf_export_auth_failed"
-                        if auth_failed
-                        else "pdf_export_ready_timeout",
-                        "message": "Export page failed to load authenticated report data."
-                        if auth_failed
-                        else "Export page did not reach the ready state before timeout.",
+                        "code": "pdf_render_share_invalid",
+                        "message": "PDF render opened an invalid or expired share link.",
                         "report_id": report_id,
                         "export_url": export_url,
                         "auth_strategy": auth_strategy,
-                        "report_fetch_succeeded": any(
-                            event.get("ok") for event in report_fetch_events
-                        ),
+                        "report_fetch_succeeded": any(event.get("ok") for event in report_fetch_events),
                         "report_fetch_events": report_fetch_events,
-                        "viewport": {
-                            "width": viewport_width,
-                            "height": viewport_height,
-                            "deviceScaleFactor": device_scale_factor,
-                        },
-                        "pdf_options": {
-                            "scale": pdf_scale,
-                            "margin": pdf_margins,
-                            "prefer_css_page_size": True,
-                            "print_background": True,
-                            "media_type": "screen",
-                        },
-                        "failure_reason": "report_fetch_401"
-                        if auth_failed
-                        else "ready_selector_timeout",
+                        "page_status": main_response_status,
+                        "page_url": current_page_url,
+                        "page_title": page_title,
+                        "page_text_excerpt": page_text_excerpt,
+                        "body_pdf_ready": body_pdf_ready,
+                        "body_pdf_error": body_pdf_error,
+                        "body_pdf_error_reason": body_pdf_error_reason,
+                        "root_ready_exists": root_ready_exists,
+                        "browser_console_events": browser_console_events[-20:],
+                        "browser_page_errors": browser_page_errors[-20:],
+                        "browser_request_failures": browser_request_failures[-20:],
+                        "data_pdf_ready_exists": data_pdf_ready_exists,
+                        "data_pdf_error_exists": data_pdf_error_exists,
+                        "report_slide_count": report_slide_count,
+                        "failure_reason": "invalid_or_expired_share_link",
                     },
-                ) from exc
+                )
+            if any(marker in combined_text for marker in failure_markers):
+                logger.error(
+                    "PDF export page rendered error content",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "auth_strategy": auth_strategy,
+                        "report_fetch_events": report_fetch_events,
+                        "page_status": main_response_status,
+                        "page_url": current_page_url,
+                        "page_title": page_title,
+                        "page_text_excerpt": page_text_excerpt,
+                        "body_pdf_ready": body_pdf_ready,
+                        "body_pdf_error": body_pdf_error,
+                        "body_pdf_error_reason": body_pdf_error_reason,
+                        "root_ready_exists": root_ready_exists,
+                        "data_pdf_ready_exists": data_pdf_ready_exists,
+                        "data_pdf_error_exists": data_pdf_error_exists,
+                        "report_slide_count": report_slide_count,
+                    },
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "code": "pdf_render_failed",
+                        "message": "PDF render page did not load the report content.",
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "auth_strategy": auth_strategy,
+                        "report_fetch_succeeded": any(event.get("ok") for event in report_fetch_events),
+                        "report_fetch_events": report_fetch_events,
+                        "page_status": main_response_status,
+                        "page_url": current_page_url,
+                        "page_title": page_title,
+                        "page_text_excerpt": page_text_excerpt,
+                        "body_pdf_ready": body_pdf_ready,
+                        "body_pdf_error": body_pdf_error,
+                        "body_pdf_error_reason": body_pdf_error_reason,
+                        "root_ready_exists": root_ready_exists,
+                        "data_pdf_ready_exists": data_pdf_ready_exists,
+                        "data_pdf_error_exists": data_pdf_error_exists,
+                        "report_slide_count": report_slide_count,
+                        "failure_reason": "rendered_error_page",
+                    },
+                )
 
             page_count = page.evaluate(
                 """
@@ -3035,7 +4004,7 @@ def generate_pdf_from_export_page(
             )
 
             logger.info(
-                "Chromium PDF print config",
+                "[PDFExport][page.pdf.options]",
                 extra={
                     "report_id": report_id,
                     "export_url": export_url,
@@ -3044,11 +4013,23 @@ def generate_pdf_from_export_page(
                     "device_scale_factor": device_scale_factor,
                     "pdf_scale": pdf_scale,
                     "pdf_margins": pdf_margins,
-                    "prefer_css_page_size": True,
+                    "pdf_width": pdf_options["width"],
+                    "pdf_height": pdf_options["height"],
+                    "prefer_css_page_size": False,
                     "media_type": "screen",
                 },
             )
             pdf_bytes = page.pdf(**pdf_options)
+            if len(pdf_bytes) > 2 * 1024 * 1024 and (page_count or 0) <= 5:
+                logger.warning(
+                    "[PDFExport][size.warning]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "page_count": page_count,
+                        "size_bytes": len(pdf_bytes),
+                    },
+                )
             context.close()
             browser.close()
     except HTTPException:
@@ -3066,8 +4047,19 @@ def generate_pdf_from_export_page(
                 "device_scale_factor": device_scale_factor,
                 "pdf_scale": pdf_scale,
                 "pdf_margins": pdf_margins,
-                "prefer_css_page_size": True,
+                "prefer_css_page_size": False,
                 "media_type": "screen",
+                "page_status": main_response_status,
+                "page_url": current_page_url,
+                "page_title": page_title,
+                "page_text_excerpt": page_text_excerpt,
+                "body_pdf_ready": body_pdf_ready,
+                "body_pdf_error": body_pdf_error,
+                "body_pdf_error_reason": body_pdf_error_reason,
+                "root_ready_exists": root_ready_exists,
+                "data_pdf_ready_exists": data_pdf_ready_exists,
+                "data_pdf_error_exists": data_pdf_error_exists,
+                "report_slide_count": report_slide_count,
             },
         )
         raise HTTPException(
@@ -3085,10 +4077,21 @@ def generate_pdf_from_export_page(
                     "height": viewport_height,
                     "deviceScaleFactor": device_scale_factor,
                 },
+                "page_status": main_response_status,
+                "page_url": current_page_url,
+                "page_title": page_title,
+                "page_text_excerpt": page_text_excerpt,
+                "body_pdf_ready": body_pdf_ready,
+                "body_pdf_error": body_pdf_error,
+                "body_pdf_error_reason": body_pdf_error_reason,
+                "root_ready_exists": root_ready_exists,
+                "data_pdf_ready_exists": data_pdf_ready_exists,
+                "data_pdf_error_exists": data_pdf_error_exists,
+                "report_slide_count": report_slide_count,
                 "pdf_options": {
                     "scale": pdf_scale,
                     "margin": pdf_margins,
-                    "prefer_css_page_size": True,
+                    "prefer_css_page_size": False,
                     "print_background": True,
                     "media_type": "screen",
                 },
@@ -3110,8 +4113,32 @@ def generate_pdf_from_export_page(
             "device_scale_factor": device_scale_factor,
             "pdf_scale": pdf_scale,
             "pdf_margins": pdf_margins,
-            "prefer_css_page_size": True,
+            "prefer_css_page_size": False,
             "media_type": "screen",
+            "page_status": main_response_status,
+            "page_url": current_page_url,
+            "page_title": page_title,
+            "page_text_excerpt": page_text_excerpt,
+            "body_pdf_ready": body_pdf_ready,
+            "body_pdf_error": body_pdf_error,
+            "body_pdf_error_reason": body_pdf_error_reason,
+            "root_ready_exists": root_ready_exists,
+            "browser_console_events": browser_console_events[-20:],
+            "browser_page_errors": browser_page_errors[-20:],
+            "browser_request_failures": browser_request_failures[-20:],
+            "logo_status": logo_status,
+            "data_pdf_ready_exists": data_pdf_ready_exists,
+            "data_pdf_error_exists": data_pdf_error_exists,
+            "report_slide_count": report_slide_count,
+        },
+    )
+    logger.info(
+        "[PDFExport][success.size_bytes]",
+        extra={
+            "report_id": report_id,
+            "export_url": export_url,
+            "size_bytes": len(pdf_bytes),
+            "page_count": page_count,
         },
     )
     return pdf_bytes, {
@@ -3120,18 +4147,529 @@ def generate_pdf_from_export_page(
         "auth_strategy": auth_strategy,
         "report_fetch_succeeded": any(event.get("ok") for event in report_fetch_events),
         "report_fetch_events": report_fetch_events,
+        "page_status": main_response_status,
+        "page_url": current_page_url,
+        "page_title": page_title,
+        "page_text_excerpt": page_text_excerpt,
+        "body_pdf_ready": body_pdf_ready,
+        "body_pdf_error": body_pdf_error,
+        "body_pdf_error_reason": body_pdf_error_reason,
+        "root_ready_exists": root_ready_exists,
+        "logo_status": logo_status,
+        "data_pdf_ready_exists": data_pdf_ready_exists,
+        "data_pdf_error_exists": data_pdf_error_exists,
+        "report_slide_count": report_slide_count,
         "viewport": {
             "width": viewport_width,
             "height": viewport_height,
             "deviceScaleFactor": device_scale_factor,
         },
         "pdf_options": {
+            "width": pdf_options["width"],
+            "height": pdf_options["height"],
             "scale": pdf_scale,
             "margin": pdf_margins,
-            "prefer_css_page_size": True,
+            "prefer_css_page_size": False,
             "print_background": True,
             "media_type": "screen",
         },
+    }
+
+
+def generate_pdf_from_export_page(
+    *,
+    export_url: str,
+    report_id: int,
+    auth_token: str | None = None,
+) -> tuple[bytes, dict[str, Any]]:
+    try:
+        from playwright.sync_api import Error as PlaywrightError
+        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    except ImportError as exc:
+        raise http_error(
+            503,
+            "pdf_export_dependency_missing",
+            "Playwright is not installed on the backend.",
+        ) from exc
+
+    started_at = perf_counter()
+    configured_timeout_ms = max(int(settings.pdf_export_timeout_ms), 1000)
+    timeout_ms = (
+        min(configured_timeout_ms, 15000)
+        if "localhost" in export_url or "127.0.0.1" in export_url
+        else configured_timeout_ms
+    )
+    viewport_width = 1600
+    viewport_height = 900
+    slide_selector = "[data-report-slide='true'], [data-report-slide]"
+    device_scale_factor = float(settings.pdf_export_device_scale_factor or 1.0)
+    pdf_margins = {"top": "0px", "right": "0px", "bottom": "0px", "left": "0px"}
+    pdf_options = {
+        "width": "1600px",
+        "height": "900px",
+        "print_background": True,
+        "prefer_css_page_size": False,
+        "margin": pdf_margins,
+    }
+    auth_strategy = "authorization_header_report_export_token" if auth_token else "public_share_url"
+    report_fetch_events: list[dict[str, Any]] = []
+    browser_console_events: list[dict[str, Any]] = []
+    browser_page_errors: list[str] = []
+    browser_request_failures: list[dict[str, Any]] = []
+    slide_numbers: list[int] = []
+    screenshot_bytes_per_slide: list[int] = []
+    logo_status: int | None = None
+    main_response_status: int | None = None
+    current_page_url: str | None = None
+    page_title: str | None = None
+    page_text_excerpt: str | None = None
+    body_pdf_ready: str | None = None
+    body_pdf_error: str | None = None
+    body_pdf_error_reason: str | None = None
+    root_ready_exists = False
+    data_pdf_ready_exists = False
+    data_pdf_error_exists = False
+    report_slide_count = 0
+    page_count: int | None = None
+    pdf_bytes: bytes = b""
+
+    logger.info(
+        "[PDFExport][screenshot.mode]",
+        extra={
+            "report_id": report_id,
+            "final_render_url": export_url,
+            "pdf_strategy": "slide_screenshots",
+            "viewport_width": viewport_width,
+            "viewport_height": viewport_height,
+            "device_scale_factor": device_scale_factor,
+        },
+    )
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                headless=True,
+                executable_path=settings.chromium_executable_path or None,
+            )
+            context = browser.new_context(
+                viewport={"width": viewport_width, "height": viewport_height},
+                device_scale_factor=device_scale_factor,
+                extra_http_headers=(
+                    {
+                        "Authorization": f"Bearer {auth_token}",
+                        "X-Measurable-Export-Auth": "report_export_token",
+                    }
+                    if auth_token
+                    else None
+                ),
+            )
+            page = context.new_page()
+            page.emulate_media(media="screen")
+
+            def _handle_response(response: Any) -> None:
+                nonlocal logo_status
+                url = response.url
+                if "/workspace/branding/logo/" in url:
+                    logo_status = response.status
+                    logger.info(
+                        "[PDFExport][logo.status]",
+                        extra={
+                            "report_id": report_id,
+                            "export_url": export_url,
+                            "logo_url": url,
+                            "status": logo_status,
+                            "ok": response.ok,
+                        },
+                    )
+                if f"/reports/{report_id}" in url:
+                    report_fetch_events.append(
+                        {
+                            "url": url,
+                            "status": response.status,
+                            "ok": response.ok,
+                        }
+                    )
+
+            def _handle_console(message: Any) -> None:
+                entry = {
+                    "type": str(getattr(message, "type", "")),
+                    "text": str(getattr(message, "text", "") or "")[:1000],
+                }
+                browser_console_events.append(entry)
+                logger.info(
+                    "[PDFExport][browser.console]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "message_type": entry["type"],
+                        "message_text": entry["text"],
+                    },
+                )
+
+            def _handle_page_error(error: Any) -> None:
+                message = str(error or "")[:1000]
+                browser_page_errors.append(message)
+                logger.warning(
+                    "[PDFExport][browser.pageerror]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "message": message,
+                    },
+                )
+
+            def _handle_request_failed(request: Any) -> None:
+                failure = getattr(request, "failure", None)
+                failure_text = None
+                if callable(failure):
+                    failure_info = failure()
+                    if isinstance(failure_info, dict):
+                        failure_text = failure_info.get("errorText")
+                elif isinstance(failure, dict):
+                    failure_text = failure.get("errorText")
+                entry = {
+                    "url": str(getattr(request, "url", "") or "")[:1000],
+                    "method": str(getattr(request, "method", "") or ""),
+                    "resource_type": str(getattr(request, "resource_type", "") or ""),
+                    "failure_text": str(failure_text or "")[:500] or None,
+                }
+                browser_request_failures.append(entry)
+                logger.warning(
+                    "[PDFExport][browser.requestfailed]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "request_url": entry["url"],
+                        "method": entry["method"],
+                        "resource_type": entry["resource_type"],
+                        "failure_text": entry["failure_text"],
+                    },
+                )
+
+            page.on("response", _handle_response)
+            page.on("console", _handle_console)
+            page.on("pageerror", _handle_page_error)
+            page.on("requestfailed", _handle_request_failed)
+
+            main_response = page.goto(export_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            main_response_status = main_response.status if main_response is not None else None
+            page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            page.evaluate("() => document.fonts.ready")
+            try:
+                page.wait_for_function(
+                    """
+                    () => {
+                      const ready = document.body?.dataset?.pdfReady === "true"
+                        || Boolean(window.__MEASURABLE_EXPORT_READY__)
+                        || Boolean(document.querySelector("[data-pdf-ready='true'], body[data-pdf-ready='true']"));
+                      const slideCount = document.querySelectorAll("[data-report-slide='true'], [data-report-slide]").length;
+                      return ready && slideCount > 0;
+                    }
+                    """,
+                    timeout=timeout_ms,
+                )
+            except PlaywrightTimeoutError:
+                pass
+            try:
+                page.wait_for_selector(slide_selector, timeout=min(timeout_ms, 5000))
+            except PlaywrightTimeoutError:
+                logger.warning(
+                    "[PDFExport][slide.count]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "status": "selector_timeout",
+                    },
+                )
+            page.wait_for_timeout(350)
+
+            diagnostics = _read_pdf_dom_diagnostics(page)
+            logger.info(
+                "[PDFExport][dom.diagnostics]",
+                extra={
+                    "report_id": report_id,
+                    "export_url": export_url,
+                    "page_url": diagnostics.get("page_url"),
+                    "page_title": diagnostics.get("page_title"),
+                    "body_ready": diagnostics.get("bodyReady"),
+                    "body_error": diagnostics.get("bodyError"),
+                    "body_error_reason": diagnostics.get("bodyErrorReason"),
+                    "root_ready_exists": diagnostics.get("rootReadyExists"),
+                    "data_pdf_ready_exists": diagnostics.get("data_pdf_ready_exists"),
+                    "data_pdf_error_exists": diagnostics.get("data_pdf_error_exists"),
+                    "slide_count": diagnostics.get("slide_count"),
+                    "diagnostics_error": diagnostics.get("diagnostics_error"),
+                },
+            )
+            current_page_url = str(diagnostics.get("url") or page.url or "").strip() or None
+            page_title = str(diagnostics.get("title") or page.title() or "").strip() or None
+            page_text_excerpt = str(diagnostics.get("textExcerpt") or "").strip() or None
+            body_pdf_ready = str(diagnostics.get("bodyReady") or "").strip() or None
+            body_pdf_error = str(diagnostics.get("bodyError") or "").strip() or None
+            body_pdf_error_reason = str(diagnostics.get("bodyErrorReason") or "").strip() or None
+            root_ready_exists = bool(diagnostics.get("rootReadyExists"))
+            data_pdf_ready_exists = bool(diagnostics.get("data_pdf_ready_exists"))
+            data_pdf_error_exists = bool(diagnostics.get("data_pdf_error_exists"))
+            report_slide_count = int(diagnostics.get("slideCount") or 0)
+
+            logger.info(
+                "[PDFExport][slide.count]",
+                extra={
+                    "report_id": report_id,
+                    "export_url": export_url,
+                    "slide_count": report_slide_count,
+                    "root_ready_exists": root_ready_exists,
+                    "data_pdf_ready_exists": data_pdf_ready_exists,
+                },
+            )
+            logger.info(
+                "[PDFExport][page.size]",
+                extra={
+                    "report_id": report_id,
+                    "export_url": export_url,
+                    "viewport_width": viewport_width,
+                    "viewport_height": viewport_height,
+                    "pdf_width": pdf_options["width"],
+                    "pdf_height": pdf_options["height"],
+                },
+            )
+
+            if data_pdf_error_exists:
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "code": "pdf_render_frontend_error",
+                        "message": "PDF export page reported a frontend render error.",
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "page_url": current_page_url,
+                        "page_title": page_title,
+                        "page_text_excerpt": page_text_excerpt,
+                        "body_pdf_error_reason": body_pdf_error_reason,
+                    },
+                )
+            if report_slide_count < 1:
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "code": "pdf_export_no_slides",
+                        "message": "PDF export page did not render any slides.",
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "page_url": current_page_url,
+                        "page_title": page_title,
+                    },
+                )
+
+            slide_records = page.evaluate(
+                """
+                () => Array.from(
+                  document.querySelectorAll("[data-report-slide='true'], [data-report-slide]")
+                ).map((element, index) => {
+                  const rawNumber = element.getAttribute("data-slide-number");
+                  const parsed = rawNumber ? Number.parseInt(rawNumber, 10) : Number.NaN;
+                  return {
+                    index,
+                    slideNumber: Number.isFinite(parsed) ? parsed : index + 1,
+                  };
+                }).sort((a, b) => {
+                  if (a.slideNumber !== b.slideNumber) return a.slideNumber - b.slideNumber;
+                  return a.index - b.index;
+                });
+                """
+            )
+            if not isinstance(slide_records, list) or not slide_records:
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "code": "pdf_export_no_slides",
+                        "message": "PDF export page did not render any slides.",
+                        "report_id": report_id,
+                        "export_url": export_url,
+                    },
+                )
+
+            slide_locator = page.locator(slide_selector)
+            slide_images: list[dict[str, Any]] = []
+            slide_numbers = [int(record.get("slideNumber") or index + 1) for index, record in enumerate(slide_records)]
+            for record in slide_records:
+                slide_index = int(record.get("index") or 0)
+                slide_number = int(record.get("slideNumber") or slide_index + 1)
+                try:
+                    screenshot_bytes = slide_locator.nth(slide_index).screenshot(
+                        type="jpeg",
+                        quality=88,
+                        animations="disabled",
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "[PDFExport][failure]",
+                        extra={
+                            "report_id": report_id,
+                            "export_url": export_url,
+                            "failed_slide_number": slide_number,
+                            "pdf_strategy": "slide_screenshots",
+                        },
+                    )
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "code": "pdf_export_slide_screenshot_failed",
+                            "message": f"Failed to capture slide {slide_number} for PDF export.",
+                            "report_id": report_id,
+                            "export_url": export_url,
+                        },
+                    ) from exc
+                screenshot_bytes_per_slide.append(len(screenshot_bytes))
+                slide_images.append(
+                    {
+                        "slide_number": slide_number,
+                        "mime_type": "image/jpeg",
+                        "base64": base64.b64encode(screenshot_bytes).decode("ascii"),
+                    }
+                )
+
+            page_count = len(slide_images)
+            logger.info(
+                "[PDFExport][page.pdf.options]",
+                extra={
+                    "report_id": report_id,
+                    "export_url": export_url,
+                    "viewport_width": viewport_width,
+                    "viewport_height": viewport_height,
+                    "device_scale_factor": device_scale_factor,
+                    "pdf_width": pdf_options["width"],
+                    "pdf_height": pdf_options["height"],
+                    "prefer_css_page_size": False,
+                },
+            )
+
+            pdf_page = context.new_page()
+            pdf_page.set_viewport_size({"width": viewport_width, "height": viewport_height})
+            pdf_page.set_content(
+                """
+                <html>
+                  <head>
+                    <style>
+                      @page { size: 1600px 900px; margin: 0; }
+                      html, body { margin: 0; padding: 0; background: #ffffff; }
+                      .page { width: 1600px; height: 900px; page-break-after: always; break-after: page; }
+                      .page:last-child { page-break-after: auto; break-after: auto; }
+                      img { display: block; width: 1600px; height: 900px; }
+                    </style>
+                  </head>
+                  <body>
+                """
+                + "".join(
+                    f'<div class="page"><img alt="Slide {item["slide_number"]}" src="data:{item["mime_type"]};base64,{item["base64"]}" /></div>'
+                    for item in slide_images
+                )
+                + "</body></html>",
+                wait_until="load",
+            )
+            pdf_bytes = pdf_page.pdf(**pdf_options)
+            pdf_page.close()
+            if len(pdf_bytes) > 2 * 1024 * 1024 and page_count <= 5:
+                logger.warning(
+                    "[PDFExport][size.warning]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "page_count": page_count,
+                        "size_bytes": len(pdf_bytes),
+                    },
+                )
+            context.close()
+            browser.close()
+    except HTTPException:
+        raise
+    except PlaywrightError as exc:
+        logger.exception(
+            "[PDFExport][failure]",
+            extra={
+                "report_id": report_id,
+                "export_url": export_url,
+                "page_url": current_page_url,
+                "page_title": page_title,
+                "slide_numbers": slide_numbers,
+                "screenshot_bytes_per_slide": screenshot_bytes_per_slide,
+                "pdf_strategy": "slide_screenshots",
+            },
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "pdf_export_navigation_failed",
+                "message": "Chromium failed to render the report export page.",
+                "report_id": report_id,
+                "export_url": export_url,
+                "page_url": current_page_url,
+                "page_title": page_title,
+            },
+        ) from exc
+
+    render_duration_ms = round((perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "[PDF_RENDER_RESPONSE]",
+        extra={
+            "status": main_response_status,
+            "page_url": current_page_url or export_url,
+            "page_title": page_title,
+            "slide_count": report_slide_count or page_count,
+            "pdf_bytes": len(pdf_bytes),
+        },
+    )
+    logger.info(
+        "[PDFExport][success.size_bytes]",
+        extra={
+            "report_id": report_id,
+            "final_render_url": export_url,
+            "slide_count": page_count,
+            "slide_numbers": slide_numbers,
+            "screenshot_bytes_per_slide": screenshot_bytes_per_slide,
+            "final_pdf_size_bytes": len(pdf_bytes),
+            "render_duration_ms": render_duration_ms,
+            "pdf_strategy": "slide_screenshots",
+        },
+    )
+    return pdf_bytes, {
+        "page_count": page_count,
+        "export_url": export_url,
+        "auth_strategy": auth_strategy,
+        "report_fetch_succeeded": any(event.get("ok") for event in report_fetch_events),
+        "report_fetch_events": report_fetch_events,
+        "page_status": main_response_status,
+        "page_url": current_page_url,
+        "page_title": page_title,
+        "page_text_excerpt": page_text_excerpt,
+        "body_pdf_ready": body_pdf_ready,
+        "body_pdf_error": body_pdf_error,
+        "body_pdf_error_reason": body_pdf_error_reason,
+        "root_ready_exists": root_ready_exists,
+        "logo_status": logo_status,
+        "data_pdf_ready_exists": data_pdf_ready_exists,
+        "data_pdf_error_exists": data_pdf_error_exists,
+        "report_slide_count": report_slide_count,
+        "browser_console_events": browser_console_events[-20:],
+        "browser_page_errors": browser_page_errors[-20:],
+        "browser_request_failures": browser_request_failures[-20:],
+        "slide_numbers": slide_numbers,
+        "screenshot_bytes_per_slide": screenshot_bytes_per_slide,
+        "pdf_strategy": "slide_screenshots",
+        "viewport": {
+            "width": viewport_width,
+            "height": viewport_height,
+            "deviceScaleFactor": device_scale_factor,
+        },
+        "pdf_options": {
+            "width": pdf_options["width"],
+            "height": pdf_options["height"],
+            "margin": pdf_margins,
+            "prefer_css_page_size": False,
+            "print_background": True,
+        },
+        "render_duration_ms": render_duration_ms,
     }
 
 

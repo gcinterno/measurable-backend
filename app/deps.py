@@ -152,6 +152,24 @@ def get_current_user(
     return user
 
 
+def get_optional_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(auth_scheme),
+    db: Session = Depends(get_db),
+) -> User | None:
+    token = credentials.credentials if credentials is not None else request.cookies.get("access_token")
+    if not token:
+        return None
+    try:
+        subject = get_subject(token)
+    except TokenError:
+        return None
+    user = load_current_user(db, int(subject))
+    if not user or not user.is_active or getattr(user, "is_deleted", False) or not getattr(user, "email_verified", False):
+        return None
+    return user
+
+
 def require_admin_user(current_user: User = Depends(get_current_user)) -> User:
     if not getattr(current_user, "is_admin", False):
         raise http_error(403, "forbidden", "Admin access required.")

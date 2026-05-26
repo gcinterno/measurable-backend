@@ -32,6 +32,7 @@ from app.models import (
     User,
     UserAttribution,
     UserSuggestion,
+    WishlistLead,
     Workspace,
     WorkspaceMember,
 )
@@ -52,6 +53,7 @@ ADMIN_TABLES = [
     Report.__table__,
     AccountDeletionFeedback.__table__,
     UserSuggestion.__table__,
+    WishlistLead.__table__,
 ]
 
 
@@ -476,6 +478,86 @@ def test_admin_can_list_suggestions(client):
     assert items[0]["workspace_name"] == "Alice Workspace"
     assert items[0]["status"] == "new"
     assert items[0]["created_at"] is not None
+
+
+def test_wishlist_saves_lead(client):
+    _seed_admin_data()
+    token = _login_token(client, "alice@example.com", "AlicePass123!")
+
+    response = client.post(
+        "/wishlist",
+        json={
+            "name": "Alice Example",
+            "email": "alice@example.com",
+            "company": "Alice Co",
+            "message": "I need more than 10 reports for client work.",
+            "source": "upgrade_page",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["success"] is True
+    assert body["lead"]["name"] == "Alice Example"
+    assert body["lead"]["email"] == "alice@example.com"
+    assert body["lead"]["company"] == "Alice Co"
+    assert body["lead"]["source"] == "upgrade_page"
+    assert body["lead"]["workspace_id"] is not None
+
+
+def test_wishlist_rejects_invalid_email_and_empty_message(client):
+    invalid_email = client.post(
+        "/wishlist",
+        json={
+            "name": "Lead",
+            "email": "not-an-email",
+            "company": "Acme",
+            "message": "Need upgrade",
+            "source": "upgrade_page",
+        },
+    )
+    assert invalid_email.status_code == 400
+    assert invalid_email.json()["detail"]["code"] == "invalid_email"
+
+    empty_message = client.post(
+        "/wishlist",
+        json={
+            "name": "Lead",
+            "email": "lead@example.com",
+            "company": "Acme",
+            "message": "   ",
+            "source": "upgrade_page",
+        },
+    )
+    assert empty_message.status_code == 400
+    assert empty_message.json()["detail"]["code"] == "invalid_message"
+
+
+def test_admin_can_list_wishlist_leads(client):
+    _seed_admin_data()
+    admin_token = _login_token(client, "admin@example.com", "AdminPass123!")
+
+    create = client.post(
+        "/wishlist",
+        json={
+            "name": "Growth Lead",
+            "email": "lead@example.com",
+            "company": "Growth Co",
+            "message": "Please contact me for upgrades.",
+            "source": "upgrade_page",
+        },
+    )
+    assert create.status_code == 201
+
+    response = client.get("/admin/wishlist", headers={"Authorization": f"Bearer {admin_token}"})
+
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    assert items[0]["name"] == "Growth Lead"
+    assert items[0]["email"] == "lead@example.com"
+    assert items[0]["workspace_name"] is None
 
 
 def test_admin_updates_suggestion_status(client):

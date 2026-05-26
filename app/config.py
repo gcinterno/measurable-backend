@@ -19,12 +19,38 @@ class Settings(BaseSettings):
     export_lambda_url: str
     export_api_key: str | None = None
     ses_from_email: str | None = Field(default=None, validation_alias="SES_FROM_EMAIL")
+    api_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("API_BASE_URL", "BACKEND_BASE_URL", "NEXT_PUBLIC_API_URL"),
+    )
     report_export_base_url: str | None = None
     frontend_base_url: str | None = Field(default=None, validation_alias="FRONTEND_BASE_URL")
+    frontend_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("FRONTEND_URL", "FRONTEND_BASE_URL"),
+    )
+    stripe_secret_key: str | None = Field(default=None, validation_alias="STRIPE_SECRET_KEY")
+    stripe_webhook_secret: str | None = Field(default=None, validation_alias="STRIPE_WEBHOOK_SECRET")
+    stripe_price_starter_monthly: str | None = Field(
+        default=None,
+        validation_alias="STRIPE_PRICE_STARTER_MONTHLY",
+    )
+    stripe_price_pro_monthly: str | None = Field(
+        default=None,
+        validation_alias="STRIPE_PRICE_PRO_MONTHLY",
+    )
+    stripe_price_advanced_monthly: str | None = Field(
+        default=None,
+        validation_alias="STRIPE_PRICE_ADVANCED_MONTHLY",
+    )
+    stripe_billing_portal_return_url: str | None = Field(
+        default=None,
+        validation_alias="STRIPE_BILLING_PORTAL_RETURN_URL",
+    )
     cors_origins: str | None = Field(default=None, validation_alias="CORS_ORIGINS")
     report_export_path_template: str = "/reports/{report_id}/export/pdf-view"
-    pdf_export_ready_selector: str = '[data-report-export-ready="true"]'
-    pdf_export_timeout_ms: int = 30000
+    pdf_export_ready_selector: str = '[data-pdf-ready="true"]'
+    pdf_export_timeout_ms: int = 15000
     pdf_export_viewport_width: int = 1160
     pdf_export_viewport_height: int = 670
     pdf_export_device_scale_factor: float = 1.0
