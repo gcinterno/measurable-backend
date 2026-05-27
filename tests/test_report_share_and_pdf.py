@@ -72,7 +72,7 @@ def _auth_headers(user_id: int) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(str(user_id))}"}
 
 
-def _seed_report(*, plan: str) -> dict[str, int]:
+def _seed_report(*, plan: str, report_description: str = '{"locale":"en"}') -> dict[str, int]:
     db = SessionLocal()
     try:
         user = User(
@@ -106,7 +106,7 @@ def _seed_report(*, plan: str) -> dict[str, int]:
             workspace_id=workspace.id,
             dataset_id=dataset.id,
             name="Quarterly Report / May",
-            description='{"locale":"en"}',
+            description=report_description,
         )
         db.add(report)
         db.flush()
@@ -269,6 +269,68 @@ def test_private_pdf_export_preserves_incoming_ts_query(client, monkeypatch):
     assert "&_ts=1712345678" in str(captured["export_url"])
 
 
+def test_private_pdf_export_uses_stored_template_when_query_missing(client, monkeypatch):
+    refs = _seed_report(plan="starter", report_description='{"locale":"en","template":"modern"}')
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        main_module,
+        "generate_pdf_from_export_page",
+        lambda **_kwargs: (
+            captured.update(_kwargs) or True
+        )
+        and (
+            b"%PDF-1.4 private-stored-template",
+            {
+                "auth_strategy": "public_share_url",
+                "report_fetch_succeeded": True,
+                "page_count": 1,
+                "page_status": 200,
+                "page_title": "Report",
+                "page_text_excerpt": "Quarterly Report",
+            },
+        ),
+    )
+
+    response = client.get(
+        f"/reports/{refs['report_id']}/download/pdf",
+        headers=_auth_headers(refs["user_id"]),
+    )
+
+    assert response.status_code == 200
+    assert "&template=modern" in str(captured["export_url"])
+
+
+def test_private_pdf_export_falls_back_to_executive_template(client, monkeypatch):
+    refs = _seed_report(plan="starter")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        main_module,
+        "generate_pdf_from_export_page",
+        lambda **_kwargs: (
+            captured.update(_kwargs) or True
+        )
+        and (
+            b"%PDF-1.4 private-default-template",
+            {
+                "auth_strategy": "public_share_url",
+                "report_fetch_succeeded": True,
+                "page_count": 1,
+                "page_status": 200,
+                "page_title": "Report",
+                "page_text_excerpt": "Quarterly Report",
+            },
+        ),
+    )
+
+    response = client.get(
+        f"/reports/{refs['report_id']}/download/pdf",
+        headers=_auth_headers(refs["user_id"]),
+    )
+
+    assert response.status_code == 200
+    assert "&template=executive" in str(captured["export_url"])
+
+
 def test_pdf_export_returns_502_when_render_page_fails(client, monkeypatch):
     refs = _seed_report(plan="starter")
 
@@ -419,6 +481,21 @@ def test_public_report_payload_uses_requested_template_override(client):
     assert public_response.json()["report"]["template"] == "modern"
 
 
+def test_public_report_payload_falls_back_to_executive_template(client):
+    refs = _seed_report(plan="starter")
+
+    create_response = client.post(
+        f"/reports/{refs['report_id']}/share",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    share_token = create_response.json()["share_token"]
+
+    public_response = client.get(f"/public/reports/{share_token}")
+
+    assert public_response.status_code == 200
+    assert public_response.json()["report"]["template"] == "executive"
+
+
 def test_revoke_share_invalidates_public_link(client):
     refs = _seed_report(plan="starter")
 
@@ -553,6 +630,72 @@ def test_public_pdf_download_preserves_incoming_ts_query(client, monkeypatch):
     assert response.status_code == 200
     assert "&template=modern" in str(captured["export_url"])
     assert "&_ts=1712345678" in str(captured["export_url"])
+
+
+def test_public_pdf_download_uses_stored_template_when_query_missing(client, monkeypatch):
+    refs = _seed_report(plan="starter", report_description='{"locale":"en","template":"modern"}')
+    create_response = client.post(
+        f"/reports/{refs['report_id']}/share",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    share_token = create_response.json()["share_token"]
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        main_module,
+        "generate_pdf_from_export_page",
+        lambda **_kwargs: (
+            captured.update(_kwargs) or True
+        )
+        and (
+            b"%PDF-1.4 public-stored-template",
+            {
+                "auth_strategy": "public_share_url",
+                "report_fetch_succeeded": True,
+                "page_count": 1,
+                "page_status": 200,
+                "page_title": "Shared Report",
+                "page_text_excerpt": "Quarterly Report",
+            },
+        ),
+    )
+
+    response = client.get(f"/public/reports/{share_token}/download/pdf")
+
+    assert response.status_code == 200
+    assert "&template=modern" in str(captured["export_url"])
+
+
+def test_public_pdf_download_falls_back_to_executive_template(client, monkeypatch):
+    refs = _seed_report(plan="starter")
+    create_response = client.post(
+        f"/reports/{refs['report_id']}/share",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    share_token = create_response.json()["share_token"]
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        main_module,
+        "generate_pdf_from_export_page",
+        lambda **_kwargs: (
+            captured.update(_kwargs) or True
+        )
+        and (
+            b"%PDF-1.4 public-default-template",
+            {
+                "auth_strategy": "public_share_url",
+                "report_fetch_succeeded": True,
+                "page_count": 1,
+                "page_status": 200,
+                "page_title": "Shared Report",
+                "page_text_excerpt": "Quarterly Report",
+            },
+        ),
+    )
+
+    response = client.get(f"/public/reports/{share_token}/download/pdf")
+
+    assert response.status_code == 200
+    assert "&template=executive" in str(captured["export_url"])
 
 
 def test_public_pdf_download_returns_404_for_invalid_token(client):

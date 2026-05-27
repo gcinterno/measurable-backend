@@ -902,6 +902,34 @@ class MetaPageOut(BaseModel):
     followers_count: Optional[int] = None
     source: Optional[str] = None
     business_name: Optional[str] = None
+    last_synced_at: Optional[datetime] = None
+    cache_status: Optional[str] = None
+
+
+class MetaPageCatalogOut(BaseModel):
+    data: list[MetaPageOut]
+    source: str
+    count: int
+    has_cached_data: bool
+    refresh_available: bool = True
+    refresh_recommended: bool = False
+    message: Optional[str] = None
+    limit: int = 50
+    offset: int = 0
+    search: Optional[str] = None
+
+
+class MetaPagesRefreshIn(BaseModel):
+    integration_id: int
+
+
+class MetaPagesRefreshOut(BaseModel):
+    success: bool
+    code: Optional[str] = None
+    message: Optional[str] = None
+    facebook_pages_count: int = 0
+    instagram_accounts_count: int = 0
+    duration_ms: float = 0.0
 
 
 class MetaPagesSyncOut(BaseModel):

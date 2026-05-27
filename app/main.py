@@ -142,7 +142,10 @@ from .schemas import (
     MeUpdateIn,
     IntegrationSchema,
     MetaPageOut,
+    MetaPageCatalogOut,
     MetaPagesReportCreateIn,
+    MetaPagesRefreshIn,
+    MetaPagesRefreshOut,
     MetaPagesReportCreateOut,
     MetaSyncAllIn,
     MetaSyncAllOut,
@@ -287,6 +290,7 @@ from .services import (
 logger = logging.getLogger(__name__)
 DEFAULT_GENERATED_REPORT_SLIDE_COUNT = 2
 INTEGRATIONS_TOTAL_AVAILABLE = 3
+META_PAGES_CACHE_TTL = timedelta(hours=6)
 FREE_REPORT_LIMIT_CODE = "FREE_REPORT_LIMIT_REACHED"
 FREE_REPORT_LIMIT_MESSAGE = "Has alcanzado el límite de 10 reportes gratuitos."
 FREE_REPORT_LIMIT_UPGRADE_URL = "https://measurableapp.com/wishlist"
@@ -807,7 +811,7 @@ def _effective_report_template(report: Report, incoming_template: Any = None) ->
     stored = _stored_report_template(report)
     if stored:
         return stored, "report"
-    return None, "default"
+    return "executive", "default"
 
 
 def _pdf_export_timestamp(incoming_ts: Any = None) -> str:
@@ -5981,7 +5985,6 @@ def _log_meta_token_context(
             "token_id": token.id if token else None,
             "token_updated_at": token.updated_at.isoformat() if token and token.updated_at else None,
             "token_received": token_received,
-            "token_preview": _meta_token_preview(token.access_token if token else None),
             "selected_integration_type": selected_integration_type,
         },
     )
@@ -6252,7 +6255,6 @@ def _fetch_instagram_user_details(
                 "page_name": page_name,
                 "instagram_account_id": instagram_account_id,
                 "token_received": bool(access_token),
-                "token_preview": _meta_token_preview(access_token),
                 "error": str(exc.detail),
             },
         )
@@ -7473,6 +7475,7 @@ def _meta_page_out_from_cache(meta_page: MetaPage) -> MetaPageOut:
         followers_count=None,
         source="business" if meta_page.business_name else "direct",
         business_name=meta_page.business_name,
+        last_synced_at=meta_page.updated_at,
     )
 
 
@@ -8148,6 +8151,51 @@ def _get_stored_meta_records(
         .order_by(MetaPage.name.asc(), MetaPage.page_id.asc())
         .all()
     )
+
+
+def _meta_cache_last_synced_at(records: list[MetaPage]) -> datetime | None:
+    timestamps = [record.updated_at for record in records if record.updated_at is not None]
+    return max(timestamps) if timestamps else None
+
+
+def _meta_cache_status(records: list[MetaPage]) -> str:
+    if not records:
+        return "empty_cache"
+    last_synced_at = _meta_cache_last_synced_at(records)
+    if last_synced_at is None:
+        return "cached_stale"
+    if last_synced_at.tzinfo is None:
+        last_synced_at = last_synced_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - last_synced_at <= META_PAGES_CACHE_TTL:
+        return "cached"
+    return "cached_stale"
+
+
+def _apply_meta_records_search(records: list[MetaPage], search: str | None) -> list[MetaPage]:
+    normalized_search = str(search or "").strip().lower()
+    if not normalized_search:
+        return records
+    return [
+        record
+        for record in records
+        if normalized_search in str(record.name or "").lower()
+        or normalized_search in str(record.page_id or "").lower()
+        or normalized_search in str(record.instagram_username or "").lower()
+        or normalized_search in str(record.business_name or "").lower()
+    ]
+
+
+def _paginate_meta_records(records: list[MetaPage], *, limit: int, offset: int) -> list[MetaPage]:
+    safe_offset = max(offset, 0)
+    safe_limit = max(min(limit, 100), 1)
+    return records[safe_offset : safe_offset + safe_limit]
+
+
+def _meta_page_out_with_cache_status(meta_page: MetaPage, *, cache_status: str) -> MetaPageOut:
+    payload = _meta_page_out_from_cache(meta_page)
+    payload.source = "cached"
+    payload.cache_status = cache_status
+    return payload
 
 
 def _cache_meta_pages(
@@ -14194,6 +14242,7 @@ def download_public_report_pdf(
         extra={
             "report_id": report.id,
             "version_id": report_version.id,
+            "template": effective_template,
             "incoming_template": template,
             "effective_template": effective_template,
             "cache_enabled": False,
@@ -14974,6 +15023,7 @@ def download_report_pdf(
         extra={
             "report_id": report.id,
             "version_id": report_version.id,
+            "template": effective_template,
             "incoming_template": template,
             "effective_template": effective_template,
             "cache_enabled": False,
@@ -15645,6 +15695,9 @@ def meta_debug_permissions(
 @app.get("/integrations/meta/pages", response_model=list[MetaPageOut])
 def meta_pages(
     integration_id: int,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[MetaPageOut]:
@@ -15655,6 +15708,9 @@ def meta_pages(
         record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
         selected_integration_type="facebook_pages",
         debug_source="dropdown_response",
+        limit=limit,
+        offset=offset,
+        search=search,
     )
 
 
@@ -15666,7 +15722,36 @@ def _get_meta_records_response(
     record_type: str,
     selected_integration_type: str,
     debug_source: str,
+    limit: int = 50,
+    offset: int = 0,
+    search: str | None = None,
 ) -> list[MetaPageOut]:
+    return _get_meta_records_catalog_response(
+        db,
+        current_user,
+        integration_id,
+        record_type=record_type,
+        selected_integration_type=selected_integration_type,
+        debug_source=debug_source,
+        limit=limit,
+        offset=offset,
+        search=search,
+    ).data
+
+
+def _get_meta_records_catalog_response(
+    db: Session,
+    current_user: User,
+    integration_id: int,
+    *,
+    record_type: str,
+    selected_integration_type: str,
+    debug_source: str,
+    limit: int = 50,
+    offset: int = 0,
+    search: str | None = None,
+) -> MetaPageCatalogOut:
+    started_at = perf_counter()
     integration = _get_meta_integration(db, current_user, integration_id)
     stored_records_before = (
         db.query(MetaPage)
@@ -15698,77 +15783,132 @@ def _get_meta_records_response(
         len(stored_pages_before),
         [page.name for page in stored_pages_before],
     )
-    try:
-        access_token = _get_meta_access_token(db, integration)
-    except HTTPException as exc:
-        logger.warning(
-            "Meta records GET missing token integration_id=%s user_id=%s record_type=%s stored_count=%s stored_names=%s error=%s",
-            integration.id,
-            current_user.id,
-            record_type,
-            len(stored_pages_before),
-            [page.name for page in stored_pages_before],
-            str(exc.detail),
-        )
-        _cache_meta_pages(db, integration, current_user.id, [])
-        _clear_selected_meta_page_if_unauthorized(db, integration, set())
-        _log_meta_pages_debug(
-            integration_id=integration.id,
-            source="dropdown_response_missing_token",
-            pages=[],
-            dropdown_count=0,
-        )
-        return []
+    response_source = _meta_cache_status(stored_pages_before)
+    live_refresh_triggered = False
+    returned_records = stored_pages_before
+    message: str | None = None
+    refresh_recommended = response_source == "cached_stale"
+    meta_duration_ms: float | None = None
 
-    cached_pages, diagnostics, facebook_pages = _refresh_meta_pages_from_live_graph(
-        db,
-        integration,
-        access_token=access_token,
-        user_id=current_user.id,
-        selected_integration_type=selected_integration_type,
-        context=debug_source,
-        return_empty_on_error=True,
+    if not stored_pages_before:
+        response_source = "empty_cache"
+        try:
+            access_token = _get_meta_access_token(db, integration)
+        except HTTPException as exc:
+            logger.warning(
+                "Meta records GET empty cache and missing token integration_id=%s user_id=%s record_type=%s error=%s",
+                integration.id,
+                current_user.id,
+                record_type,
+                str(exc.detail),
+            )
+            message = "No cached pages found. Refresh required."
+            returned_records = []
+        else:
+            live_started_at = perf_counter()
+            live_refresh_triggered = True
+            cached_pages, diagnostics, facebook_pages = _refresh_meta_pages_from_live_graph(
+                db,
+                integration,
+                access_token=access_token,
+                user_id=current_user.id,
+                selected_integration_type=selected_integration_type,
+                context=f"{debug_source}_initial_discovery",
+                return_empty_on_error=True,
+            )
+            meta_duration_ms = round((perf_counter() - live_started_at) * 1000, 2)
+            instagram_accounts = _filter_meta_records(
+                cached_pages,
+                record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+            )
+            returned_records = (
+                facebook_pages
+                if record_type == META_RECORD_TYPE_FACEBOOK_PAGE
+                else instagram_accounts
+            )
+            response_source = "live" if returned_records else "empty_cache"
+            if not returned_records:
+                message = "No cached pages found. Refresh required."
+            _log_meta_account_summary(
+                integration_id=integration.id,
+                user_id=current_user.id,
+                selected_integration_type=selected_integration_type,
+                facebook_pages=facebook_pages,
+                instagram_accounts=instagram_accounts,
+                context=f"{debug_source}_initial_discovery",
+            )
+            _log_meta_pages_debug(
+                integration_id=integration.id,
+                source=f"{debug_source}_initial_discovery",
+                pages=returned_records,
+                dropdown_count=len(returned_records),
+            )
+            logger.warning(
+                "Meta initial discovery completed integration_id=%s user_id=%s record_type=%s total_pages_from_meta=%s response_source=%s meta_duration_ms=%s",
+                integration.id,
+                current_user.id,
+                record_type,
+                len(diagnostics),
+                response_source,
+                meta_duration_ms,
+            )
+
+    filtered_records = _filter_meta_records(
+        returned_records,
+        record_type=record_type,
     )
-    instagram_accounts = _filter_meta_records(
-        cached_pages,
-        record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
-    )
-    returned_records = (
-        _filter_meta_records(cached_pages, record_type=record_type)
-        if record_type == META_RECORD_TYPE_FACEBOOK_PAGE
-        else instagram_accounts
-    )
+    searched_records = _apply_meta_records_search(filtered_records, search)
+    paginated_records = _paginate_meta_records(searched_records, limit=limit, offset=offset)
     _log_meta_account_summary(
         integration_id=integration.id,
         user_id=current_user.id,
         selected_integration_type=selected_integration_type,
-        facebook_pages=facebook_pages,
-        instagram_accounts=instagram_accounts,
+        facebook_pages=_filter_meta_records(returned_records, record_type=META_RECORD_TYPE_FACEBOOK_PAGE),
+        instagram_accounts=_filter_meta_records(returned_records, record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT),
         context=debug_source,
     )
     _log_meta_pages_debug(
         integration_id=integration.id,
         source=debug_source,
-        pages=returned_records,
-        dropdown_count=len(returned_records),
+        pages=paginated_records,
+        dropdown_count=len(paginated_records),
     )
     logger.warning(
-        "Meta records GET completed integration_id=%s user_id=%s record_type=%s stored_total_pages_count=%s stored_facebook_page_count=%s stored_instagram_account_count=%s returned_pages_count=%s returned_page_names=%s",
+        "Meta records GET completed integration_id=%s user_id=%s record_type=%s cached_pages_count=%s cached_instagram_count=%s live_refresh_triggered=%s meta_duration_ms=%s response_source=%s returned_pages_count=%s search=%s limit=%s offset=%s endpoint_duration_ms=%s",
         integration.id,
         current_user.id,
         record_type,
-        len(cached_pages),
-        len(facebook_pages),
-        len(instagram_accounts),
-        len(returned_records),
-        [page.name for page in returned_records],
+        len(_filter_meta_records(returned_records, record_type=META_RECORD_TYPE_FACEBOOK_PAGE)),
+        len(_filter_meta_records(returned_records, record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT)),
+        live_refresh_triggered,
+        meta_duration_ms,
+        response_source,
+        len(paginated_records),
+        search,
+        limit,
+        offset,
+        round((perf_counter() - started_at) * 1000, 2),
     )
-    return [_meta_page_out_from_cache(page) for page in returned_records]
+    return MetaPageCatalogOut(
+        data=[_meta_page_out_with_cache_status(page, cache_status=response_source) for page in paginated_records],
+        source=response_source,
+        count=len(searched_records),
+        has_cached_data=bool(stored_pages_before),
+        refresh_available=True,
+        refresh_recommended=refresh_recommended,
+        message=message,
+        limit=limit,
+        offset=offset,
+        search=search,
+    )
 
 
 @app.get("/integrations/meta/facebook-pages", response_model=list[MetaPageOut])
 def meta_facebook_pages(
     integration_id: int,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[MetaPageOut]:
@@ -15779,12 +15919,18 @@ def meta_facebook_pages(
         record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
         selected_integration_type="facebook_pages",
         debug_source="facebook_pages_response",
+        limit=limit,
+        offset=offset,
+        search=search,
     )
 
 
 @app.get("/integrations/meta/instagram-accounts", response_model=list[MetaPageOut])
 def meta_instagram_accounts(
     integration_id: int,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[MetaPageOut]:
@@ -15795,6 +15941,128 @@ def meta_instagram_accounts(
         record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
         selected_integration_type="instagram_accounts",
         debug_source="instagram_accounts_response",
+        limit=limit,
+        offset=offset,
+        search=search,
+    )
+
+
+@app.get("/integrations/meta/pages/catalog", response_model=MetaPageCatalogOut)
+def meta_pages_catalog(
+    integration_id: int,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaPageCatalogOut:
+    return _get_meta_records_catalog_response(
+        db,
+        current_user,
+        integration_id,
+        record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
+        selected_integration_type="facebook_pages",
+        debug_source="pages_catalog_response",
+        limit=limit,
+        offset=offset,
+        search=search,
+    )
+
+
+@app.get("/integrations/meta/instagram-accounts/catalog", response_model=MetaPageCatalogOut)
+def meta_instagram_accounts_catalog(
+    integration_id: int,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaPageCatalogOut:
+    return _get_meta_records_catalog_response(
+        db,
+        current_user,
+        integration_id,
+        record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+        selected_integration_type="instagram_accounts",
+        debug_source="instagram_catalog_response",
+        limit=limit,
+        offset=offset,
+        search=search,
+    )
+
+
+@app.post("/integrations/meta/refresh-pages", response_model=MetaPagesRefreshOut)
+def meta_refresh_pages(
+    payload: MetaPagesRefreshIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaPagesRefreshOut:
+    started_at = perf_counter()
+    integration = _get_meta_integration(db, current_user, payload.integration_id)
+    try:
+        access_token = _get_meta_access_token(db, integration)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        return MetaPagesRefreshOut(
+            success=False,
+            code=str(detail.get("code") or "META_REFRESH_FAILED"),
+            message="No pudimos actualizar las paginas en este momento. Puedes usar las paginas guardadas o intentar de nuevo.",
+            duration_ms=round((perf_counter() - started_at) * 1000, 2),
+        )
+
+    try:
+        cached_pages, diagnostics, facebook_pages = _refresh_meta_pages_from_live_graph(
+            db,
+            integration,
+            access_token=access_token,
+            user_id=current_user.id,
+            selected_integration_type="facebook_pages",
+            context="refresh_pages_on_demand",
+            return_empty_on_error=False,
+        )
+    except TimeoutError:
+        return MetaPagesRefreshOut(
+            success=False,
+            code="META_REFRESH_TIMEOUT",
+            message="No pudimos actualizar todas las paginas en este momento. Puedes usar las paginas guardadas o intentar de nuevo.",
+            duration_ms=round((perf_counter() - started_at) * 1000, 2),
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        error_code = str(detail.get("code") or "META_REFRESH_FAILED")
+        if error_code in {"meta_api_timeout", "request_timeout"}:
+            error_code = "META_REFRESH_TIMEOUT"
+        return MetaPagesRefreshOut(
+            success=False,
+            code=error_code,
+            message="No pudimos actualizar todas las paginas en este momento. Puedes usar las paginas guardadas o intentar de nuevo.",
+            duration_ms=round((perf_counter() - started_at) * 1000, 2),
+        )
+
+    instagram_accounts = _filter_meta_records(
+        cached_pages,
+        record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+    )
+    duration_ms = round((perf_counter() - started_at) * 1000, 2)
+    logger.warning(
+        "Meta refresh pages completed integration_id=%s workspace_id=%s user_id=%s live_refresh_triggered=%s total_pages_from_meta=%s facebook_pages_count=%s instagram_accounts_count=%s meta_duration_ms=%s response_source=%s endpoint_duration_ms=%s",
+        integration.id,
+        integration.workspace_id,
+        current_user.id,
+        True,
+        len(diagnostics),
+        len(facebook_pages),
+        len(instagram_accounts),
+        duration_ms,
+        "live",
+        duration_ms,
+    )
+    return MetaPagesRefreshOut(
+        success=True,
+        facebook_pages_count=len(facebook_pages),
+        instagram_accounts_count=len(instagram_accounts),
+        duration_ms=duration_ms,
+        message="Pages refreshed successfully.",
     )
 
 
