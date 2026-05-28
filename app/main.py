@@ -143,6 +143,9 @@ from .schemas import (
     IntegrationSchema,
     MetaPageOut,
     MetaPageCatalogOut,
+    MetaDisconnectIn,
+    MetaDisconnectClearedOut,
+    MetaDisconnectOut,
     MetaPagesReportCreateIn,
     MetaPagesRefreshIn,
     MetaPagesRefreshOut,
@@ -5835,6 +5838,135 @@ def _set_meta_integration_status(
     db.commit()
     db.refresh(integration)
     return integration
+
+
+def _revoke_meta_permissions(access_token: str) -> str:
+    normalized_token = str(access_token or "").strip()
+    if not normalized_token:
+        return "skipped"
+    revoke_url = f"https://graph.facebook.com/{settings.meta_api_version}/me/permissions"
+    try:
+        response = requests.delete(
+            revoke_url,
+            params={"access_token": normalized_token},
+            timeout=15,
+        )
+        if response.ok:
+            return "success"
+        logger.warning(
+            "[META_DISCONNECT_REVOKE_FAILED]",
+            extra={
+                "status_code": response.status_code,
+                "response_body": str(response.text or "")[:1000] or None,
+            },
+        )
+    except requests.RequestException as exc:
+        logger.warning(
+            "[META_DISCONNECT_REVOKE_FAILED]",
+            extra={"error": str(exc)},
+        )
+    return "failed"
+
+
+def _resolve_meta_disconnect_integration(
+    db: Session,
+    current_user: User,
+    *,
+    integration_id: int | None,
+    workspace_id: int | None,
+) -> Integration:
+    if integration_id is not None:
+        return _get_meta_integration(db, current_user, int(integration_id))
+
+    resolved_workspace_id = _resolve_meta_connect_workspace_id(
+        db,
+        user_id=current_user.id,
+        requested_workspace_id=workspace_id,
+    )
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    return _get_or_create_meta_integration_for_workspace(db, resolved_workspace_id)
+
+
+def _disconnect_meta_integration(
+    db: Session,
+    integration: Integration,
+    *,
+    revoke_permissions: bool = True,
+) -> MetaDisconnectOut:
+    token_accounts = (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration.id,
+            IntegrationAccount.external_account_id == _meta_token_account_external_id(integration.id),
+        )
+        .all()
+    )
+    integration_accounts = (
+        db.query(IntegrationAccount)
+        .filter(IntegrationAccount.integration_id == integration.id)
+        .all()
+    )
+    token_account_ids = [account.id for account in token_accounts]
+    all_integration_account_ids = [account.id for account in integration_accounts]
+    tokens = (
+        db.query(IntegrationToken)
+        .filter(IntegrationToken.account_id.in_(all_integration_account_ids))
+        .all()
+        if all_integration_account_ids
+        else []
+    )
+    stored_records = (
+        db.query(MetaPage)
+        .filter(MetaPage.integration_id == integration.id)
+        .all()
+    )
+    facebook_pages_count = len(
+        [record for record in stored_records if record.record_type == META_RECORD_TYPE_FACEBOOK_PAGE]
+    )
+    instagram_accounts_count = len(
+        [record for record in stored_records if record.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT]
+    )
+
+    meta_revoke_status = "skipped"
+    if revoke_permissions and token_account_ids:
+        latest_token = _get_latest_integration_token(db, token_account_ids[0])
+        if latest_token and latest_token.access_token:
+            meta_revoke_status = _revoke_meta_permissions(latest_token.access_token)
+
+    for record in stored_records:
+        db.delete(record)
+    for account in integration_accounts:
+        db.delete(account)
+    integration.status = "disconnected"
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+
+    cleared = MetaDisconnectClearedOut(
+        tokens=bool(tokens),
+        facebook_pages=facebook_pages_count,
+        instagram_accounts=instagram_accounts_count,
+        integration_accounts=len(integration_accounts),
+    )
+    logger.info(
+        "[META_DISCONNECT_AUDIT]",
+        extra={
+            "integration_id": integration.id,
+            "workspace_id": integration.workspace_id,
+            "provider": integration.provider,
+            "status": integration.status,
+            "token_accounts_count": len(token_accounts),
+            "integration_accounts_count": len(integration_accounts),
+            "tokens_cleared": cleared.tokens,
+            "facebook_pages_cleared": cleared.facebook_pages,
+            "instagram_accounts_cleared": cleared.instagram_accounts,
+            "meta_revoke_status": meta_revoke_status,
+        },
+    )
+    return MetaDisconnectOut(
+        cleared=cleared,
+        meta_revoke_status=meta_revoke_status,
+    )
 
 
 def _is_development_env() -> bool:
@@ -15679,6 +15811,21 @@ def meta_set_token_manual(
     }
 
 
+@app.post("/integrations/meta/disconnect", response_model=MetaDisconnectOut)
+def meta_disconnect(
+    payload: MetaDisconnectIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaDisconnectOut:
+    integration = _resolve_meta_disconnect_integration(
+        db,
+        current_user,
+        integration_id=payload.integration_id,
+        workspace_id=payload.workspace_id,
+    )
+    return _disconnect_meta_integration(db, integration, revoke_permissions=True)
+
+
 @app.get("/integrations/meta/debug-permissions")
 def meta_debug_permissions(
     integration_id: int,
@@ -15783,6 +15930,31 @@ def _get_meta_records_catalog_response(
         len(stored_pages_before),
         [page.name for page in stored_pages_before],
     )
+    if str(integration.status or "").strip().lower() != "connected":
+        logger.info(
+            "[META_RECORDS_DISCONNECTED]",
+            extra={
+                "integration_id": integration.id,
+                "workspace_id": integration.workspace_id,
+                "record_type": record_type,
+                "stored_total_pages_count": len(stored_records_before),
+                "stored_count": len(stored_pages_before),
+            },
+        )
+        return MetaPageCatalogOut(
+            data=[],
+            source="disconnected",
+            count=0,
+            has_cached_data=False,
+            status="disconnected",
+            connected=False,
+            refresh_available=False,
+            refresh_recommended=False,
+            message="Meta integration is disconnected.",
+            limit=limit,
+            offset=offset,
+            search=search,
+        )
     response_source = _meta_cache_status(stored_pages_before)
     live_refresh_triggered = False
     returned_records = stored_pages_before

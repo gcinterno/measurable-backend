@@ -879,6 +879,29 @@ class MetaSetTokenManualIn(BaseModel):
     access_token: str
 
 
+class MetaDisconnectIn(BaseModel):
+    integration_id: Optional[int] = None
+    workspace_id: Optional[int] = None
+
+
+class MetaDisconnectClearedOut(BaseModel):
+    tokens: bool = False
+    facebook_pages: int = 0
+    instagram_accounts: int = 0
+    integration_accounts: int = 0
+
+
+class MetaDisconnectOut(BaseModel):
+    success: bool = True
+    provider: str = "meta"
+    status: str = "disconnected"
+    disconnected_integrations: list[str] = Field(
+        default_factory=lambda: ["facebook_pages", "instagram_business"]
+    )
+    cleared: MetaDisconnectClearedOut = Field(default_factory=MetaDisconnectClearedOut)
+    meta_revoke_status: str = "skipped"
+
+
 class MetaSelectPageIn(BaseModel):
     integration_id: int
     page_id: str
@@ -911,6 +934,8 @@ class MetaPageCatalogOut(BaseModel):
     source: str
     count: int
     has_cached_data: bool
+    status: str = "connected"
+    connected: bool = True
     refresh_available: bool = True
     refresh_recommended: bool = False
     message: Optional[str] = None
