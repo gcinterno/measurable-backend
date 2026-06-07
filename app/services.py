@@ -51,7 +51,6 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_REPORT_LOCALES = {"en", "es"}
 DEFAULT_WORKSPACE_PLAN = "free"
-FREE_REPORTS_LIMIT = 10
 OPTIONAL_REFERRAL_TABLES = frozenset(
     {
         "user_attributions",
@@ -181,8 +180,15 @@ PLAN_ENTITLEMENTS = {
 
 MEASURABLE_BRANDING_NAME = "Measurable"
 MEASURABLE_REPORT_BRANDING_NAME = "Measurableapp.com Report Generator"
+MEASURABLE_WATERMARK_LABEL = "Created with measurableapp.com"
 MEASURABLE_BRANDING_LOGO_URL: str = str(
     os.getenv("MEASURABLE_BRANDING_LOGO_URL") or "http://localhost:3000/brand/measurable-logo.svg"
+).strip()
+MEASURABLE_WATERMARK_LOGO_LIGHT_URL: str = str(
+    os.getenv("MEASURABLE_WATERMARK_LOGO_LIGHT_URL") or "/brand/measurable-logo-black.png"
+).strip()
+MEASURABLE_WATERMARK_LOGO_DARK_URL: str = str(
+    os.getenv("MEASURABLE_WATERMARK_LOGO_DARK_URL") or "/brand/measurable-logo-white.png"
 ).strip()
 
 
@@ -383,23 +389,7 @@ def count_workspace_reports_this_month(
     *,
     now: datetime | None = None,
 ) -> int:
-    current_time = now or datetime.now().astimezone()
-    month_start = current_time.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    if month_start.month == 12:
-        next_month_start = month_start.replace(year=month_start.year + 1, month=1)
-    else:
-        next_month_start = month_start.replace(month=month_start.month + 1)
-
-    count = (
-        db.query(func.count(Report.id))
-        .filter(
-            Report.workspace_id == workspace_id,
-            Report.created_at >= month_start,
-            Report.created_at < next_month_start,
-        )
-        .scalar()
-    )
-    return int(count or 0)
+    return int(get_workspace_report_quota_status(db, workspace_id, now=now)["reports_used"])
 
 
 def count_workspace_reports_total(db: Session, workspace_id: int) -> int:
@@ -407,17 +397,76 @@ def count_workspace_reports_total(db: Session, workspace_id: int) -> int:
     return int(count or 0)
 
 
-def get_remaining_reports(db: Session, workspace_id: int) -> int | None:
-    plan = get_workspace_plan(db, workspace_id)
-    limits = get_plan_limits(plan)
-    monthly_limit = limits["reports_per_month"]
-    if monthly_limit is None:
+def _normalize_quota_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
         return None
-    monthly_remaining = max(int(monthly_limit) - count_workspace_reports_this_month(db, workspace_id), 0)
-    if normalize_workspace_plan(plan) == "free":
-        total_remaining = max(FREE_REPORTS_LIMIT - count_workspace_reports_total(db, workspace_id), 0)
-        return min(monthly_remaining, total_remaining)
-    return monthly_remaining
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _default_report_quota_period(*, now: datetime | None = None) -> tuple[datetime, datetime]:
+    current_time = _normalize_quota_datetime(now) or datetime.now(timezone.utc)
+    month_start = current_time.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if month_start.month == 12:
+        next_month_start = month_start.replace(year=month_start.year + 1, month=1)
+    else:
+        next_month_start = month_start.replace(month=month_start.month + 1)
+    return month_start, next_month_start
+
+
+def resolve_report_quota_period(
+    subscription: Subscription | None,
+    *,
+    now: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    period_start = _normalize_quota_datetime(
+        subscription.current_period_start if subscription is not None else None
+    )
+    period_end = _normalize_quota_datetime(
+        subscription.current_period_end if subscription is not None else None
+    )
+    if period_start is not None and period_end is not None and period_end > period_start:
+        return period_start, period_end
+    return _default_report_quota_period(now=now)
+
+
+def get_workspace_report_quota_status(
+    db: Session,
+    workspace_id: int,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    subscription = get_workspace_subscription(db, workspace_id)
+    plan = normalize_workspace_plan(subscription.plan) if subscription is not None else DEFAULT_WORKSPACE_PLAN
+    limits = get_plan_limits(plan)
+    report_limit = limits["reports_per_month"]
+    period_start, period_end = resolve_report_quota_period(subscription, now=now)
+
+    reports_used = int(
+        db.query(func.count(Report.id))
+        .filter(Report.workspace_id == workspace_id)
+        .filter(Report.created_at >= period_start)
+        .filter(Report.created_at < period_end)
+        .scalar()
+        or 0
+    )
+    reports_limit = int(report_limit) if report_limit is not None else None
+    reports_remaining = None if reports_limit is None else max(reports_limit - reports_used, 0)
+    limit_reached = False if reports_limit is None else reports_used >= reports_limit
+    return {
+        "reports_used": reports_used,
+        "reports_limit": reports_limit,
+        "reports_remaining": reports_remaining,
+        "limit_reached": limit_reached,
+        "period_start": period_start,
+        "period_end": period_end,
+        "plan": plan,
+    }
+
+
+def get_remaining_reports(db: Session, workspace_id: int) -> int | None:
+    return get_workspace_report_quota_status(db, workspace_id)["reports_remaining"]
 
 
 def can_create_report(db: Session, workspace_id: int) -> bool:
@@ -453,40 +502,29 @@ def can_schedule_report(db: Session, workspace_id: int) -> bool:
 
 def enforce_monthly_report_limit(db: Session, workspace_id: int) -> dict[str, Any]:
     plan_details = get_workspace_plan_details(db, workspace_id)
-    report_limit = plan_details["limits"]["reports_per_month"]
-    if report_limit is None:
+    quota = get_workspace_report_quota_status(db, workspace_id)
+    if quota["reports_limit"] is None:
         return plan_details
 
-    reports_this_month = count_workspace_reports_this_month(db, workspace_id)
-    if reports_this_month >= report_limit:
-        raise http_error(
-            403,
-            "monthly_report_limit_reached",
-            "Monthly report limit reached for current plan.",
+    if bool(quota["limit_reached"]):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "monthly_report_limit_reached",
+                "message": "You have reached your monthly report limit.",
+                "reports_used": quota["reports_used"],
+                "reports_limit": quota["reports_limit"],
+                "reports_remaining": quota["reports_remaining"],
+                "period_start": quota["period_start"].isoformat() if quota["period_start"] else None,
+                "period_end": quota["period_end"].isoformat() if quota["period_end"] else None,
+                "plan": quota["plan"],
+            },
         )
     return plan_details
 
 
-class FreeReportLimitReachedError(Exception):
-    def __init__(self, *, workspace_id: int, reports_created: int, report_limit: int) -> None:
-        super().__init__("Free report limit reached.")
-        self.workspace_id = workspace_id
-        self.reports_created = reports_created
-        self.report_limit = report_limit
-
-
 def enforce_report_creation_limit(db: Session, workspace_id: int) -> dict[str, Any]:
-    plan_details = get_workspace_plan_details(db, workspace_id)
-    if normalize_workspace_plan(plan_details["plan"]) == "free":
-        reports_created = count_workspace_reports_total(db, workspace_id)
-        if reports_created >= FREE_REPORTS_LIMIT:
-            raise FreeReportLimitReachedError(
-                workspace_id=workspace_id,
-                reports_created=reports_created,
-                report_limit=FREE_REPORTS_LIMIT,
-            )
-    enforce_monthly_report_limit(db, workspace_id)
-    return plan_details
+    return enforce_monthly_report_limit(db, workspace_id)
 
 
 def enforce_slide_limit(db: Session, workspace_id: int, slide_count: int) -> dict[str, Any]:
@@ -1143,20 +1181,32 @@ def _ses_client() -> Any:
     return boto3.client("ses", **client_kwargs)
 
 
+def _safe_email_delivery_reason(exc: Exception) -> str:
+    if isinstance(exc, ClientError):
+        error = exc.response.get("Error") or {}
+        code = str(error.get("Code") or "").strip()
+        message = str(error.get("Message") or "").strip()
+        if code and message:
+            return _truncate_log_value(f"{code}: {message}", limit=200) or exc.__class__.__name__
+        if code:
+            return code[:200]
+    return exc.__class__.__name__
+
+
 def send_auth_email(
     *,
     recipient_email: str,
     subject: str,
     html_body: str,
     text_body: str,
-) -> None:
+) -> str | None:
     from_email = str(settings.ses_from_email or "").strip()
     if not from_email:
         raise http_error(503, "email_service_unavailable", "Email service is not configured.")
 
     try:
         ses = _ses_client()
-        ses.send_email(
+        response = ses.send_email(
             Source=from_email,
             Destination={"ToAddresses": [recipient_email]},
             ReplyToAddresses=["hello@measurableapp.com"],
@@ -1168,6 +1218,7 @@ def send_auth_email(
                 },
             },
         )
+        return str(response.get("MessageId") or "").strip() or None
     except (NoCredentialsError, BotoCoreError, ClientError) as exc:
         logger.exception(
             "auth_email_send_failed",
@@ -1175,6 +1226,9 @@ def send_auth_email(
                 "recipient_domain": recipient_email.split("@")[-1] if "@" in recipient_email else None,
                 "exception_class": exc.__class__.__name__,
                 "reply_to": "hello@measurableapp.com",
+                "reason": _safe_email_delivery_reason(exc),
+                "aws_region": settings.aws_region,
+                "from_email_configured": bool(from_email),
             },
         )
         raise http_error(503, "email_delivery_failed", "Unable to send verification email.") from exc
@@ -1733,11 +1787,68 @@ def measurable_branding() -> dict[str, Optional[str]]:
         "fallback_logo_url": MEASURABLE_BRANDING_LOGO_URL,
         "resolved_logo_url": MEASURABLE_BRANDING_LOGO_URL,
         "resolved_brand_name": MEASURABLE_BRANDING_NAME,
+        "source": "measurable",
+        "watermark_enabled": True,
+        "watermark_label": MEASURABLE_WATERMARK_LABEL,
+        "watermark_logo_light_url": MEASURABLE_WATERMARK_LOGO_LIGHT_URL,
+        "watermark_logo_dark_url": MEASURABLE_WATERMARK_LOGO_DARK_URL,
         "has_custom_branding": False,
     }
 
 
-def normalize_branding_payload(branding: Any) -> dict[str, Optional[str]]:
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    return None
+
+
+def _branding_uses_measurable_logo(value: Any) -> bool:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return False
+    return "/brand/measurable-logo" in normalized
+
+
+def _branding_marks_measurable(branding: Any) -> bool:
+    if not isinstance(branding, dict):
+        return False
+    if str(branding.get("source") or "").strip().lower() == "measurable":
+        return True
+    explicit_watermark = _coerce_optional_bool(branding.get("watermark_enabled"))
+    if explicit_watermark is True:
+        return True
+    brand_name_candidates = {
+        str(branding.get("brand_name") or "").strip(),
+        str(branding.get("resolved_brand_name") or "").strip(),
+        str(branding.get("display_name") or "").strip(),
+        str(branding.get("name") or "").strip(),
+    }
+    if {
+        MEASURABLE_BRANDING_NAME,
+        MEASURABLE_REPORT_BRANDING_NAME,
+    }.intersection({candidate for candidate in brand_name_candidates if candidate}):
+        return True
+    return any(
+        _branding_uses_measurable_logo(branding.get(field_name))
+        for field_name in (
+            "logo_url",
+            "brand_logo_url",
+            "resolved_logo_url",
+            "fallback_logo_url",
+            "watermark_logo_light_url",
+            "watermark_logo_dark_url",
+        )
+    )
+
+
+def normalize_branding_payload(branding: Any) -> dict[str, Any]:
     if not isinstance(branding, dict):
         return {
             "name": None,
@@ -1748,6 +1859,11 @@ def normalize_branding_payload(branding: Any) -> dict[str, Optional[str]]:
             "fallback_logo_url": None,
             "resolved_logo_url": None,
             "resolved_brand_name": None,
+            "source": None,
+            "watermark_enabled": None,
+            "watermark_label": None,
+            "watermark_logo_light_url": None,
+            "watermark_logo_dark_url": None,
             "has_custom_branding": False,
         }
     name = str(
@@ -1773,6 +1889,15 @@ def normalize_branding_payload(branding: Any) -> dict[str, Optional[str]]:
         "fallback_logo_url": fallback_logo_url,
         "resolved_logo_url": logo_url,
         "resolved_brand_name": name,
+        "source": str(branding.get("source") or "").strip().lower() or None,
+        "watermark_enabled": _coerce_optional_bool(branding.get("watermark_enabled")),
+        "watermark_label": str(branding.get("watermark_label") or "").strip() or None,
+        "watermark_logo_light_url": (
+            str(branding.get("watermark_logo_light_url") or "").strip() or None
+        ),
+        "watermark_logo_dark_url": (
+            str(branding.get("watermark_logo_dark_url") or "").strip() or None
+        ),
         "has_custom_branding": bool(branding.get("has_custom_branding")),
     }
 
@@ -1880,10 +2005,13 @@ def resolve_report_branding(
     workspace: Workspace | dict[str, Any] | None,
     plan: str | None,
     preferred_branding: dict[str, Any] | None = None,
+    report_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     fallback_logo_url = MEASURABLE_BRANDING_LOGO_URL
     fallback_brand_name = MEASURABLE_REPORT_BRANDING_NAME
-    custom_branding_allowed = bool(get_plan_capabilities(plan).get("allow_custom_branding"))
+    normalized_plan = normalize_workspace_plan(plan)
+    plan_entitlements = get_plan_entitlements(normalized_plan)
+    custom_branding_allowed = bool(get_plan_capabilities(normalized_plan).get("allow_custom_branding"))
 
     workspace_id = None
     if isinstance(workspace, dict):
@@ -1894,6 +2022,13 @@ def resolve_report_branding(
     preferred = normalize_branding_payload(preferred_branding)
     workspace_branding = _normalize_workspace_branding_source(workspace)
     user_branding = _normalize_user_branding_source(user)
+    normalized_report_metadata = report_metadata if isinstance(report_metadata, dict) else {}
+    metadata_plan_at_generation = normalized_report_metadata.get("plan_at_generation")
+    plan_at_generation = (
+        normalize_workspace_plan(metadata_plan_at_generation)
+        if str(metadata_plan_at_generation or "").strip()
+        else None
+    )
 
     raw_brand_name = (
         preferred.get("brand_name")
@@ -1915,6 +2050,32 @@ def resolve_report_branding(
         resolved_logo_url = fallback_logo_url
         has_custom_branding = False
 
+    explicit_watermark_enabled = preferred.get("watermark_enabled")
+    if explicit_watermark_enabled is None and isinstance(normalized_report_metadata.get("branding"), dict):
+        explicit_watermark_enabled = _coerce_optional_bool(
+            normalized_report_metadata["branding"].get("watermark_enabled")
+        )
+    metadata_measurable_branding = _branding_marks_measurable(preferred) or _branding_marks_measurable(
+        normalized_report_metadata.get("branding")
+    )
+    created_on_free_plan = (
+        bool(get_plan_entitlements(plan_at_generation).get("measurable_watermark"))
+        if plan_at_generation
+        else False
+    )
+    if explicit_watermark_enabled is not None:
+        watermark_enabled = bool(explicit_watermark_enabled)
+    elif metadata_measurable_branding:
+        watermark_enabled = True
+    elif plan_at_generation is not None:
+        watermark_enabled = created_on_free_plan
+    else:
+        watermark_enabled = bool(plan_entitlements.get("measurable_watermark"))
+
+    branding_source = preferred.get("source")
+    if branding_source not in {"user", "measurable"}:
+        branding_source = "measurable" if watermark_enabled or not custom_branding_allowed else "user"
+
     return {
         "name": resolved_brand_name,
         "display_name": resolved_brand_name,
@@ -1924,6 +2085,17 @@ def resolve_report_branding(
         "fallback_logo_url": fallback_logo_url,
         "resolved_logo_url": resolved_logo_url,
         "resolved_brand_name": resolved_brand_name,
+        "source": branding_source,
+        "watermark_enabled": watermark_enabled,
+        "watermark_label": (
+            MEASURABLE_WATERMARK_LABEL if watermark_enabled else None
+        ),
+        "watermark_logo_light_url": (
+            MEASURABLE_WATERMARK_LOGO_LIGHT_URL if watermark_enabled else None
+        ),
+        "watermark_logo_dark_url": (
+            MEASURABLE_WATERMARK_LOGO_DARK_URL if watermark_enabled else None
+        ),
         "has_custom_branding": has_custom_branding,
     }
 
@@ -1964,7 +2136,8 @@ def resolve_report_branding_for_workspace(
     workspace_id: int,
     preferred_branding: dict[str, Any] | None = None,
     user: User | dict[str, Any] | None = None,
-) -> dict[str, Optional[str]]:
+    report_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     workspace = db.get(Workspace, workspace_id) if workspace_id else None
     plan = get_workspace_plan(db, workspace_id) if workspace_id else DEFAULT_WORKSPACE_PLAN
     return resolve_report_branding(
@@ -1972,6 +2145,7 @@ def resolve_report_branding_for_workspace(
         workspace,
         plan,
         preferred_branding=preferred_branding,
+        report_metadata=report_metadata,
     )
 
 
@@ -2790,6 +2964,7 @@ def build_export_payload(
         db,
         report.workspace_id,
         preferred_branding=metadata_branding,
+        report_metadata=report_metadata if isinstance(report_metadata, dict) else None,
     )
     report_timeframe = (
         report_metadata.get("timeframe")

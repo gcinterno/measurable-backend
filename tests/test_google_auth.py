@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +22,7 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 
 from app.deps import get_db
 from app.db import Base, SessionLocal, engine
+from app.integrations import meta_ads
 from app.main import app
 from app.models import EmailVerificationCode, Integration, ReferralConversion, Subscription, User, UserAttribution, Workspace, WorkspaceMember
 from app.security import create_access_token, create_oauth_state
@@ -378,4 +380,106 @@ def test_meta_callback_pages_returns_popup_close_html_for_invalid_state(client):
     assert "\"http://localhost:3000\"" in body
     assert "window.close()" in body
     assert "window.location.replace" in body
+    assert "We could not complete the connection." in body
     assert "Volver a Measurable" in body
+    assert "facebook.com/connect/uiserver.php" not in body
+
+
+def test_meta_oauth_connect_pages_url_uses_backend_callback_for_both_flows(monkeypatch):
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+
+    default_url = meta_ads.oauth_connect_pages_url("default-state")
+    instagram_url = meta_ads.oauth_connect_pages_url("instagram-state")
+
+    expected_redirect_uri = "https://api.measurableapp.com/integrations/meta/callback-pages"
+    for auth_url in (default_url, instagram_url):
+        parsed = urlparse(auth_url)
+        query = parse_qs(parsed.query)
+        assert query["redirect_uri"] == [expected_redirect_uri]
+
+
+def test_meta_connect_pages_preserves_integration_type_and_backend_callback(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="meta-instagram@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Meta Instagram",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace = Workspace(name="Meta Instagram Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="free", status="active"))
+        db.commit()
+        workspace_id = workspace.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+
+    response = client.get(
+        f"/integrations/meta/connect-pages?workspace_id={workspace_id}&integration_type=instagram_accounts",
+        headers=_auth_headers_for("meta-instagram@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    parsed = urlparse(payload["auth_url"])
+    query = parse_qs(parsed.query)
+    state_payload = meta_ads.decode_state(query["state"][0])
+    assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/meta/callback-pages"]
+    assert state_payload["integration_type"] == "instagram_accounts"
+    assert state_payload["callback_route"] == "/integrations/meta/callback-pages"
+
+
+def test_meta_exchange_pages_code_uses_same_backend_callback(monkeypatch):
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+
+    captured: dict[str, object] = {}
+
+    class DummyResponse:
+        status_code = 200
+        text = "{\"access_token\": \"token-value\"}"
+
+        def json(self):
+            return {"access_token": "token-value"}
+
+    def fake_get(url, params=None, timeout=30):
+        captured["url"] = url
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return DummyResponse()
+
+    monkeypatch.setattr(meta_ads.requests, "get", fake_get)
+
+    payload = meta_ads.exchange_pages_code_for_token("meta-code")
+
+    assert payload["access_token"] == "token-value"
+    assert captured["params"]["redirect_uri"] == "https://api.measurableapp.com/integrations/meta/callback-pages"
+
+
+def test_meta_callback_pages_returns_clean_html_when_query_params_are_missing(client):
+    response = client.get("/integrations/meta/callback-pages")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    body = response.text
+    assert "window.opener.postMessage" in body
+    assert "\"MEASURABLE_META_CONNECT_ERROR\"" in body
+    assert "The Meta connection could not be verified." in body
+    assert "window.close()" in body

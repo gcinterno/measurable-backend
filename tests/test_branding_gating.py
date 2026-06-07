@@ -27,6 +27,9 @@ from app.security import create_access_token, hash_password
 from app.services import (
     MEASURABLE_BRANDING_LOGO_URL,
     MEASURABLE_REPORT_BRANDING_NAME,
+    MEASURABLE_WATERMARK_LABEL,
+    MEASURABLE_WATERMARK_LOGO_DARK_URL,
+    MEASURABLE_WATERMARK_LOGO_LIGHT_URL,
     build_export_payload,
 )
 
@@ -123,6 +126,8 @@ def _seed_branding_fixture(*, plan: str) -> dict[str, int]:
 
 
 def test_free_workspace_reports_use_measurable_branding_for_read_and_export(client):
+    assert MEASURABLE_WATERMARK_LABEL == "Created with measurableapp.com"
+
     refs = _seed_branding_fixture(plan="free")
 
     workspace_response = client.get(
@@ -145,6 +150,11 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
     assert create_response.status_code == 200
     payload = create_response.json()
     assert payload["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
+    assert payload["branding"]["source"] == "measurable"
+    assert payload["branding"]["watermark_enabled"] is True
+    assert payload["branding"]["watermark_label"] == MEASURABLE_WATERMARK_LABEL
+    assert payload["branding"]["watermark_logo_light_url"] == MEASURABLE_WATERMARK_LOGO_LIGHT_URL
+    assert payload["branding"]["watermark_logo_dark_url"] == MEASURABLE_WATERMARK_LOGO_DARK_URL
 
     db = SessionLocal()
     try:
@@ -153,6 +163,11 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
         metadata = json.loads(report.description or "{}")
         assert metadata["branding"]["brand_name"] == MEASURABLE_REPORT_BRANDING_NAME
         assert metadata["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
+        assert metadata["branding"]["source"] == "measurable"
+        assert metadata["branding"]["watermark_enabled"] is True
+        assert metadata["branding"]["watermark_label"] == MEASURABLE_WATERMARK_LABEL
+        assert metadata["branding"]["watermark_logo_light_url"] == MEASURABLE_WATERMARK_LOGO_LIGHT_URL
+        assert metadata["branding"]["watermark_logo_dark_url"] == MEASURABLE_WATERMARK_LOGO_DARK_URL
 
         metadata["branding"] = {
             "brand_name": "Acme",
@@ -184,6 +199,8 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
         assert export_payload["report"]["branding"]["brand_name"] == MEASURABLE_REPORT_BRANDING_NAME
         assert export_payload["report"]["branding"]["resolved_brand_name"] == MEASURABLE_REPORT_BRANDING_NAME
         assert export_payload["report"]["branding"]["resolved_logo_url"] == MEASURABLE_BRANDING_LOGO_URL
+        assert export_payload["report"]["branding"]["source"] == "measurable"
+        assert export_payload["report"]["branding"]["watermark_enabled"] is True
     finally:
         db.close()
 
@@ -193,6 +210,7 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
     )
     assert get_response.status_code == 200
     assert get_response.json()["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
+    assert get_response.json()["branding"]["watermark_enabled"] is True
 
     version_response = client.get(
         f"/reports/{payload['id']}/versions/1",
@@ -200,6 +218,7 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
     )
     assert version_response.status_code == 200
     assert version_response.json()["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
+    assert version_response.json()["branding"]["watermark_enabled"] is True
 
 
 def test_paid_workspace_reports_keep_custom_branding(client):
@@ -225,6 +244,9 @@ def test_paid_workspace_reports_keep_custom_branding(client):
     assert create_response.status_code == 200
     payload = create_response.json()
     assert payload["branding"]["logo_url"] == "https://custom.example/workspace-logo.png"
+    assert payload["branding"]["source"] == "user"
+    assert payload["branding"]["watermark_enabled"] is False
+    assert payload["branding"]["watermark_label"] is None
 
     db = SessionLocal()
     try:
@@ -232,6 +254,8 @@ def test_paid_workspace_reports_keep_custom_branding(client):
         assert report is not None
         metadata = json.loads(report.description or "{}")
         assert metadata["branding"]["logo_url"] == "https://custom.example/workspace-logo.png"
+        assert metadata["branding"]["source"] == "user"
+        assert metadata["branding"]["watermark_enabled"] is False
 
         report_version = (
             db.query(ReportVersion)
@@ -252,6 +276,8 @@ def test_paid_workspace_reports_keep_custom_branding(client):
         assert export_payload["report"]["branding"]["brand_name"] == "Acme Workspace"
         assert export_payload["report"]["branding"]["resolved_brand_name"] == "Acme Workspace"
         assert export_payload["report"]["branding"]["resolved_logo_url"] == "https://custom.example/workspace-logo.png"
+        assert export_payload["report"]["branding"]["source"] == "user"
+        assert export_payload["report"]["branding"]["watermark_enabled"] is False
     finally:
         db.close()
 
@@ -262,6 +288,80 @@ def test_paid_workspace_reports_keep_custom_branding(client):
     assert get_response.status_code == 200
     assert get_response.json()["branding"]["logo_url"] == "https://custom.example/workspace-logo.png"
     assert get_response.json()["branding"]["brand_name"] == "Acme Workspace"
+    assert get_response.json()["branding"]["watermark_enabled"] is False
+
+
+def test_legacy_free_report_without_watermark_flag_still_infers_watermark_from_plan_at_generation(client):
+    refs = _seed_branding_fixture(plan="pro")
+
+    db = SessionLocal()
+    try:
+        report = Report(
+            workspace_id=refs["workspace_id"],
+            dataset_id=refs["dataset_id"],
+            name="Legacy free report",
+            description=json.dumps(
+                {
+                    "locale": "en",
+                    "plan_at_generation": "free",
+                    "branding": {
+                        "brand_name": MEASURABLE_REPORT_BRANDING_NAME,
+                        "logo_url": MEASURABLE_BRANDING_LOGO_URL,
+                    },
+                }
+            ),
+        )
+        db.add(report)
+        db.flush()
+        db.add(ReportVersion(report_id=report.id, version=1))
+        db.commit()
+        report_id = report.id
+    finally:
+        db.close()
+
+    response = client.get(
+        f"/reports/{report_id}",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    assert response.status_code == 200
+    assert response.json()["branding"]["source"] == "measurable"
+    assert response.json()["branding"]["watermark_enabled"] is True
+
+
+def test_legacy_paid_report_without_watermark_flag_defaults_to_false(client):
+    refs = _seed_branding_fixture(plan="free")
+
+    db = SessionLocal()
+    try:
+        report = Report(
+            workspace_id=refs["workspace_id"],
+            dataset_id=refs["dataset_id"],
+            name="Legacy paid report",
+            description=json.dumps(
+                {
+                    "locale": "en",
+                    "plan_at_generation": "pro",
+                    "branding": {
+                        "brand_name": "Legacy Paid Brand",
+                        "logo_url": "https://custom.example/legacy-paid-logo.png",
+                    },
+                }
+            ),
+        )
+        db.add(report)
+        db.flush()
+        db.add(ReportVersion(report_id=report.id, version=1))
+        db.commit()
+        report_id = report.id
+    finally:
+        db.close()
+
+    response = client.get(
+        f"/reports/{report_id}",
+        headers=_auth_headers(refs["user_id"]),
+    )
+    assert response.status_code == 200
+    assert response.json()["branding"]["watermark_enabled"] is False
 
 
 def test_workspace_brand_assets_patch_are_shared_by_settings_and_reports(client):

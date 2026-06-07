@@ -33,6 +33,7 @@ from app.models import (
     WorkspaceMember,
 )
 from app.services import build_auth_email_html, build_auth_email_text, send_auth_email
+from app.errors import http_error
 
 
 AUTH_TABLES = [
@@ -161,6 +162,90 @@ def test_register_verify_login_flow(client):
     assert me_json["email_verified"] is True
     assert me_json["auth_provider"] == "email"
     assert me_json["is_admin"] is False
+
+
+def test_register_generates_verification_code_and_logs_email_send(client, monkeypatch, caplog):
+    email = "alice@example.com"
+    calls: list[dict[str, str]] = []
+
+    def fake_send_auth_email(**kwargs):
+        calls.append(kwargs)
+        return "ses-message-123"
+
+    monkeypatch.setattr("app.main.send_auth_email", fake_send_auth_email)
+
+    with caplog.at_level("INFO"):
+        response = client.post(
+            "/auth/register",
+            json={"email": email, "password": "CorrectHorseBattery1!", "full_name": "Alice Example"},
+        )
+
+    assert response.status_code == 201
+    code_row = _latest_code(email)
+    assert code_row is not None
+    assert code_row.purpose == "email_verification"
+    assert code_row.used_at is None
+    assert calls and calls[0]["recipient_email"] == email
+    assert calls[0]["subject"] == "Verify your Measurable email"
+
+    attempt = next(record for record in caplog.records if record.message == "REGISTER_EMAIL_ATTEMPT")
+    sent = next(record for record in caplog.records if record.message == "REGISTER_EMAIL_SENT")
+    assert getattr(attempt, "email", None) == "a***e@example.com"
+    assert getattr(sent, "message_id", None) == "ses-message-123"
+    assert all("123456" not in record.getMessage() for record in caplog.records)
+
+
+def test_register_email_failure_returns_friendly_error_and_safe_log(client, monkeypatch, caplog):
+    def fake_send_auth_email(**kwargs):
+        raise http_error(503, "email_delivery_failed", "Unable to send verification email.")
+
+    monkeypatch.setattr("app.main.send_auth_email", fake_send_auth_email)
+
+    with caplog.at_level("INFO"):
+        response = client.post(
+            "/auth/register",
+            json={"email": "failed@example.com", "password": "CorrectHorseBattery1!", "full_name": "Failed Send"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "email_delivery_failed"
+    assert response.json()["detail"]["message"] == "We couldn't send your verification email right now. Please try again."
+
+    attempt = next(record for record in caplog.records if record.message == "REGISTER_EMAIL_ATTEMPT")
+    failed = next(record for record in caplog.records if record.message == "REGISTER_EMAIL_FAILED")
+    assert getattr(attempt, "email", None) == "f***d@example.com"
+    assert getattr(failed, "reason", None) == "Unable to send verification email."
+    assert not any(record.message == "REGISTER_EMAIL_SENT" for record in caplog.records)
+
+
+def test_register_and_forgot_password_use_shared_auth_email_sender(client, monkeypatch):
+    calls: list[dict[str, str]] = []
+
+    def fake_send_auth_email(**kwargs):
+        calls.append(kwargs)
+        return "shared-message-id"
+
+    monkeypatch.setattr("app.main.send_auth_email", fake_send_auth_email)
+
+    email = "shared-sender@example.com"
+    password = "CorrectHorseBattery1!"
+    register = client.post(
+        "/auth/register",
+        json={"email": email, "password": password, "full_name": "Shared Sender"},
+    )
+    assert register.status_code == 201
+
+    verify = client.post("/auth/verify-email", json={"email": email, "code": "123456"})
+    assert verify.status_code == 200
+
+    forgot = client.post("/auth/forgot-password", json={"email": email})
+    assert forgot.status_code == 200
+
+    assert len(calls) == 2
+    assert calls[0]["recipient_email"] == email
+    assert calls[0]["subject"] == "Verify your Measurable email"
+    assert calls[1]["recipient_email"] == email
+    assert calls[1]["subject"] == "Reset your Measurable password"
 
 
 def test_login_invalid_password_returns_401_and_logs_failure(client, caplog):
@@ -480,6 +565,7 @@ def test_auth_email_sender_uses_multipart_reply_to_and_expected_subject(monkeypa
     class FakeSes:
         def send_email(self, **kwargs):
             captured.update(kwargs)
+            return {"MessageId": "ses-123"}
 
     monkeypatch.setattr("app.services._ses_client", lambda: FakeSes())
 
@@ -496,15 +582,35 @@ def test_auth_email_sender_uses_multipart_reply_to_and_expected_subject(monkeypa
         expires_minutes=15,
     )
 
-    send_auth_email(
+    message_id = send_auth_email(
         recipient_email="alice@example.com",
         subject="Your Measurable verification code",
         html_body=html_body,
         text_body=text_body,
     )
 
+    assert message_id == "ses-123"
     assert captured["Source"] == "no-reply@measurable.test"
     assert captured["ReplyToAddresses"] == ["hello@measurableapp.com"]
     assert captured["Message"]["Subject"]["Data"] == "Your Measurable verification code"
     assert "Html" in captured["Message"]["Body"]
     assert "Text" in captured["Message"]["Body"]
+
+
+def test_ses_client_uses_configured_aws_region(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_boto_client(service_name: str, **kwargs):
+        captured["service_name"] = service_name
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("app.services.settings.aws_region", "us-west-2")
+    monkeypatch.setattr("app.services.boto3.client", fake_boto_client)
+
+    from app.services import _ses_client
+
+    _ses_client()
+
+    assert captured["service_name"] == "ses"
+    assert captured["region_name"] == "us-west-2"

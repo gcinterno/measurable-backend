@@ -1,9 +1,12 @@
 import base64
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import requests
+from jose import JWTError, jwt
 
 from ..config import settings
 from ..errors import http_error
@@ -14,6 +17,8 @@ META_PAGES_OAUTH_SCOPE = (
     "pages_show_list,pages_read_engagement,read_insights,"
     "instagram_basic,instagram_manage_insights,business_management"
 )
+META_PAGES_CALLBACK_PATH = "/integrations/meta/callback-pages"
+META_OAUTH_STATE_PURPOSE = "meta_pages_oauth"
 
 
 def _truncate_meta_log_value(value: Any, limit: int = 4000) -> str | None:
@@ -103,23 +108,68 @@ def _require_meta_pages_config() -> None:
 
 def get_meta_pages_redirect_uri() -> str:
     _require_meta_pages_config()
-    return settings.meta_pages_redirect_uri
+    configured_redirect_uri = str(settings.meta_pages_redirect_uri or "").strip()
+    api_base_url = str(settings.api_base_url or "").strip().rstrip("/")
+    if api_base_url:
+        resolved_redirect_uri = f"{api_base_url}{META_PAGES_CALLBACK_PATH}"
+    else:
+        parsed = urlparse(configured_redirect_uri)
+        if not parsed.scheme or not parsed.netloc:
+            raise http_error(
+                status_code=500,
+                code="meta_pages_config_invalid",
+                message="META_PAGES_REDIRECT_URI must be an absolute URL.",
+            )
+        resolved_redirect_uri = urlunparse(
+            (parsed.scheme, parsed.netloc, META_PAGES_CALLBACK_PATH, "", "", "")
+        )
+
+    if resolved_redirect_uri != configured_redirect_uri:
+        logger.warning(
+            "Meta Pages redirect URI normalized configured=%s resolved=%s api_base_url_loaded=%s",
+            configured_redirect_uri,
+            resolved_redirect_uri,
+            bool(api_base_url),
+        )
+    return resolved_redirect_uri
 
 
-def encode_state(payload: dict[str, Any]) -> str:
-    raw = json.dumps(payload).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("utf-8")
+def encode_state(payload: dict[str, Any], *, expires_seconds: int = 1800) -> str:
+    now = datetime.now(timezone.utc)
+    signed_payload = {
+        "purpose": META_OAUTH_STATE_PURPOSE,
+        "payload": payload,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=expires_seconds)).timestamp()),
+    }
+    return jwt.encode(signed_payload, settings.jwt_secret, algorithm=settings.jwt_alg)
+
+
+def _decode_legacy_state(state: str) -> dict[str, Any]:
+    padding = (-len(state)) % 4
+    if padding:
+        state = state + ("=" * padding)
+    raw = base64.urlsafe_b64decode(state.encode("utf-8"))
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_state")
+    return payload
 
 
 def decode_state(state: str) -> dict[str, Any]:
     try:
-        padding = (-len(state)) % 4
-        if padding:
-            state = state + ("=" * padding)
-        raw = base64.urlsafe_b64decode(state.encode("utf-8"))
-        return json.loads(raw.decode("utf-8"))
-    except Exception as exc:  # pragma: no cover - defensive
-        raise ValueError("invalid_state") from exc
+        payload = jwt.decode(state, settings.jwt_secret, algorithms=[settings.jwt_alg])
+        if payload.get("purpose") != META_OAUTH_STATE_PURPOSE:
+            raise ValueError("invalid_state")
+        signed_payload = payload.get("payload")
+        if not isinstance(signed_payload, dict):
+            raise ValueError("invalid_state")
+        return signed_payload
+    except JWTError:
+        try:
+            return _decode_legacy_state(state)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ValueError("invalid_state") from exc
 
 
 def oauth_connect_url(

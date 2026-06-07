@@ -522,6 +522,11 @@ class BrandingOut(BaseModel):
     fallback_logo_url: Optional[str] = None
     resolved_logo_url: Optional[str] = None
     resolved_brand_name: Optional[str] = None
+    source: Optional[Literal["user", "measurable"]] = None
+    watermark_enabled: Optional[bool] = None
+    watermark_label: Optional[str] = None
+    watermark_logo_light_url: Optional[str] = None
+    watermark_logo_dark_url: Optional[str] = None
     has_custom_branding: bool = False
 
 

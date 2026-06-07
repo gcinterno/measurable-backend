@@ -636,5 +636,8 @@ def test_report_creation_limit_returns_monthly_limit_code_and_detail(client):
     assert response.status_code == 403
     payload = response.json()
     assert payload["code"] == "monthly_report_limit_reached"
-    assert payload["detail"] == "Monthly report limit reached for current plan."
-    assert payload["message"] == "Monthly report limit reached for current plan."
+    assert payload["detail"] == "You have reached your monthly report limit."
+    assert payload["message"] == "You have reached your monthly report limit."
+    assert payload["reports_used"] == 10
+    assert payload["reports_limit"] == 10
+    assert payload["reports_remaining"] == 0

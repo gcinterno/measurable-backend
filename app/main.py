@@ -8,7 +8,7 @@ import re
 import secrets
 import requests
 from decimal import Decimal
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from datetime import date, timedelta, datetime, timezone, time
 from time import perf_counter
 from functools import lru_cache
@@ -243,13 +243,10 @@ from .services import (
     build_auth_email_text,
     create_manual_referral_conversion,
     create_referral_click,
-    FREE_REPORTS_LIMIT,
-    FreeReportLimitReachedError,
     issue_auth_code,
     send_auth_email,
     validate_auth_code,
     count_workspace_reports_total,
-    count_workspace_reports_this_month,
     count_workspace_storage_bytes,
     enforce_report_creation_limit,
     enforce_storage_limit,
@@ -261,9 +258,9 @@ from .services import (
     get_plan_code_for_stripe_price,
     get_plan_entitlements,
     get_workspace_plan,
+    get_workspace_report_quota_status,
     get_workspace_subscription,
     get_plan_limits,
-    get_remaining_reports,
     get_stripe_price_plan_mapping,
     get_subscription_entitlements,
     hash_client_ip,
@@ -294,23 +291,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_GENERATED_REPORT_SLIDE_COUNT = 2
 INTEGRATIONS_TOTAL_AVAILABLE = 3
 META_PAGES_CACHE_TTL = timedelta(hours=6)
-FREE_REPORT_LIMIT_CODE = "FREE_REPORT_LIMIT_REACHED"
-FREE_REPORT_LIMIT_MESSAGE = "Has alcanzado el límite de 10 reportes gratuitos."
-FREE_REPORT_LIMIT_UPGRADE_URL = "https://measurableapp.com/wishlist"
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _workspace_account_display_payload(workspace: Workspace | None, user: User | None) -> dict[str, str | None]:
     return resolve_account_display_name(workspace, user)
-
-
-def _free_report_limit_payload() -> dict[str, str]:
-    return {
-        "code": FREE_REPORT_LIMIT_CODE,
-        "detail": FREE_REPORT_LIMIT_MESSAGE,
-        "message": FREE_REPORT_LIMIT_MESSAGE,
-        "upgrade_url": FREE_REPORT_LIMIT_UPGRADE_URL,
-    }
 
 
 def _enforce_report_creation_limit_or_response(
@@ -319,18 +304,22 @@ def _enforce_report_creation_limit_or_response(
 ) -> JSONResponse | None:
     try:
         enforce_report_creation_limit(db, workspace_id)
-    except FreeReportLimitReachedError:
-        return JSONResponse(status_code=403, content=_free_report_limit_payload())
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         if exc.status_code == 403 and str(detail.get("code") or "").strip() == "monthly_report_limit_reached":
-            message = str(detail.get("message") or "Monthly report limit reached for current plan.")
+            message = str(detail.get("message") or "You have reached your monthly report limit.")
             return JSONResponse(
                 status_code=403,
                 content={
                     "code": "monthly_report_limit_reached",
                     "detail": message,
                     "message": message,
+                    "reports_used": detail.get("reports_used"),
+                    "reports_limit": detail.get("reports_limit"),
+                    "reports_remaining": detail.get("reports_remaining"),
+                    "period_start": detail.get("period_start"),
+                    "period_end": detail.get("period_end"),
+                    "plan": detail.get("plan"),
                 },
             )
         raise
@@ -434,6 +423,7 @@ def _billing_status_for_subscription(subscription: Subscription | None) -> str:
 
 def _billing_me_out(db: Session, subscription: Subscription | None, workspace_id: int) -> BillingMeOut:
     entitlements = get_subscription_entitlements(subscription)
+    quota = get_workspace_report_quota_status(db, workspace_id)
     return BillingMeOut(
         plan_code=str(entitlements["plan_code"]),
         plan_name=_plan_display_name(str(entitlements["plan_code"])),
@@ -442,7 +432,7 @@ def _billing_me_out(db: Session, subscription: Subscription | None, workspace_id
         price_monthly_usd=int(entitlements["price_monthly_usd"]),
         cancel_at_period_end=bool(subscription.cancel_at_period_end) if subscription is not None else False,
         reports_limit_monthly=entitlements["reports_limit_monthly"],
-        reports_used_current_month=count_workspace_reports_this_month(db, workspace_id),
+        reports_used_current_month=int(quota["reports_used"]),
         slides_per_report_limit=int(entitlements["slides_per_report_limit"]),
         platform_report_type=str(entitlements["platform_report_type"]),
         ai_chat_with_data=bool(entitlements["ai_chat_with_data"]),
@@ -952,20 +942,10 @@ def _workspace_plan_snapshot(db: Session, workspace_id: int) -> dict[str, object
 
 def _workspace_summary_out(db: Session, workspace: Workspace, user: User | None) -> AccountSummaryOut:
     plan_snapshot = _workspace_plan_snapshot(db, workspace.id)
-    plan_limits = dict(plan_snapshot["plan_limits"])
+    quota = get_workspace_report_quota_status(db, workspace.id)
     reports_created_count = count_workspace_reports_total(db, workspace.id)
-    reports_this_month = count_workspace_reports_this_month(db, workspace.id)
-    report_limit = plan_limits.get("reports_per_month")
-    reports_remaining_this_month = (
-        None if report_limit is None else max(int(report_limit) - int(reports_this_month), 0)
-    )
-    reports_available_count = reports_remaining_this_month
-    if bool(plan_snapshot["is_free_plan"]):
-        free_reports_remaining = max(FREE_REPORTS_LIMIT - reports_created_count, 0)
-        if reports_available_count is None:
-            reports_available_count = free_reports_remaining
-        else:
-            reports_available_count = min(int(reports_available_count), free_reports_remaining)
+    reports_remaining_this_month = quota["reports_remaining"]
+    reports_available_count = quota["reports_remaining"]
     integrations_connected_count = int(
         db.query(func.count(Integration.id))
         .filter(Integration.workspace_id == workspace.id, func.lower(Integration.status) == "connected")
@@ -977,7 +957,7 @@ def _workspace_summary_out(db: Session, workspace: Workspace, user: User | None)
         reports_created_count=reports_created_count,
         reports_available_count=reports_available_count,
         reports_remaining_this_month=reports_remaining_this_month,
-        reports_limit_this_month=int(report_limit) if report_limit is not None else None,
+        reports_limit_this_month=quota["reports_limit"],
         integrations_connected_count=integrations_connected_count,
         integrations_total_available=INTEGRATIONS_TOTAL_AVAILABLE,
         current_plan_name=str(plan_snapshot["plan"]),
@@ -1111,6 +1091,33 @@ def _safe_exception_message(exc: Exception) -> str:
     if not message:
         return exc.__class__.__name__
     return message[:200]
+
+
+def _mask_email(email: str) -> str:
+    value = email.strip()
+    if "@" not in value:
+        return "***"
+    local_part, domain = value.split("@", 1)
+    if not local_part:
+        return f"***@{domain}"
+    if len(local_part) == 1:
+        return f"{local_part[0]}***@{domain}"
+    return f"{local_part[0]}***{local_part[-1]}@{domain}"
+
+
+def _safe_register_email_failure_reason(exc: HTTPException) -> str:
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    code = str(detail.get("code") or "").strip()
+    if code == "email_service_unavailable":
+        if not str(settings.ses_from_email or "").strip():
+            return "SES_FROM_EMAIL missing"
+        if not str(settings.aws_region or "").strip():
+            return "AWS_REGION missing"
+        return "email service unavailable"
+    if code == "email_delivery_failed" and exc.__cause__ is not None:
+        return _safe_exception_message(cast(Exception, exc.__cause__))
+    message = str(detail.get("message") or "").strip()
+    return message[:200] if message else "email send failed"
 
 
 def _decimal_to_float(value: Any) -> float:
@@ -1762,6 +1769,7 @@ def _report_branding(db: Session, report: Report) -> dict[str, object]:
         db,
         report.workspace_id,
         preferred_branding=branding,
+        report_metadata=metadata,
     )
 
 
@@ -2842,6 +2850,7 @@ def _is_deleted_user(user: User | None) -> bool:
 @app.post("/auth/register", response_model=RegisterOut, status_code=201)
 def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
     email = payload.email.strip()
+    masked_email = _mask_email(email)
     full_name = payload.full_name.strip() if payload.full_name and payload.full_name.strip() else None
 
     if not email:
@@ -2922,7 +2931,8 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
             user=user,
             purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
         )
-        send_auth_email(
+        logger.info("REGISTER_EMAIL_ATTEMPT", extra={"email": masked_email})
+        message_id = send_auth_email(
             recipient_email=user.email,
             subject="Verify your Measurable email",
             html_body=build_auth_email_html(
@@ -2936,6 +2946,7 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
                 purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
             ),
         )
+        logger.info("REGISTER_EMAIL_SENT", extra={"message_id": message_id})
         db.commit()
         logger.info(
             "auth_register_completed",
@@ -2953,16 +2964,19 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
             workspace_id=workspace.id if existing_user is None else None,
             plan=subscription.plan if existing_user is None and subscription else None,
         )
-    except HTTPException:
+    except HTTPException as exc:
         db.rollback()
-        logger.warning(
-            "google_oauth_error",
-            extra={
-                "email": email,
-                "exception_class": "HTTPException",
-                "safe_message": "Google OAuth callback failed.",
-            },
-        )
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if str(detail.get("code") or "").strip() in {"email_delivery_failed", "email_service_unavailable"}:
+            logger.warning(
+                "REGISTER_EMAIL_FAILED",
+                extra={"reason": _safe_register_email_failure_reason(exc)},
+            )
+            raise http_error(
+                503,
+                "email_delivery_failed",
+                "We couldn't send your verification email right now. Please try again.",
+            ) from exc
         raise
     except IntegrityError as exc:
         db.rollback()
@@ -7706,6 +7720,14 @@ def _meta_frontend_base_url() -> str:
     return "http://localhost:3000"
 
 
+def _meta_frontend_origin() -> str:
+    frontend_base_url = _meta_frontend_base_url()
+    parsed = urlsplit(frontend_base_url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return frontend_base_url
+
+
 def _meta_oauth_frontend_callback_url(
     *,
     status: str,
@@ -7753,6 +7775,7 @@ def _meta_oauth_popup_response(
     source: str | None = None,
     integration_id: int | None = None,
     error: str | None = None,
+    message: str | None = None,
 ) -> HTMLResponse:
     target_url = _meta_oauth_frontend_callback_url(
         status=status,
@@ -7760,12 +7783,12 @@ def _meta_oauth_popup_response(
         integration_id=integration_id,
         error=error,
     )
-    frontend_origin = _meta_frontend_base_url()
+    frontend_origin = _meta_frontend_origin()
     event_type = "MEASURABLE_META_CONNECT_SUCCESS" if status == "connected" else "MEASURABLE_META_CONNECT_ERROR"
     fallback_message = (
-        "Conexion completada. Puedes cerrar esta pestana."
+        "Connection completed. You can close this window."
         if status == "connected"
-        else "No pudimos completar la conexion. Puedes cerrar esta pestana e intentarlo de nuevo."
+        else "We could not complete the connection. You can close this window and try again."
     )
     payload: dict[str, Any] = {
         "type": event_type,
@@ -7778,7 +7801,9 @@ def _meta_oauth_popup_response(
         payload["source"] = source
     if error:
         payload["error"] = error
-        payload["message"] = "No pudimos completar la conexion con Meta."
+        payload["message"] = message or "We could not complete the Meta connection."
+    elif message:
+        payload["message"] = message
 
     html = f"""<!doctype html>
 <html lang="es">
@@ -7790,7 +7815,7 @@ def _meta_oauth_popup_response(
   <body>
     <main style="font-family: Arial, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5;">
       <h1 style="font-size: 1.25rem;">{fallback_message}</h1>
-      <p>Si esta ventana no se cierra automaticamente, puedes volver a Measurable.</p>
+      <p>{message or "If this window does not close automatically, you can return to Measurable."}</p>
       <p><a href="{target_url}">Volver a Measurable</a></p>
     </main>
     <script>
@@ -8017,11 +8042,12 @@ def _run_meta_pages_oauth_callback(
             if integration is not None:
                 _set_meta_integration_status(db, integration, status="disconnected")
             if redirect_to_frontend:
-                return _meta_oauth_frontend_redirect_response(
+                return _meta_oauth_popup_response(
                     status="error",
                     source=state_source,
                     integration_id=integration_id,
                     error="token_exchange_failed",
+                    message="Meta did not return an access token. Please close this window and try again.",
                 )
             return _safe_meta_callback_payload(success=False, pages=[], error="token_exchange_failed")
         logger.warning(
@@ -15724,10 +15750,36 @@ def meta_callback(
 
 @app.get("/integrations/meta/callback-pages")
 def meta_callback_pages(
-    code: str,
-    state: str,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_reason: str | None = None,
+    error_description: str | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
+    if error:
+        logger.warning(
+            "Meta Pages OAuth callback received upstream error error=%s error_reason=%s error_description=%s",
+            error,
+            error_reason,
+            error_description,
+        )
+        return _meta_oauth_popup_response(
+            status="error",
+            error=str(error_reason or error).strip() or "oauth_error",
+            message=str(error_description or error_reason or "Meta returned an OAuth error.").strip(),
+        )
+    if not code or not state:
+        logger.warning(
+            "Meta Pages OAuth callback missing required query params code_received=%s state_received=%s",
+            bool(code),
+            bool(state),
+        )
+        return _meta_oauth_popup_response(
+            status="error",
+            error="invalid_state",
+            message="The Meta connection could not be verified. Please close this window and try again.",
+        )
     return _run_meta_pages_oauth_callback(
         code=code,
         state=state,
