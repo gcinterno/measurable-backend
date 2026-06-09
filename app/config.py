@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     database_url: str
     jwt_secret: str
     jwt_alg: str = "HS256"
+    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
 
     aws_region: str
     s3_inputs_bucket: str

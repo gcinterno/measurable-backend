@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import secrets
+import sys
 import requests
 from decimal import Decimal
 from urllib.parse import urlencode, urlsplit
@@ -293,6 +294,48 @@ DEFAULT_GENERATED_REPORT_SLIDE_COUNT = 2
 INTEGRATIONS_TOTAL_AVAILABLE = 3
 META_PAGES_CACHE_TTL = timedelta(hours=6)
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class _SafeAuthEmailFormatter(logging.Formatter):
+    _SAFE_KEYS = ("email", "message_id", "reason")
+
+    def format(self, record: logging.LogRecord) -> str:
+        base = super().format(record)
+        safe_fields: list[str] = []
+        for key in self._SAFE_KEYS:
+            value = getattr(record, key, None)
+            if value is None or value == "":
+                continue
+            safe_fields.append(f"{key}={value}")
+        if not safe_fields:
+            return base
+        return f"{base} {' '.join(safe_fields)}"
+
+
+def _resolve_log_level(value: str | None) -> int:
+    normalized = str(value or "").strip().upper()
+    return getattr(logging, normalized, logging.INFO)
+
+
+def _configure_application_logging() -> None:
+    formatter = _SafeAuthEmailFormatter("%(levelname)s %(name)s %(message)s")
+    root_logger = logging.getLogger()
+    log_level = _resolve_log_level(settings.log_level)
+
+    if not root_logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(formatter)
+        root_logger.addHandler(handler)
+    else:
+        for handler in root_logger.handlers:
+            handler.setFormatter(formatter)
+
+    root_logger.setLevel(log_level)
+    logging.getLogger("app").setLevel(log_level)
+    logger.setLevel(log_level)
+
+
+_configure_application_logging()
 
 
 def _workspace_account_display_payload(workspace: Workspace | None, user: User | None) -> dict[str, str | None]:
@@ -1129,6 +1172,7 @@ def _send_verification_email_or_raise(
     attempt_log: str,
     sent_log: str,
     failed_log: str,
+    error_message: str,
 ) -> None:
     logger.info(attempt_log, extra={"email": masked_email})
     try:
@@ -1154,7 +1198,7 @@ def _send_verification_email_or_raise(
         raise http_error(
             503,
             "email_delivery_failed",
-            "We could not send your verification email. Please try again in a moment.",
+            error_message,
         ) from exc
     logger.info(sent_log, extra={"message_id": message_id})
 
@@ -2977,6 +3021,7 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
             attempt_log="REGISTER_EMAIL_ATTEMPT",
             sent_log="REGISTER_EMAIL_SENT",
             failed_log="REGISTER_EMAIL_FAILED",
+            error_message="We could not send your verification email. Please try again in a moment.",
         )
         db.commit()
         logger.info(
@@ -3341,6 +3386,7 @@ def resend_verification_code(
             attempt_log="RESEND_EMAIL_ATTEMPT",
             sent_log="RESEND_EMAIL_SENT",
             failed_log="RESEND_EMAIL_FAILED",
+            error_message="We could not send the verification email. Please try again.",
         )
         db.commit()
         logger.info("auth_verification_code_resent", extra={"user_id": user.id})

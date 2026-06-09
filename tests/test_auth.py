@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -294,7 +295,7 @@ def test_resend_verification_email_failure_returns_friendly_error_and_safe_log(c
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "email_delivery_failed"
-    assert response.json()["detail"]["message"] == "We could not send your verification email. Please try again in a moment."
+    assert response.json()["detail"]["message"] == "We could not send the verification email. Please try again."
 
     attempt = next(record for record in caplog.records if record.message == "RESEND_EMAIL_ATTEMPT")
     failed = next(record for record in caplog.records if record.message == "RESEND_EMAIL_FAILED")
@@ -724,3 +725,30 @@ def test_ses_client_uses_configured_aws_credentials_and_optional_session_token(m
     assert captured["aws_access_key_id"] == "test-access-key"
     assert captured["aws_secret_access_key"] == "test-secret-key"
     assert captured["aws_session_token"] == "test-session-token"
+
+
+def test_safe_auth_email_formatter_includes_only_whitelisted_fields():
+    from app.main import _SafeAuthEmailFormatter
+
+    formatter = _SafeAuthEmailFormatter("%(levelname)s %(name)s %(message)s")
+    record = logging.LogRecord(
+        name="app.main",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="RESEND_EMAIL_SENT",
+        args=(),
+        exc_info=None,
+    )
+    record.email = "a***e@example.com"
+    record.message_id = "ses-123"
+    record.reason = "MessageRejected"
+    record.token = "secret-token"
+
+    formatted = formatter.format(record)
+
+    assert "RESEND_EMAIL_SENT" in formatted
+    assert "email=a***e@example.com" in formatted
+    assert "message_id=ses-123" in formatted
+    assert "reason=MessageRejected" in formatted
+    assert "secret-token" not in formatted
