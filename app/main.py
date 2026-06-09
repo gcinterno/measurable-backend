@@ -226,6 +226,7 @@ from .ai_agents import (
     run_ai_agents_pipeline,
 )
 from .services import (
+    _safe_email_delivery_reason,
     build_export_payload,
     build_conversation_title,
     build_meta_pages_ai_payload,
@@ -1115,9 +1116,47 @@ def _safe_register_email_failure_reason(exc: HTTPException) -> str:
             return "AWS_REGION missing"
         return "email service unavailable"
     if code == "email_delivery_failed" and exc.__cause__ is not None:
-        return _safe_exception_message(cast(Exception, exc.__cause__))
+        return _safe_email_delivery_reason(cast(Exception, exc.__cause__))
     message = str(detail.get("message") or "").strip()
     return message[:200] if message else "email send failed"
+
+
+def _send_verification_email_or_raise(
+    *,
+    user: User,
+    code: str,
+    masked_email: str,
+    attempt_log: str,
+    sent_log: str,
+    failed_log: str,
+) -> None:
+    logger.info(attempt_log, extra={"email": masked_email})
+    try:
+        message_id = send_auth_email(
+            recipient_email=user.email,
+            subject="Verify your Measurable email",
+            html_body=build_auth_email_html(
+                full_name=user.full_name,
+                code=code,
+                purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
+            ),
+            text_body=build_auth_email_text(
+                full_name=user.full_name,
+                code=code,
+                purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
+            ),
+        )
+    except HTTPException as exc:
+        logger.warning(
+            failed_log,
+            extra={"reason": _safe_register_email_failure_reason(exc)},
+        )
+        raise http_error(
+            503,
+            "email_delivery_failed",
+            "We could not send your verification email. Please try again in a moment.",
+        ) from exc
+    logger.info(sent_log, extra={"message_id": message_id})
 
 
 def _decimal_to_float(value: Any) -> float:
@@ -2931,22 +2970,14 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
             user=user,
             purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
         )
-        logger.info("REGISTER_EMAIL_ATTEMPT", extra={"email": masked_email})
-        message_id = send_auth_email(
-            recipient_email=user.email,
-            subject="Verify your Measurable email",
-            html_body=build_auth_email_html(
-                full_name=user.full_name,
-                code=verification_code,
-                purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
-            ),
-            text_body=build_auth_email_text(
-                full_name=user.full_name,
-                code=verification_code,
-                purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
-            ),
+        _send_verification_email_or_raise(
+            user=user,
+            code=verification_code,
+            masked_email=masked_email,
+            attempt_log="REGISTER_EMAIL_ATTEMPT",
+            sent_log="REGISTER_EMAIL_SENT",
+            failed_log="REGISTER_EMAIL_FAILED",
         )
-        logger.info("REGISTER_EMAIL_SENT", extra={"message_id": message_id})
         db.commit()
         logger.info(
             "auth_register_completed",
@@ -2966,17 +2997,6 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
         )
     except HTTPException as exc:
         db.rollback()
-        detail = exc.detail if isinstance(exc.detail, dict) else {}
-        if str(detail.get("code") or "").strip() in {"email_delivery_failed", "email_service_unavailable"}:
-            logger.warning(
-                "REGISTER_EMAIL_FAILED",
-                extra={"reason": _safe_register_email_failure_reason(exc)},
-            )
-            raise http_error(
-                503,
-                "email_delivery_failed",
-                "We couldn't send your verification email right now. Please try again.",
-            ) from exc
         raise
     except IntegrityError as exc:
         db.rollback()
@@ -3300,6 +3320,7 @@ def resend_verification_code(
     db: Session = Depends(get_db),
 ) -> AuthMessageOut:
     email = payload.email.strip()
+    masked_email = _mask_email(email) if email else None
     if not email:
         return AuthMessageOut(message="If the email can be used, verification instructions will be sent.")
 
@@ -3313,19 +3334,13 @@ def resend_verification_code(
             user=user,
             purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
         )
-        send_auth_email(
-            recipient_email=user.email,
-            subject="Verify your Measurable email",
-            html_body=build_auth_email_html(
-                full_name=user.full_name,
-                code=verification_code,
-                purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
-            ),
-            text_body=build_auth_email_text(
-                full_name=user.full_name,
-                code=verification_code,
-                purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
-            ),
+        _send_verification_email_or_raise(
+            user=user,
+            code=verification_code,
+            masked_email=masked_email or _mask_email(user.email),
+            attempt_log="RESEND_EMAIL_ATTEMPT",
+            sent_log="RESEND_EMAIL_SENT",
+            failed_log="RESEND_EMAIL_FAILED",
         )
         db.commit()
         logger.info("auth_verification_code_resent", extra={"user_id": user.id})

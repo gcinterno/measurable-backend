@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
@@ -97,6 +98,27 @@ def _latest_code(email: str, purpose: str = "email_verification") -> EmailVerifi
             .order_by(EmailVerificationCode.created_at.desc(), EmailVerificationCode.id.desc())
             .first()
         )
+    finally:
+        db.close()
+
+
+def _age_latest_code(email: str, *, purpose: str = "email_verification", seconds: int = 120) -> None:
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).one()
+        code = (
+            db.query(EmailVerificationCode)
+            .filter(
+                EmailVerificationCode.user_id == user.id,
+                EmailVerificationCode.purpose == purpose,
+            )
+            .order_by(EmailVerificationCode.created_at.desc(), EmailVerificationCode.id.desc())
+            .first()
+        )
+        assert code is not None
+        code.created_at = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+        db.add(code)
+        db.commit()
     finally:
         db.close()
 
@@ -197,7 +219,11 @@ def test_register_generates_verification_code_and_logs_email_send(client, monkey
 
 def test_register_email_failure_returns_friendly_error_and_safe_log(client, monkeypatch, caplog):
     def fake_send_auth_email(**kwargs):
-        raise http_error(503, "email_delivery_failed", "Unable to send verification email.")
+        error = ClientError(
+            {"Error": {"Code": "MessageRejected", "Message": "Email address is on the suppression list."}},
+            "SendEmail",
+        )
+        raise http_error(503, "email_delivery_failed", "Unable to send verification email.") from error
 
     monkeypatch.setattr("app.main.send_auth_email", fake_send_auth_email)
 
@@ -209,13 +235,72 @@ def test_register_email_failure_returns_friendly_error_and_safe_log(client, monk
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "email_delivery_failed"
-    assert response.json()["detail"]["message"] == "We couldn't send your verification email right now. Please try again."
+    assert response.json()["detail"]["message"] == "We could not send your verification email. Please try again in a moment."
 
     attempt = next(record for record in caplog.records if record.message == "REGISTER_EMAIL_ATTEMPT")
     failed = next(record for record in caplog.records if record.message == "REGISTER_EMAIL_FAILED")
     assert getattr(attempt, "email", None) == "f***d@example.com"
-    assert getattr(failed, "reason", None) == "Unable to send verification email."
+    assert getattr(failed, "reason", None) == "MessageRejected: Email address is on the suppression list."
     assert not any(record.message == "REGISTER_EMAIL_SENT" for record in caplog.records)
+
+
+def test_resend_verification_logs_email_send(client, monkeypatch, caplog):
+    email = "resend@example.com"
+    client.post(
+        "/auth/register",
+        json={"email": email, "password": "CorrectHorseBattery1!", "full_name": "Resend Example"},
+    )
+    _age_latest_code(email)
+
+    calls: list[dict[str, str]] = []
+
+    def fake_send_auth_email(**kwargs):
+        calls.append(kwargs)
+        return "ses-message-resend"
+
+    monkeypatch.setattr("app.main.send_auth_email", fake_send_auth_email)
+
+    with caplog.at_level("INFO"):
+        response = client.post("/auth/resend-verification-code", json={"email": email})
+
+    assert response.status_code == 200
+    assert calls and calls[0]["recipient_email"] == email
+    attempt = next(record for record in caplog.records if record.message == "RESEND_EMAIL_ATTEMPT")
+    sent = next(record for record in caplog.records if record.message == "RESEND_EMAIL_SENT")
+    assert getattr(attempt, "email", None) == "r***d@example.com"
+    assert getattr(sent, "message_id", None) == "ses-message-resend"
+    assert not any(record.message == "RESEND_EMAIL_FAILED" for record in caplog.records)
+
+
+def test_resend_verification_email_failure_returns_friendly_error_and_safe_log(client, monkeypatch, caplog):
+    email = "resend-failure@example.com"
+    client.post(
+        "/auth/register",
+        json={"email": email, "password": "CorrectHorseBattery1!", "full_name": "Resend Failure"},
+    )
+    _age_latest_code(email)
+
+    def fake_send_auth_email(**kwargs):
+        error = ClientError(
+            {"Error": {"Code": "SuppressedRecipient", "Message": "Address is suppressed."}},
+            "SendEmail",
+        )
+        raise http_error(503, "email_delivery_failed", "Unable to send verification email.") from error
+
+    monkeypatch.setattr("app.main.send_auth_email", fake_send_auth_email)
+
+    with caplog.at_level("INFO"):
+        response = client.post("/auth/resend-verification-code", json={"email": email})
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "email_delivery_failed"
+    assert response.json()["detail"]["message"] == "We could not send your verification email. Please try again in a moment."
+
+    attempt = next(record for record in caplog.records if record.message == "RESEND_EMAIL_ATTEMPT")
+    failed = next(record for record in caplog.records if record.message == "RESEND_EMAIL_FAILED")
+    assert getattr(attempt, "email", None) == "r***e@example.com"
+    assert getattr(failed, "reason", None) == "SuppressedRecipient: Address is suppressed."
+    assert not any(record.message == "RESEND_EMAIL_SENT" for record in caplog.records)
 
 
 def test_register_and_forgot_password_use_shared_auth_email_sender(client, monkeypatch):
@@ -614,3 +699,28 @@ def test_ses_client_uses_configured_aws_region(monkeypatch):
 
     assert captured["service_name"] == "ses"
     assert captured["region_name"] == "us-west-2"
+
+
+def test_ses_client_uses_configured_aws_credentials_and_optional_session_token(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_boto_client(service_name: str, **kwargs):
+        captured["service_name"] = service_name
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("app.services.settings.aws_region", "us-east-2")
+    monkeypatch.setattr("app.services.settings.aws_access_key_id", "test-access-key")
+    monkeypatch.setattr("app.services.settings.aws_secret_access_key", "test-secret-key")
+    monkeypatch.setattr("app.services.settings.aws_session_token", "test-session-token")
+    monkeypatch.setattr("app.services.boto3.client", fake_boto_client)
+
+    from app.services import _ses_client
+
+    _ses_client()
+
+    assert captured["service_name"] == "ses"
+    assert captured["region_name"] == "us-east-2"
+    assert captured["aws_access_key_id"] == "test-access-key"
+    assert captured["aws_secret_access_key"] == "test-secret-key"
+    assert captured["aws_session_token"] == "test-session-token"
