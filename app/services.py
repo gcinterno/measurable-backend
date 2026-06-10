@@ -3715,7 +3715,7 @@ def generate_pdf_from_export_page(
                     extra={
                         "report_id": report_id,
                         "export_url": export_url,
-                        "message": message,
+                        "event_message": message,
                     },
                 )
 
@@ -4490,7 +4490,7 @@ def generate_pdf_from_export_page(
                     extra={
                         "report_id": report_id,
                         "export_url": export_url,
-                        "message": message,
+                        "event_message": message,
                     },
                 )
 

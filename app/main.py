@@ -3080,16 +3080,17 @@ def login(
     db: Session = Depends(get_db),
 ) -> TokenOut:
     email = form_data.username.strip()
-    logger.info("auth_login_start", extra={"email": email})
+    masked_email = _mask_email(email) if email else None
+    logger.info("auth_login_start", extra={"email": masked_email})
 
     try:
         user = load_user_by_email(db, email)
         logger.info(
             "auth_login_db_lookup_ok",
-            extra={"email": email, "user_found": bool(user)},
+            extra={"email": masked_email, "user_found": bool(user)},
         )
         if not user or _is_deleted_user(user) or not user.email_verified:
-            logger.info("auth_login_user_not_found", extra={"email": email})
+            logger.info("auth_login_user_not_found", extra={"email": masked_email})
             raise http_error(401, "invalid_credentials", "Invalid email or password.")
 
         try:
@@ -3098,7 +3099,7 @@ def login(
             logger.exception(
                 "auth_login_error",
                 extra={
-                    "email": email,
+                    "email": masked_email,
                     "exception_class": exc.__class__.__name__,
                     "safe_message": _safe_exception_message(exc),
                     "stage": "password_verify",
@@ -3107,14 +3108,17 @@ def login(
             raise http_error(500, "invalid_configuration", "Authentication configuration is invalid.")
 
         if not password_ok:
-            logger.info("auth_login_password_verify_failed", extra={"email": email, "user_id": user.id})
+            logger.info(
+                "auth_login_password_verify_failed",
+                extra={"email": masked_email, "user_id": user.id},
+            )
             raise http_error(401, "invalid_credentials", "Invalid email or password.")
 
         if not _jwt_secret_configured():
             logger.error(
                 "auth_login_error",
                 extra={
-                    "email": email,
+                    "email": masked_email,
                     "exception_class": "InvalidConfiguration",
                     "safe_message": "JWT secret is missing.",
                     "stage": "token_create",
@@ -3126,7 +3130,7 @@ def login(
         db.add(user)
         db.commit()
         token = create_access_token(str(user.id))
-        logger.info("auth_login_token_created", extra={"email": email, "user_id": user.id})
+        logger.info("auth_login_token_created", extra={"email": masked_email, "user_id": user.id})
         return TokenOut(access_token=token)
     except HTTPException:
         db.rollback()
@@ -3137,7 +3141,7 @@ def login(
             "auth_login_error",
             extra={
                 **_sqlalchemy_error_log_payload(exc, stage="login"),
-                "email": email,
+                "email": masked_email,
                 "exception_class": exc.__class__.__name__,
                 "safe_message": "Database unavailable during login.",
             },
@@ -5204,7 +5208,7 @@ def upload_workspace_branding_logo(
             extra={
                 "endpoint": "/workspace/branding/logo",
                 "workspace_id": workspace.id,
-                "filename": file.filename,
+                "upload_filename": file.filename,
                 "content_type": content_type,
                 "size_bytes": size_bytes,
             },
@@ -5221,7 +5225,7 @@ def upload_workspace_branding_logo(
         extra={
             "endpoint": "/workspace/branding/logo",
             "workspace_id": workspace.id,
-            "filename": file.filename,
+            "upload_filename": file.filename,
             "content_type": content_type,
             "size_bytes": size_bytes,
             "storage_key": storage_key,
@@ -6476,7 +6480,7 @@ def _fetch_instagram_user_details(
             "page_name": page_name,
             "instagram_account_id": instagram_account_id,
             "username": payload.get("username"),
-            "name": payload.get("name"),
+            "entity_name": payload.get("name"),
         },
     )
     return payload, None
