@@ -24,7 +24,19 @@ from app.deps import get_db
 from app.db import Base, SessionLocal, engine
 from app.integrations import meta_ads
 from app.main import app
-from app.models import EmailVerificationCode, Integration, ReferralConversion, Subscription, User, UserAttribution, Workspace, WorkspaceMember
+from app.models import (
+    EmailVerificationCode,
+    Integration,
+    IntegrationAccount,
+    IntegrationToken,
+    MetaPage,
+    ReferralConversion,
+    Subscription,
+    User,
+    UserAttribution,
+    Workspace,
+    WorkspaceMember,
+)
 from app.security import create_access_token, create_oauth_state
 from app.security import hash_password
 
@@ -36,6 +48,9 @@ AUTH_TABLES = [
     Subscription.__table__,
     EmailVerificationCode.__table__,
     Integration.__table__,
+    IntegrationAccount.__table__,
+    IntegrationToken.__table__,
+    MetaPage.__table__,
     UserAttribution.__table__,
     ReferralConversion.__table__,
 ]
@@ -305,7 +320,10 @@ def test_meta_connect_pages_uses_single_available_workspace_when_request_is_stal
     monkeypatch.setattr("app.main._meta_pages_redirect_uri", lambda: "https://backend.example.com/callback")
     monkeypatch.setattr(
         "app.main.oauth_connect_pages_url",
-        lambda state, redirect_uri=None: f"https://facebook.example.com/oauth?state={state}&redirect_uri={redirect_uri}",
+        lambda state, redirect_uri=None, auth_type=None: (
+            f"https://facebook.example.com/oauth?state={state}&redirect_uri={redirect_uri}"
+            + (f"&auth_type={auth_type}" if auth_type else "")
+        ),
     )
 
     response = client.get(
@@ -355,7 +373,10 @@ def test_meta_connect_pages_rejects_invalid_workspace_when_user_has_multiple_wor
     monkeypatch.setattr("app.main._meta_pages_redirect_uri", lambda: "https://backend.example.com/callback")
     monkeypatch.setattr(
         "app.main.oauth_connect_pages_url",
-        lambda state, redirect_uri=None: f"https://facebook.example.com/oauth?state={state}&redirect_uri={redirect_uri}",
+        lambda state, redirect_uri=None, auth_type=None: (
+            f"https://facebook.example.com/oauth?state={state}&redirect_uri={redirect_uri}"
+            + (f"&auth_type={auth_type}" if auth_type else "")
+        ),
     )
 
     response = client.get(
@@ -442,6 +463,49 @@ def test_meta_connect_pages_preserves_integration_type_and_backend_callback(clie
     assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/meta/callback-pages"]
     assert state_payload["integration_type"] == "instagram_accounts"
     assert state_payload["callback_route"] == "/integrations/meta/callback-pages"
+
+
+def test_meta_connect_pages_reconnect_uses_rerequest_and_preserves_state(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="meta-reconnect@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Meta Reconnect",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace = Workspace(name="Meta Reconnect Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="free", status="active"))
+        db.commit()
+        workspace_id = workspace.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+
+    response = client.get(
+        f"/integrations/meta/connect-pages?workspace_id={workspace_id}&integration_type=facebook_pages&reconnect=true",
+        headers=_auth_headers_for("meta-reconnect@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    parsed = urlparse(payload["auth_url"])
+    query = parse_qs(parsed.query)
+    state_payload = meta_ads.decode_state(query["state"][0])
+    assert query["auth_type"] == ["rerequest"]
+    assert state_payload["reconnect"] is True
+    assert state_payload["integration_type"] == "facebook_pages"
 
 
 def test_meta_exchange_pages_code_uses_same_backend_callback(monkeypatch):

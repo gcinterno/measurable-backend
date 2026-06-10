@@ -6697,6 +6697,7 @@ def _refresh_meta_pages_from_live_graph(
     selected_integration_type: str | None,
     context: str,
     return_empty_on_error: bool = False,
+    preserve_existing_on_empty: bool = True,
 ) -> tuple[list[MetaPage], list[dict[str, Any]], list[dict[str, Any]]]:
     token_account = _get_meta_token_account(db, integration.id)
     latest_token = _get_latest_integration_token(db, token_account.id) if token_account else None
@@ -6749,7 +6750,7 @@ def _refresh_meta_pages_from_live_graph(
         for existing_page in existing_pages
         if _meta_record_key(existing_page.record_type, existing_page.page_id) not in incoming_record_keys
     )
-    if not authorized_records and existing_pages:
+    if preserve_existing_on_empty and not authorized_records and existing_pages:
         existing_facebook_pages = _filter_meta_records(
             existing_pages,
             record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
@@ -7964,6 +7965,7 @@ def _run_meta_pages_oauth_callback(
         selected_integration_type = (
             str(payload.get("integration_type") or "").strip() or None
         )
+        reconnect_requested = bool(payload.get("reconnect"))
         state_source = str(payload.get("source") or "").strip() or None
         state_callback_route = str(payload.get("callback_route") or "").strip() or None
     except (TypeError, ValueError):
@@ -7995,13 +7997,14 @@ def _run_meta_pages_oauth_callback(
     integration: Integration | None = None
     try:
         logger.warning(
-            "Meta Pages callback received code_received=%s workspace_id=%s user_id=%s state_integration_id=%s redirect_uri_param=%s selected_integration_type=%s state_callback_route=%s state=%s",
+            "Meta Pages callback received code_received=%s workspace_id=%s user_id=%s state_integration_id=%s redirect_uri_param=%s selected_integration_type=%s reconnect_requested=%s state_callback_route=%s state=%s",
             bool(code),
             workspace_id,
             effective_user_id,
             state_integration_id,
             redirect_uri,
             selected_integration_type,
+            reconnect_requested,
             state_callback_route,
             payload,
         )
@@ -8053,7 +8056,7 @@ def _run_meta_pages_oauth_callback(
                 error_details["error_message"],
                 error_details["response_body"],
             )
-            if integration is not None:
+            if integration is not None and not reconnect_requested:
                 _set_meta_integration_status(db, integration, status="disconnected")
             if redirect_to_frontend:
                 return _meta_oauth_popup_response(
@@ -8098,7 +8101,7 @@ def _run_meta_pages_oauth_callback(
                 "Meta Pages OAuth callback missing access token after exchange",
                 extra={"workspace_id": workspace_id, "user_id": effective_user_id, "token_data": token_data},
             )
-            if integration is not None:
+            if integration is not None and not reconnect_requested:
                 _set_meta_integration_status(db, integration, status="disconnected")
             if redirect_to_frontend:
                 return _meta_oauth_popup_response(
@@ -8129,40 +8132,28 @@ def _run_meta_pages_oauth_callback(
             db.commit()
             db.refresh(token_account)
 
-        saved_token = _replace_integration_token(
-            db,
-            account_id=token_account.id,
-            workspace_id=workspace_id,
-            access_token=access_token,
-        )
         existing_pages_before = (
             db.query(MetaPage)
             .filter(MetaPage.integration_id == integration.id)
             .order_by(MetaPage.record_type.asc(), MetaPage.name.asc(), MetaPage.page_id.asc())
             .all()
         )
+        debug_token_payload = debug_token(access_token)
+        debug_token_summary = _extract_debug_token_summary(debug_token_payload)
         logger.warning(
-            "Meta Pages callback token stored integration_id=%s workspace_id=%s user_id=%s token_account_id=%s saved_token_id=%s",
+            "Meta Pages callback token debug integration_id=%s workspace_id=%s user_id=%s token_account_id=%s debug_token_is_valid=%s debug_token_scopes=%s debug_token_granular_target_ids=%s reconnect_requested=%s",
             integration.id,
             workspace_id,
             effective_user_id,
             token_account.id,
-            saved_token.id,
-        )
-        debug_token_payload = debug_token(access_token)
-        debug_token_summary = _extract_debug_token_summary(debug_token_payload)
-        logger.warning(
-            "Meta Pages callback token debug integration_id=%s workspace_id=%s user_id=%s saved_token_id=%s debug_token_is_valid=%s debug_token_scopes=%s debug_token_granular_target_ids=%s",
-            integration.id,
-            workspace_id,
-            effective_user_id,
-            saved_token.id,
             debug_token_summary["is_valid"],
             debug_token_summary["scopes"],
             debug_token_summary["granular_target_ids"],
+            reconnect_requested,
         )
         if debug_token_summary["is_valid"] is not True:
-            _set_meta_integration_status(db, integration, status="disconnected")
+            if not reconnect_requested:
+                _set_meta_integration_status(db, integration, status="disconnected")
             if redirect_to_frontend:
                 return _meta_oauth_popup_response(
                     status="error",
@@ -8185,6 +8176,22 @@ def _run_meta_pages_oauth_callback(
             selected_integration_type=selected_integration_type,
             context="oauth_callback",
             return_empty_on_error=False,
+            preserve_existing_on_empty=False,
+        )
+        saved_token = _replace_integration_token(
+            db,
+            account_id=token_account.id,
+            workspace_id=workspace_id,
+            access_token=access_token,
+        )
+        logger.warning(
+            "Meta Pages callback token stored integration_id=%s workspace_id=%s user_id=%s token_account_id=%s saved_token_id=%s reconnect_requested=%s",
+            integration.id,
+            workspace_id,
+            effective_user_id,
+            token_account.id,
+            saved_token.id,
+            reconnect_requested,
         )
         instagram_accounts = _filter_meta_records(
             cached_pages,
@@ -8250,7 +8257,7 @@ def _run_meta_pages_oauth_callback(
                 "error": str(exc.detail),
             },
         )
-        if integration is not None:
+        if integration is not None and not reconnect_requested:
             _set_meta_integration_status(db, integration, status="disconnected")
         if redirect_to_frontend:
             return _meta_oauth_popup_response(
@@ -8270,7 +8277,7 @@ def _run_meta_pages_oauth_callback(
             "Meta Pages OAuth callback failed unexpectedly",
             extra={"workspace_id": workspace_id, "user_id": effective_user_id, "integration_id": integration_id},
         )
-        if integration is not None:
+        if integration is not None and not reconnect_requested:
             _set_meta_integration_status(db, integration, status="disconnected")
         if redirect_to_frontend:
             return _meta_oauth_popup_response(
@@ -15742,6 +15749,7 @@ def meta_connect(
 def meta_connect_pages(
     workspace_id: int | None = Query(default=None),
     integration_type: str | None = Query(default=None),
+    reconnect: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -15767,21 +15775,27 @@ def meta_connect_pages(
             "user_id": current_user.id,
             "integration_id": integration.id,
             "integration_type": selected_integration_type,
+            "reconnect": reconnect,
             "source": "meta_pages_connect_pages",
             "callback_route": "/integrations/meta/callback-pages",
         }
     )
     redirect_uri = _meta_pages_redirect_uri()
     logger.warning(
-        "Meta Pages OAuth connect workspace_id=%s user_id=%s integration_id=%s auth_redirect_uri=%s scope=%s selected_integration_type=%s",
+        "Meta Pages OAuth connect workspace_id=%s user_id=%s integration_id=%s auth_redirect_uri=%s scope=%s selected_integration_type=%s reconnect_requested=%s",
         resolved_workspace_id,
         current_user.id,
         integration.id,
         redirect_uri,
         META_PAGES_OAUTH_SCOPE,
         selected_integration_type,
+        reconnect,
     )
-    url = oauth_connect_pages_url(state, redirect_uri=redirect_uri)
+    url = oauth_connect_pages_url(
+        state,
+        redirect_uri=redirect_uri,
+        auth_type="rerequest" if reconnect else None,
+    )
     return {
         "auth_url": url,
         "integration_id": integration.id,

@@ -204,7 +204,12 @@ def exchange_code_for_token(code: str, *, redirect_uri: str | None = None) -> di
     return resp.json()
 
 
-def oauth_connect_pages_url(state: str, *, redirect_uri: str | None = None) -> str:
+def oauth_connect_pages_url(
+    state: str,
+    *,
+    redirect_uri: str | None = None,
+    auth_type: str | None = None,
+) -> str:
     _require_meta_pages_config()
     base = f"https://www.facebook.com/{settings.meta_api_version}/dialog/oauth"
     final_redirect_uri = redirect_uri or get_meta_pages_redirect_uri()
@@ -215,11 +220,14 @@ def oauth_connect_pages_url(state: str, *, redirect_uri: str | None = None) -> s
         "scope": META_PAGES_OAUTH_SCOPE,
         "response_type": "code",
     }
+    if auth_type:
+        params["auth_type"] = auth_type
     logger.warning(
-        "Meta Pages OAuth URL params scope=%s redirect_uri=%s client_id_loaded=%s",
+        "Meta Pages OAuth URL params scope=%s redirect_uri=%s client_id_loaded=%s auth_type=%s",
         META_PAGES_OAUTH_SCOPE,
         final_redirect_uri,
         bool(settings.meta_pages_app_id),
+        auth_type,
     )
     return f"{base}?" + "&".join(f"{k}={requests.utils.quote(str(v))}" for k, v in params.items())
 

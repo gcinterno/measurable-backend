@@ -20,6 +20,7 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 
 from app.db import Base, SessionLocal, engine
 from app.deps import get_db
+from app.integrations.meta_ads import encode_state
 import app.main as main_module
 from app.main import (
     META_RECORD_TYPE_FACEBOOK_PAGE,
@@ -224,6 +225,74 @@ def test_meta_disconnect_clears_token_and_status(client, monkeypatch):
         assert integration is not None
         assert integration.status == "disconnected"
         assert db.query(IntegrationToken).count() == 0
+    finally:
+        db.close()
+
+
+def test_meta_reconnect_callback_failure_preserves_existing_state(client, monkeypatch):
+    refs = _seed_meta_disconnect_fixture()
+
+    state = encode_state(
+        {
+            "workspace_id": refs["workspace_id"],
+            "user_id": refs["user_id"],
+            "integration_id": refs["integration_id"],
+            "integration_type": "facebook_pages",
+            "reconnect": True,
+            "source": "meta_pages_connect_pages",
+            "callback_route": "/integrations/meta/callback-pages",
+        }
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "exchange_pages_code_for_token",
+        lambda code, redirect_uri=None: {
+            "access_token": "new-meta-token",
+            "_meta_http_status_code": 200,
+            "_meta_raw_body": "{}",
+        },
+    )
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda access_token: {"data": {"is_valid": True, "scopes": ["pages_show_list"]}},
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_refresh_meta_pages_from_live_graph",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            main_module.http_error(502, "meta_fetch_failed", "Meta refresh failed.")
+        ),
+    )
+
+    response = client.get(f"/integrations/meta/callback-pages?code=meta-code&state={state}")
+
+    assert response.status_code == 200
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, refs["integration_id"])
+        assert integration is not None
+        assert integration.status == "connected"
+
+        token_account = (
+            db.query(IntegrationAccount)
+            .filter(IntegrationAccount.integration_id == refs["integration_id"])
+            .filter(IntegrationAccount.external_account_id == _meta_token_account_external_id(refs["integration_id"]))
+            .one()
+        )
+        tokens = (
+            db.query(IntegrationToken)
+            .filter(IntegrationToken.account_id == token_account.id)
+            .order_by(IntegrationToken.id.asc())
+            .all()
+        )
+        assert len(tokens) == 1
+        assert tokens[0].access_token == "meta-access-token"
+
+        pages = db.query(MetaPage).filter(MetaPage.integration_id == refs["integration_id"]).all()
+        assert len(pages) == 2
     finally:
         db.close()
 
