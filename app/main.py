@@ -4510,6 +4510,8 @@ def admin_users(
             plan=str(plan_value) if plan_value else "free",
             reports_count=int(reports_count or 0),
             last_report_created_at=last_report_created_at,
+            last_report_at=last_report_created_at,
+            last_report_created=last_report_created_at,
             reports_last_7_days=int(reports_last_7_days or 0),
             health_score=int(health_score or 0),
             health_status=str(health_status_value) if health_status_value else _admin_health_status_from_score(
@@ -4525,6 +4527,7 @@ def admin_users(
                 plan_value=str(plan_value) if plan_value else "free",
             ),
             last_login_at=user.last_login_at,
+            last_login=user.last_login_at,
             created_at=user.created_at,
             is_active=bool(user.is_active),
             is_deleted=bool(getattr(user, "is_deleted", False)),

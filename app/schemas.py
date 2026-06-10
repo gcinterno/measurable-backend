@@ -357,7 +357,10 @@ class AdminUserOut(BaseModel):
     plan: Optional[str] = None
     reports_count: int = 0
     last_login_at: Optional[datetime] = None
+    last_login: Optional[datetime] = None
     last_report_created_at: Optional[datetime] = None
+    last_report_at: Optional[datetime] = None
+    last_report_created: Optional[datetime] = None
     reports_last_7_days: int = 0
     health_score: int = 0
     health_status: Literal["healthy", "active", "at_risk", "dormant"] = "dormant"

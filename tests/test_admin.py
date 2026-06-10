@@ -633,7 +633,11 @@ def test_admin_metrics_users_users_and_insights(client):
     assert alice["plan"] == "pro"
     assert alice["reports_count"] == 3
     assert alice["reports_last_7_days"] == 2
+    assert parse_dt(alice["last_login_at"]).date() == refs["current_month_day_2"].date()
+    assert parse_dt(alice["last_login"]).date() == refs["current_month_day_2"].date()
     assert parse_dt(alice["last_report_created_at"]).date() == refs["current_month_day_2"].date()
+    assert parse_dt(alice["last_report_at"]).date() == refs["current_month_day_2"].date()
+    assert parse_dt(alice["last_report_created"]).date() == refs["current_month_day_2"].date()
     assert alice["onboarding_completed"] is True
     assert alice["health_status"] == "healthy"
     assert alice["health_score"] == 100
@@ -649,7 +653,11 @@ def test_admin_metrics_users_users_and_insights(client):
     admin_user = next(item for item in users_json["items"] if item["email"] == "admin@example.com")
     assert admin_user["reports_count"] == 0
     assert admin_user["reports_last_7_days"] == 0
+    assert parse_dt(admin_user["last_login_at"]).date() == refs["current_month_day_1"].date()
+    assert parse_dt(admin_user["last_login"]).date() == refs["current_month_day_1"].date()
     assert admin_user["last_report_created_at"] is None
+    assert admin_user["last_report_at"] is None
+    assert admin_user["last_report_created"] is None
     assert admin_user["health_status"] == "at_risk"
     assert admin_user["health_score"] == 30
 
