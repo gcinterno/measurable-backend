@@ -18,6 +18,7 @@ os.environ.setdefault("S3_INPUTS_BUCKET", "test-inputs")
 os.environ.setdefault("S3_OUTPUTS_BUCKET", "test-outputs")
 os.environ.setdefault("EXPORT_LAMBDA_URL", "https://example.com/export")
 os.environ.setdefault("SES_FROM_EMAIL", "no-reply@measurable.test")
+os.environ.setdefault("SES_CONFIGURATION_SET_NAME", "measurable-auth")
 
 from app.deps import get_db
 from app.db import Base, SessionLocal, engine
@@ -210,6 +211,7 @@ def test_register_generates_verification_code_and_logs_email_send(client, monkey
     assert code_row.used_at is None
     assert calls and calls[0]["recipient_email"] == email
     assert calls[0]["subject"] == "Verify your Measurable email"
+    assert calls[0]["purpose"] == "email_verification"
 
     attempt = next(record for record in caplog.records if record.message == "REGISTER_EMAIL_ATTEMPT")
     sent = next(record for record in caplog.records if record.message == "REGISTER_EMAIL_SENT")
@@ -266,6 +268,7 @@ def test_resend_verification_logs_email_send(client, monkeypatch, caplog):
 
     assert response.status_code == 200
     assert calls and calls[0]["recipient_email"] == email
+    assert calls[0]["purpose"] == "resend_verification"
     attempt = next(record for record in caplog.records if record.message == "RESEND_EMAIL_ATTEMPT")
     sent = next(record for record in caplog.records if record.message == "RESEND_EMAIL_SENT")
     assert getattr(attempt, "email", None) == "r***d@example.com"
@@ -330,8 +333,10 @@ def test_register_and_forgot_password_use_shared_auth_email_sender(client, monke
     assert len(calls) == 2
     assert calls[0]["recipient_email"] == email
     assert calls[0]["subject"] == "Verify your Measurable email"
+    assert calls[0]["purpose"] == "email_verification"
     assert calls[1]["recipient_email"] == email
     assert calls[1]["subject"] == "Reset your Measurable password"
+    assert calls[1]["purpose"] == "password_reset"
 
 
 def test_login_invalid_password_returns_401_and_logs_failure(client, caplog):
@@ -654,6 +659,7 @@ def test_auth_email_sender_uses_multipart_reply_to_and_expected_subject(monkeypa
             return {"MessageId": "ses-123"}
 
     monkeypatch.setattr("app.services._ses_client", lambda: FakeSes())
+    monkeypatch.setattr("app.services.settings.ses_configuration_set_name", "measurable-auth")
 
     html_body = build_auth_email_html(
         full_name="Alice",
@@ -673,14 +679,76 @@ def test_auth_email_sender_uses_multipart_reply_to_and_expected_subject(monkeypa
         subject="Your Measurable verification code",
         html_body=html_body,
         text_body=text_body,
+        purpose="email_verification",
     )
 
     assert message_id == "ses-123"
     assert captured["Source"] == "no-reply@measurable.test"
     assert captured["ReplyToAddresses"] == ["hello@measurableapp.com"]
+    assert captured["ConfigurationSetName"] == "measurable-auth"
+    assert captured["Tags"] == [
+        {"Name": "purpose", "Value": "email_verification"},
+        {"Name": "environment", "Value": "production"},
+    ]
     assert captured["Message"]["Subject"]["Data"] == "Your Measurable verification code"
     assert "Html" in captured["Message"]["Body"]
     assert "Text" in captured["Message"]["Body"]
+
+
+def test_auth_email_sender_logs_safe_ses_events(monkeypatch, caplog):
+    class FakeSes:
+        def send_email(self, **kwargs):
+            return {"MessageId": "ses-456"}
+
+    monkeypatch.setattr("app.services._ses_client", lambda: FakeSes())
+    monkeypatch.setattr("app.services.settings.ses_configuration_set_name", "measurable-auth")
+
+    with caplog.at_level("INFO"):
+        message_id = send_auth_email(
+            recipient_email="alice@example.com",
+            subject="Your Measurable verification code",
+            html_body="<p>Hello</p>",
+            text_body="Hello",
+            purpose="email_verification",
+        )
+
+    assert message_id == "ses-456"
+    attempt = next(record for record in caplog.records if record.message == "SES_EMAIL_SEND_ATTEMPT")
+    sent = next(record for record in caplog.records if record.message == "SES_EMAIL_SENT")
+    assert getattr(attempt, "purpose", None) == "email_verification"
+    assert getattr(attempt, "email", None) == "a***e@example.com"
+    assert getattr(sent, "purpose", None) == "email_verification"
+    assert getattr(sent, "message_id", None) == "ses-456"
+    assert getattr(sent, "configuration_set", None) == "measurable-auth"
+    assert not any("alice@example.com" in record.getMessage() for record in caplog.records)
+
+
+def test_auth_email_sender_logs_safe_ses_failure(monkeypatch, caplog):
+    class FakeSes:
+        def send_email(self, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "MessageRejected", "Message": "Email address is on the suppression list."}},
+                "SendEmail",
+            )
+
+    monkeypatch.setattr("app.services._ses_client", lambda: FakeSes())
+    monkeypatch.setattr("app.services.settings.ses_configuration_set_name", "measurable-auth")
+
+    with caplog.at_level("INFO"):
+        with pytest.raises(Exception):
+            send_auth_email(
+                recipient_email="alice@example.com",
+                subject="Your Measurable verification code",
+                html_body="<p>Hello</p>",
+                text_body="Hello",
+                purpose="email_verification",
+            )
+
+    attempt = next(record for record in caplog.records if record.message == "SES_EMAIL_SEND_ATTEMPT")
+    failed = next(record for record in caplog.records if record.message == "SES_EMAIL_FAILED")
+    assert getattr(attempt, "email", None) == "a***e@example.com"
+    assert getattr(failed, "purpose", None) == "email_verification"
+    assert getattr(failed, "reason", None) == "MessageRejected: Email address is on the suppression list."
 
 
 def test_ses_client_uses_configured_aws_region(monkeypatch):
@@ -743,6 +811,8 @@ def test_safe_auth_email_formatter_includes_only_whitelisted_fields():
     record.email = "a***e@example.com"
     record.message_id = "ses-123"
     record.reason = "MessageRejected"
+    record.purpose = "email_verification"
+    record.configuration_set = "measurable-auth"
     record.token = "secret-token"
 
     formatted = formatter.format(record)
@@ -751,4 +821,6 @@ def test_safe_auth_email_formatter_includes_only_whitelisted_fields():
     assert "email=a***e@example.com" in formatted
     assert "message_id=ses-123" in formatted
     assert "reason=MessageRejected" in formatted
+    assert "purpose=email_verification" in formatted
+    assert "configuration_set=measurable-auth" in formatted
     assert "secret-token" not in formatted

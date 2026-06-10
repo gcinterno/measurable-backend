@@ -227,6 +227,7 @@ from .ai_agents import (
     run_ai_agents_pipeline,
 )
 from .services import (
+    _mask_email,
     _safe_email_delivery_reason,
     build_export_payload,
     build_conversation_title,
@@ -297,7 +298,7 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class _SafeAuthEmailFormatter(logging.Formatter):
-    _SAFE_KEYS = ("email", "message_id", "reason")
+    _SAFE_KEYS = ("email", "message_id", "reason", "purpose", "configuration_set")
 
     def format(self, record: logging.LogRecord) -> str:
         base = super().format(record)
@@ -1137,18 +1138,6 @@ def _safe_exception_message(exc: Exception) -> str:
     return message[:200]
 
 
-def _mask_email(email: str) -> str:
-    value = email.strip()
-    if "@" not in value:
-        return "***"
-    local_part, domain = value.split("@", 1)
-    if not local_part:
-        return f"***@{domain}"
-    if len(local_part) == 1:
-        return f"{local_part[0]}***@{domain}"
-    return f"{local_part[0]}***{local_part[-1]}@{domain}"
-
-
 def _safe_register_email_failure_reason(exc: HTTPException) -> str:
     detail = exc.detail if isinstance(exc.detail, dict) else {}
     code = str(detail.get("code") or "").strip()
@@ -1169,6 +1158,7 @@ def _send_verification_email_or_raise(
     user: User,
     code: str,
     masked_email: str,
+    send_purpose: str,
     attempt_log: str,
     sent_log: str,
     failed_log: str,
@@ -1189,6 +1179,7 @@ def _send_verification_email_or_raise(
                 code=code,
                 purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
             ),
+            purpose=send_purpose,
         )
     except HTTPException as exc:
         logger.warning(
@@ -3018,6 +3009,7 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
             user=user,
             code=verification_code,
             masked_email=masked_email,
+            send_purpose=AUTH_CODE_PURPOSE_EMAIL_VERIFICATION,
             attempt_log="REGISTER_EMAIL_ATTEMPT",
             sent_log="REGISTER_EMAIL_SENT",
             failed_log="REGISTER_EMAIL_FAILED",
@@ -3387,6 +3379,7 @@ def resend_verification_code(
             user=user,
             code=verification_code,
             masked_email=masked_email or _mask_email(user.email),
+            send_purpose="resend_verification",
             attempt_log="RESEND_EMAIL_ATTEMPT",
             sent_log="RESEND_EMAIL_SENT",
             failed_log="RESEND_EMAIL_FAILED",
@@ -3429,6 +3422,7 @@ def forgot_password(payload: ForgotPasswordIn, db: Session = Depends(get_db)) ->
                 code=reset_code,
                 purpose=AUTH_CODE_PURPOSE_PASSWORD_RESET,
             ),
+            purpose=AUTH_CODE_PURPOSE_PASSWORD_RESET,
         )
         db.commit()
         logger.info("auth_password_reset_code_sent", extra={"user_id": user.id})

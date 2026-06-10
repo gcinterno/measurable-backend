@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     export_lambda_url: str
     export_api_key: str | None = None
     ses_from_email: str | None = Field(default=None, validation_alias="SES_FROM_EMAIL")
+    ses_configuration_set_name: str | None = Field(
+        default=None,
+        validation_alias="SES_CONFIGURATION_SET_NAME",
+    )
     api_base_url: str | None = Field(
         default=None,
         validation_alias=AliasChoices("API_BASE_URL", "BACKEND_BASE_URL", "NEXT_PUBLIC_API_URL"),

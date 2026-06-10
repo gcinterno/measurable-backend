@@ -1193,40 +1193,89 @@ def _safe_email_delivery_reason(exc: Exception) -> str:
     return exc.__class__.__name__
 
 
+def _mask_email(email: str) -> str:
+    value = email.strip()
+    if "@" not in value:
+        return "***"
+    local_part, domain = value.split("@", 1)
+    if not local_part:
+        return f"***@{domain}"
+    if len(local_part) == 1:
+        return f"{local_part[0]}***@{domain}"
+    return f"{local_part[0]}***{local_part[-1]}@{domain}"
+
+
 def send_auth_email(
     *,
     recipient_email: str,
     subject: str,
     html_body: str,
     text_body: str,
+    purpose: str,
 ) -> str | None:
     from_email = str(settings.ses_from_email or "").strip()
+    configuration_set_name = str(settings.ses_configuration_set_name or "").strip() or None
+    masked_email = _mask_email(recipient_email)
     if not from_email:
         raise http_error(503, "email_service_unavailable", "Email service is not configured.")
 
+    logger.info(
+        "SES_EMAIL_SEND_ATTEMPT",
+        extra={
+            "purpose": purpose,
+            "email": masked_email,
+        },
+    )
+
     try:
         ses = _ses_client()
-        response = ses.send_email(
-            Source=from_email,
-            Destination={"ToAddresses": [recipient_email]},
-            ReplyToAddresses=["hello@measurableapp.com"],
-            Message={
+        send_kwargs: dict[str, Any] = {
+            "Source": from_email,
+            "Destination": {"ToAddresses": [recipient_email]},
+            "ReplyToAddresses": ["hello@measurableapp.com"],
+            "Tags": [
+                {"Name": "purpose", "Value": purpose},
+                {"Name": "environment", "Value": "production"},
+            ],
+            "Message": {
                 "Subject": {"Data": subject, "Charset": "UTF-8"},
                 "Body": {
                     "Text": {"Data": text_body, "Charset": "UTF-8"},
                     "Html": {"Data": html_body, "Charset": "UTF-8"},
                 },
             },
+        }
+        if configuration_set_name:
+            send_kwargs["ConfigurationSetName"] = configuration_set_name
+        response = ses.send_email(
+            **send_kwargs,
         )
-        return str(response.get("MessageId") or "").strip() or None
+        message_id = str(response.get("MessageId") or "").strip() or None
+        logger.info(
+            "SES_EMAIL_SENT",
+            extra={
+                "purpose": purpose,
+                "message_id": message_id,
+                "configuration_set": configuration_set_name,
+            },
+        )
+        return message_id
     except (NoCredentialsError, BotoCoreError, ClientError) as exc:
+        safe_reason = _safe_email_delivery_reason(exc)
+        logger.warning(
+            "SES_EMAIL_FAILED",
+            extra={
+                "purpose": purpose,
+                "reason": safe_reason,
+            },
+        )
         logger.exception(
             "auth_email_send_failed",
             extra={
                 "recipient_domain": recipient_email.split("@")[-1] if "@" in recipient_email else None,
                 "exception_class": exc.__class__.__name__,
                 "reply_to": "hello@measurableapp.com",
-                "reason": _safe_email_delivery_reason(exc),
+                "reason": safe_reason,
                 "aws_region": settings.aws_region,
                 "from_email_configured": bool(from_email),
             },
