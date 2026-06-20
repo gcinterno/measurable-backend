@@ -8,6 +8,7 @@ import re
 import secrets
 import sys
 import requests
+from uuid import uuid4
 from decimal import Decimal
 from urllib.parse import urlencode, urlsplit
 from datetime import date, timedelta, datetime, timezone, time
@@ -30,6 +31,7 @@ from .deps import (
     get_current_user_for_report_read,
     get_optional_current_user,
     get_db,
+    load_current_user,
     load_user_by_email,
     load_user_by_google_sub,
     require_admin_user,
@@ -40,6 +42,7 @@ from .errors import http_error
 import boto3
 
 from .config import settings
+from .crypto import decrypt_secret, encrypt_secret
 from .db import SessionLocal, engine
 from .integrations.meta_ads import (
     META_ADS_OAUTH_SCOPE,
@@ -58,13 +61,43 @@ from .integrations.meta_ads import (
     fetch_page_posts,
     fetch_post_metrics,
     exchange_pages_code_for_token,
+    get_meta_ads_redirect_uri,
     get_meta_pages_redirect_uri,
     get_businesses,
     get_owned_ad_accounts,
+    list_ad_accounts,
     list_pages,
     oauth_connect_url,
     oauth_connect_pages_url,
 )
+from .integrations.tiktok_ads import (
+    build_authorization_url as build_tiktok_authorization_url,
+    decode_state as decode_tiktok_state,
+    encode_state as encode_tiktok_state,
+    exchange_auth_code_for_token,
+    fetch_daily_advertiser_report,
+    get_authorized_advertisers,
+    normalize_tiktok_report_to_dataset_payload,
+    tiktok_missing_env_flags,
+)
+from .integrations.shopify import (
+    SHOPIFY_COMPLIANCE_TOPICS,
+    SHOPIFY_OAUTH_STATE_PURPOSE,
+    SHOPIFY_PROVIDER,
+    SHOPIFY_STATUS_CONNECTED,
+    SHOPIFY_STATUS_DISCONNECTED,
+    SHOPIFY_STATUS_ERROR,
+    exchange_code_for_access_token as exchange_shopify_code_for_access_token,
+    fetch_orders_metrics,
+    fetch_shop_details,
+    normalize_shop_domain,
+    resolve_shopify_timeframe,
+    shopify_authorize_url,
+    shopify_callback_hmac_valid,
+    shopify_missing_config,
+    shopify_webhook_hmac_valid,
+)
+from .integrations.meta_capi import send_meta_capi_event
 from .models import (
     AccountDeletionFeedback,
     AuditLog,
@@ -78,6 +111,8 @@ from .models import (
     IntegrationToken,
     Job,
     Message,
+    MetaAdAccount,
+    MetaAdsInsightDaily,
     MetaPage,
     ReferralClick,
     ReferralConversion,
@@ -88,6 +123,9 @@ from .models import (
     ReportSource,
     ReportVersion,
     Schedule,
+    ShopifyConnection,
+    ShopifyOAuthState,
+    ShopifySnapshot,
     Subscription,
     User,
     UserAttribution,
@@ -155,9 +193,18 @@ from .schemas import (
     MetaSyncAllOut,
     MetaSyncAllResultsOut,
     MetaSyncSourceResultOut,
+    MetaTrackingEventIn,
+    MetaTrackingEventOut,
     MetaPagesSyncOut,
     MetaSelectAccountIn,
     MetaSelectAccountManualIn,
+    MetaAdsAccountOut,
+    MetaAdsConnectOut,
+    MetaAdsDisconnectOut,
+    MetaAdsSelectAccountIn,
+    MetaAdsStatusOut,
+    MetaAdsSyncIn,
+    MetaAdsSyncOut,
     MetaSelectPageIn,
     MetaSetTokenManualIn,
     MessageOut,
@@ -197,9 +244,24 @@ from .schemas import (
     ScheduleCreateIn,
     ScheduleSchema,
     ScheduleUpdateIn,
+    ShopifyDisconnectOut,
+    ShopifyReportCreateIn,
+    ShopifyStatusOut,
+    ShopifySyncIn,
+    ShopifySyncOut,
     SuggestionCreateIn,
     SuggestionCreateOut,
     SuggestionStatusUpdateIn,
+    TikTokAdvertiserAccountOut,
+    TikTokAdvertiserAccountsOut,
+    TikTokCallbackCompleteIn,
+    TikTokCallbackCompleteOut,
+    TikTokConnectOut,
+    TikTokDisconnectOut,
+    TikTokSelectAccountIn,
+    TikTokStatusOut,
+    TikTokSyncIn,
+    TikTokSyncOut,
     TokenOut,
     UserSuggestionOut,
     WishlistCreateIn,
@@ -292,7 +354,7 @@ from .services import (
 
 logger = logging.getLogger(__name__)
 DEFAULT_GENERATED_REPORT_SLIDE_COUNT = 2
-INTEGRATIONS_TOTAL_AVAILABLE = 3
+INTEGRATIONS_TOTAL_AVAILABLE = 5
 META_PAGES_CACHE_TTL = timedelta(hours=6)
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -1138,6 +1200,69 @@ def _safe_exception_message(exc: Exception) -> str:
     return message[:200]
 
 
+def _tracking_client_ip(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    forwarded_for = str(request.headers.get("x-forwarded-for") or "").strip()
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip() or None
+    real_ip = str(request.headers.get("x-real-ip") or "").strip()
+    if real_ip:
+        return real_ip
+    return request.client.host if request.client is not None else None
+
+
+def _tracking_event_source_url(request: Request | None, fallback_path: str | None = None) -> str | None:
+    if request is not None:
+        referer = str(request.headers.get("referer") or "").strip()
+        if referer:
+            return referer
+    base_url = str(settings.frontend_base_url or settings.frontend_url or "").strip().rstrip("/")
+    if not base_url or not fallback_path:
+        return None
+    normalized_path = fallback_path if fallback_path.startswith("/") else f"/{fallback_path}"
+    return f"{base_url}{normalized_path}"
+
+
+def _track_meta_event(
+    *,
+    event_name: str,
+    user: User | None,
+    request: Request | None = None,
+    event_id: str | None = None,
+    event_source_url: str | None = None,
+    fbp: str | None = None,
+    fbc: str | None = None,
+    custom_data: dict[str, Any] | None = None,
+    action_source: str = "website",
+) -> bool:
+    try:
+        request_fbp = request.cookies.get("_fbp") if request is not None else None
+        request_fbc = request.cookies.get("_fbc") if request is not None else None
+        return send_meta_capi_event(
+            event_name=event_name,
+            event_id=event_id or str(uuid4()),
+            event_source_url=event_source_url,
+            user_email=user.email if user is not None else None,
+            user_id=str(user.id) if user is not None else None,
+            client_ip_address=_tracking_client_ip(request),
+            client_user_agent=str(request.headers.get("user-agent") or "").strip() if request is not None else None,
+            fbp=fbp or request_fbp,
+            fbc=fbc or request_fbc,
+            custom_data=custom_data,
+            action_source=action_source,
+        )
+    except Exception as exc:
+        logger.warning(
+            "meta_capi_event_dispatch_failed",
+            extra={
+                "event_name": event_name,
+                "reason": _safe_exception_message(exc),
+            },
+        )
+        return False
+
+
 def _safe_register_email_failure_reason(exc: HTTPException) -> str:
     detail = exc.detail if isinstance(exc.detail, dict) else {}
     code = str(detail.get("code") or "").strip()
@@ -1936,12 +2061,18 @@ def _report_status(report: Report) -> str | None:
 
 def _canonical_report_integration_type(value: Any) -> str:
     normalized = str(value or "").strip().lower()
+    if normalized in {"shopify", "shopify_store"}:
+        return "shopify"
+    if normalized in {"meta_ads", "meta-ad", "metaads", "meta_ads_account"}:
+        return "meta_ads"
     if normalized in {"instagram", "instagram_business", "instagram_account"}:
         return "instagram"
     if normalized in {"facebook", "facebook_page", "facebook_pages", "meta_pages", "meta_pages_v1", "meta_pages_v2"}:
         return "facebook"
     if normalized in {"meta", "meta_ads"}:
         return "meta"
+    if normalized in {"tiktok", "tiktok_ads", "tiktok_ads_v1"}:
+        return "tiktok_ads"
     if normalized in {"csv", "csv_upload"}:
         return "csv"
     if normalized in {"upload", "file_upload", "manual_upload"}:
@@ -1953,9 +2084,12 @@ def _canonical_report_integration_type(value: Any) -> str:
 
 def _report_integration_display_name(integration_type: str) -> str:
     mapping = {
+        "shopify": "Shopify",
         "instagram": "Instagram Business",
         "facebook": "Facebook Pages",
+        "meta_ads": "Meta Ads",
         "meta": "Meta",
+        "tiktok_ads": "TikTok Ads",
         "csv": "CSV Upload",
         "upload": "File Upload",
         "legacy": "Manual / Legacy report",
@@ -1991,6 +2125,10 @@ def _report_integration_type_from_payload(payload: dict[str, Any]) -> Any:
         return "facebook_pages"
     if payload.get("instagram_business_account_id") or payload.get("instagram_username"):
         return "instagram_business"
+    if payload.get("shop_domain") or payload.get("top_products"):
+        return "shopify"
+    if payload.get("ad_account_id") or payload.get("top_campaigns"):
+        return "meta_ads"
     return None
 
 
@@ -2001,6 +2139,9 @@ def _infer_report_integration_from_text(*values: Any) -> dict[str, str | None] |
     haystack = " ".join(text_parts).lower()
     has_facebook = any(token in haystack for token in ("facebook pages report", "facebook pages", "facebook_page", "facebook"))
     has_instagram = any(token in haystack for token in ("instagram business", "instagram report", "instagram_business", "instagram"))
+    has_shopify = "shopify" in haystack
+    has_meta_ads = any(token in haystack for token in ("meta ads", "paid media", "meta_ads"))
+    has_tiktok = any(token in haystack for token in ("tiktok ads", "tiktok_ads", "tiktok"))
     if has_facebook and has_instagram:
         return {
             "integration_type": "meta",
@@ -2021,6 +2162,27 @@ def _infer_report_integration_from_text(*values: Any) -> dict[str, str | None] |
             "integration_display_name": "Instagram Business",
             "social_network": "instagram",
             "channel": "instagram",
+        }
+    if has_shopify:
+        return {
+            "integration_type": "shopify",
+            "integration_display_name": "Shopify",
+            "social_network": None,
+            "channel": "shopify",
+        }
+    if has_meta_ads:
+        return {
+            "integration_type": "meta_ads",
+            "integration_display_name": "Meta Ads",
+            "social_network": None,
+            "channel": "meta_ads",
+        }
+    if has_tiktok:
+        return {
+            "integration_type": "tiktok_ads",
+            "integration_display_name": "TikTok Ads",
+            "social_network": "tiktok",
+            "channel": "tiktok_ads",
         }
     if any(token in haystack for token in ("csv upload", ".csv", "spreadsheet", "upload")):
         return {
@@ -2922,7 +3084,7 @@ def _is_deleted_user(user: User | None) -> bool:
 
 
 @app.post("/auth/register", response_model=RegisterOut, status_code=201)
-def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
+def register(payload: RegisterIn, request: Request, db: Session = Depends(get_db)) -> RegisterOut:
     email = payload.email.strip()
     masked_email = _mask_email(email)
     full_name = payload.full_name.strip() if payload.full_name and payload.full_name.strip() else None
@@ -3024,6 +3186,16 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
                 "has_existing_user": existing_user is not None,
             },
         )
+        _track_meta_event(
+            event_name="CompleteRegistration",
+            user=user,
+            request=request,
+            event_source_url=_tracking_event_source_url(request, "/register"),
+            custom_data={
+                "status": "verification_required",
+                "workspace_id": workspace.id if workspace else None,
+            },
+        )
         return RegisterOut(
             message="If the email can be registered, verification instructions will be sent.",
             verification_required=True,
@@ -3068,6 +3240,7 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
 
 @app.post("/auth/login", response_model=TokenOut)
 def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ) -> TokenOut:
@@ -3123,6 +3296,13 @@ def login(
         db.commit()
         token = create_access_token(str(user.id))
         logger.info("auth_login_token_created", extra={"email": masked_email, "user_id": user.id})
+        _track_meta_event(
+            event_name="Login",
+            user=user,
+            request=request,
+            event_source_url=_tracking_event_source_url(request, "/login"),
+            custom_data={"auth_provider": user.auth_provider},
+        )
         return TokenOut(access_token=token)
     except HTTPException:
         db.rollback()
@@ -3169,6 +3349,7 @@ def google_start() -> RedirectResponse:
 
 @app.get("/auth/google/callback")
 def google_callback(
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     db: Session = Depends(get_db),
@@ -3262,6 +3443,13 @@ def google_callback(
         logger.info(
             "google_oauth_token_created",
             extra={"user_id": user.id, "token_type": "bearer"},
+        )
+        _track_meta_event(
+            event_name="Login",
+            user=user,
+            request=request,
+            event_source_url=_tracking_event_source_url(request, "/login"),
+            custom_data={"auth_provider": "google", "is_new_user": is_new_user},
         )
         response = _google_auth_redirect_response(access_token)
         response.headers["Cache-Control"] = "no-store"
@@ -3563,6 +3751,25 @@ def me(current_user: User = Depends(get_current_user), db: Session = Depends(get
 @app.get("/auth/me", response_model=MeOut)
 def auth_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> MeOut:
     return _me_out(db, current_user)
+
+
+@app.post("/tracking/meta/event", response_model=MetaTrackingEventOut)
+def track_meta_event(
+    payload: MetaTrackingEventIn,
+    request: Request,
+    current_user: User | None = Depends(get_optional_current_user),
+) -> MetaTrackingEventOut:
+    sent = _track_meta_event(
+        event_name=payload.event_name,
+        user=current_user,
+        request=request,
+        event_id=str(payload.event_id or "").strip() or None,
+        event_source_url=payload.event_source_url,
+        fbp=payload.fbp,
+        fbc=payload.fbc,
+        custom_data=payload.custom_data,
+    )
+    return MetaTrackingEventOut(ok=True, sent=sent)
 
 
 @app.get("/account/summary", response_model=AccountSummaryOut)
@@ -5560,6 +5767,9 @@ META_TOKEN_ACCOUNT_PREFIX = "__meta_token__:"
 META_PAGE_ACCOUNT_PREFIX = "__meta_page__:"
 META_RECORD_TYPE_FACEBOOK_PAGE = "facebook_page"
 META_RECORD_TYPE_INSTAGRAM_ACCOUNT = "instagram_account"
+TIKTOK_TOKEN_ACCOUNT_PREFIX = "__tiktok_token__:"
+TIKTOK_SELECTED_ADVERTISER_PREFIX = "__tiktok_selected__:"
+TIKTOK_OAUTH_STATE_SOURCE = "tiktok_ads_connect"
 
 
 def _validate_upload(file: UploadFile) -> int:
@@ -5826,6 +6036,407 @@ def _resolve_meta_connect_workspace_id(
     )
 
 
+def _tiktok_token_account_external_id(integration_id: int) -> str:
+    return f"{TIKTOK_TOKEN_ACCOUNT_PREFIX}{integration_id}"
+
+
+def _tiktok_selected_advertiser_external_id(advertiser_id: str) -> str:
+    return f"{TIKTOK_SELECTED_ADVERTISER_PREFIX}{advertiser_id}"
+
+
+def _parse_iso_date_or_400(value: str, *, field_name: str) -> date:
+    try:
+        return date.fromisoformat(str(value).strip())
+    except ValueError as exc:
+        raise http_error(422, "invalid_date", f"{field_name} must be in YYYY-MM-DD format.") from exc
+
+
+def _resolve_tiktok_workspace_id(
+    db: Session,
+    *,
+    user_id: int,
+    workspace_id: int | None,
+) -> int:
+    return _resolve_meta_connect_workspace_id(
+        db,
+        user_id=user_id,
+        requested_workspace_id=workspace_id,
+    )
+
+
+def _get_or_create_tiktok_integration_for_workspace(db: Session, workspace_id: int) -> Integration:
+    integration = (
+        db.query(Integration)
+        .filter(Integration.workspace_id == workspace_id, Integration.provider == "tiktok_ads")
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    if integration is not None:
+        return integration
+
+    integration = Integration(
+        workspace_id=workspace_id,
+        provider="tiktok_ads",
+        name="TikTok Ads",
+        status="disconnected",
+    )
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+    logger.info(
+        "TikTok integration created",
+        extra={"workspace_id": workspace_id, "integration_id": integration.id},
+    )
+    return integration
+
+
+def _resolve_tiktok_integration(
+    db: Session,
+    *,
+    current_user: User,
+    integration_id: int | None,
+    workspace_id: int | None,
+) -> Integration:
+    if integration_id is not None:
+        integration = db.get(Integration, int(integration_id))
+        if integration is None or integration.provider != "tiktok_ads":
+            raise http_error(404, "integration_not_found", "TikTok integration not found.")
+        _require_workspace_access(db, current_user.id, integration.workspace_id)
+        return integration
+
+    resolved_workspace_id = _resolve_tiktok_workspace_id(
+        db,
+        user_id=current_user.id,
+        workspace_id=workspace_id,
+    )
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    return _get_or_create_tiktok_integration_for_workspace(db, resolved_workspace_id)
+
+
+def _get_tiktok_token_account(db: Session, integration_id: int) -> IntegrationAccount | None:
+    return (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration_id,
+            IntegrationAccount.external_account_id == _tiktok_token_account_external_id(integration_id),
+        )
+        .first()
+    )
+
+
+def _get_or_create_tiktok_token_account(db: Session, integration: Integration) -> IntegrationAccount:
+    token_account = _get_tiktok_token_account(db, integration.id)
+    if token_account is not None:
+        return token_account
+
+    token_account = IntegrationAccount(
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+        external_account_id=_tiktok_token_account_external_id(integration.id),
+        display_name="TikTok token store",
+    )
+    db.add(token_account)
+    db.commit()
+    db.refresh(token_account)
+    return token_account
+
+
+def _replace_integration_token_with_refresh(
+    db: Session,
+    *,
+    account_id: int,
+    workspace_id: int,
+    access_token: str,
+    refresh_token: str | None,
+    expires_at: datetime | None,
+) -> IntegrationToken:
+    existing_tokens = (
+        db.query(IntegrationToken)
+        .filter(IntegrationToken.account_id == account_id)
+        .order_by(IntegrationToken.updated_at.desc(), IntegrationToken.id.desc())
+        .all()
+    )
+    token = existing_tokens[0] if existing_tokens else None
+    if token is None:
+        token = IntegrationToken(
+            account_id=account_id,
+            workspace_id=workspace_id,
+            token_type="access_token",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+        )
+        db.add(token)
+    else:
+        token.token_type = "access_token"
+        token.access_token = access_token
+        token.refresh_token = refresh_token
+        token.expires_at = expires_at
+        db.add(token)
+        for stale_token in existing_tokens[1:]:
+            db.delete(stale_token)
+    db.commit()
+    db.refresh(token)
+    return token
+
+
+def _get_tiktok_access_token(db: Session, integration: Integration) -> str:
+    if str(integration.status or "").strip().lower() != "connected":
+        raise http_error(401, "missing_token", "TikTok token not found.")
+    token_account = _get_tiktok_token_account(db, integration.id)
+    if token_account is None:
+        raise http_error(401, "missing_token", "TikTok token not found.")
+    token = _get_latest_integration_token(db, token_account.id)
+    if token is None or not str(token.access_token or "").strip():
+        raise http_error(401, "missing_token", "TikTok token not found.")
+    return str(token.access_token).strip()
+
+
+def _store_tiktok_advertisers(
+    db: Session,
+    *,
+    integration: Integration,
+    advertisers: list[dict[str, Any]],
+) -> list[IntegrationAccount]:
+    existing_accounts = (
+        db.query(IntegrationAccount)
+        .filter(IntegrationAccount.integration_id == integration.id)
+        .all()
+    )
+    helper_external_ids = {
+        _tiktok_token_account_external_id(integration.id),
+    }
+    selected_account = next(
+        (
+            account for account in existing_accounts
+            if str(account.external_account_id).startswith(TIKTOK_SELECTED_ADVERTISER_PREFIX)
+        ),
+        None,
+    )
+    if selected_account is not None:
+        helper_external_ids.add(selected_account.external_account_id)
+
+    advertiser_ids = {
+        str(item.get("advertiser_id") or "").strip()
+        for item in advertisers
+        if str(item.get("advertiser_id") or "").strip()
+    }
+    for account in existing_accounts:
+        if account.external_account_id in helper_external_ids:
+            continue
+        if account.external_account_id not in advertiser_ids:
+            db.delete(account)
+
+    stored_accounts: list[IntegrationAccount] = []
+    for advertiser in advertisers:
+        advertiser_id = str(advertiser.get("advertiser_id") or "").strip()
+        if not advertiser_id:
+            continue
+        advertiser_name = str(advertiser.get("advertiser_name") or advertiser_id).strip()
+        account = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id == advertiser_id,
+            )
+            .first()
+        )
+        if account is None:
+            account = IntegrationAccount(
+                integration_id=integration.id,
+                workspace_id=integration.workspace_id,
+                external_account_id=advertiser_id,
+                display_name=advertiser_name,
+            )
+            db.add(account)
+        else:
+            account.display_name = advertiser_name
+            db.add(account)
+        stored_accounts.append(account)
+
+    db.commit()
+    return (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration.id,
+            IntegrationAccount.external_account_id.notlike(f"{TIKTOK_TOKEN_ACCOUNT_PREFIX}%"),
+            IntegrationAccount.external_account_id.notlike(f"{TIKTOK_SELECTED_ADVERTISER_PREFIX}%"),
+        )
+        .order_by(IntegrationAccount.display_name.asc(), IntegrationAccount.external_account_id.asc())
+        .all()
+    )
+
+
+def _get_tiktok_selected_advertiser_marker(
+    db: Session,
+    integration_id: int,
+) -> IntegrationAccount | None:
+    return (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration_id,
+            IntegrationAccount.external_account_id.like(f"{TIKTOK_SELECTED_ADVERTISER_PREFIX}%"),
+        )
+        .order_by(IntegrationAccount.updated_at.desc(), IntegrationAccount.id.desc())
+        .first()
+    )
+
+
+def _list_tiktok_advertiser_accounts(db: Session, integration_id: int) -> list[IntegrationAccount]:
+    return (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration_id,
+            IntegrationAccount.external_account_id.notlike(f"{TIKTOK_TOKEN_ACCOUNT_PREFIX}%"),
+            IntegrationAccount.external_account_id.notlike(f"{TIKTOK_SELECTED_ADVERTISER_PREFIX}%"),
+        )
+        .order_by(IntegrationAccount.display_name.asc(), IntegrationAccount.external_account_id.asc())
+        .all()
+    )
+
+
+def _select_tiktok_advertiser_account(
+    db: Session,
+    *,
+    integration: Integration,
+    advertiser_id: str,
+) -> IntegrationAccount:
+    normalized_advertiser_id = str(advertiser_id or "").strip()
+    if not normalized_advertiser_id:
+        raise http_error(400, "missing_advertiser_id", "advertiser_id is required.")
+
+    advertiser_account = (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration.id,
+            IntegrationAccount.external_account_id == normalized_advertiser_id,
+        )
+        .first()
+    )
+    if advertiser_account is None:
+        raise http_error(404, "advertiser_not_found", "TikTok advertiser account not found.")
+
+    existing_marker = _get_tiktok_selected_advertiser_marker(db, integration.id)
+    target_external_id = _tiktok_selected_advertiser_external_id(normalized_advertiser_id)
+    if existing_marker is None:
+        existing_marker = IntegrationAccount(
+            integration_id=integration.id,
+            workspace_id=integration.workspace_id,
+            external_account_id=target_external_id,
+            display_name=advertiser_account.display_name,
+        )
+        db.add(existing_marker)
+    else:
+        existing_marker.external_account_id = target_external_id
+        existing_marker.display_name = advertiser_account.display_name
+        db.add(existing_marker)
+    db.commit()
+    return advertiser_account
+
+
+def _get_selected_tiktok_advertiser_account(
+    db: Session,
+    integration: Integration,
+) -> IntegrationAccount | None:
+    marker = _get_tiktok_selected_advertiser_marker(db, integration.id)
+    if marker is None:
+        return None
+    advertiser_id = marker.external_account_id.removeprefix(TIKTOK_SELECTED_ADVERTISER_PREFIX)
+    return (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration.id,
+            IntegrationAccount.external_account_id == advertiser_id,
+        )
+        .first()
+    )
+
+
+def _tiktok_account_last_synced_at(
+    db: Session,
+    *,
+    workspace_id: int,
+    advertiser_id: str | None,
+) -> datetime | None:
+    try:
+        datasets = (
+            db.query(Dataset)
+            .filter(Dataset.workspace_id == workspace_id)
+            .order_by(Dataset.updated_at.desc(), Dataset.id.desc())
+            .limit(200)
+            .all()
+        )
+    except SQLAlchemyError:
+        return None
+    for dataset in datasets:
+        dataset_data = dataset.data if isinstance(dataset.data, dict) else {}
+        if str(dataset_data.get("integration_type") or "").strip() != "tiktok_ads":
+            continue
+        dataset_account_id = str(dataset_data.get("account_id") or dataset_data.get("page_id") or "").strip()
+        if advertiser_id is not None and dataset_account_id != advertiser_id:
+            continue
+        return dataset.updated_at
+    return None
+
+
+def _tiktok_advertiser_out(
+    db: Session,
+    *,
+    integration: Integration,
+    account: IntegrationAccount,
+    selected_advertiser_id: str | None,
+) -> TikTokAdvertiserAccountOut:
+    advertiser_id = str(account.external_account_id or "").strip()
+    return TikTokAdvertiserAccountOut(
+        advertiser_id=advertiser_id,
+        advertiser_name=str(account.display_name or advertiser_id),
+        selected=advertiser_id == selected_advertiser_id,
+        last_synced_at=_tiktok_account_last_synced_at(
+            db,
+            workspace_id=integration.workspace_id,
+            advertiser_id=advertiser_id,
+        ),
+    )
+
+
+def _disconnect_tiktok_integration(db: Session, integration: Integration) -> TikTokDisconnectOut:
+    integration_accounts = (
+        db.query(IntegrationAccount)
+        .filter(IntegrationAccount.integration_id == integration.id)
+        .all()
+    )
+    token_account_ids = [
+        account.id
+        for account in integration_accounts
+        if account.external_account_id == _tiktok_token_account_external_id(integration.id)
+    ]
+    selected_account_cleared = any(
+        account.external_account_id.startswith(TIKTOK_SELECTED_ADVERTISER_PREFIX)
+        for account in integration_accounts
+    )
+    tokens = (
+        db.query(IntegrationToken)
+        .filter(IntegrationToken.account_id.in_(token_account_ids))
+        .all()
+        if token_account_ids
+        else []
+    )
+    for token in tokens:
+        db.delete(token)
+    for account in integration_accounts:
+        if account.external_account_id.startswith(TIKTOK_SELECTED_ADVERTISER_PREFIX):
+            db.delete(account)
+    integration.status = "disconnected"
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+    return TikTokDisconnectOut(
+        advertisers_cleared=0,
+        selected_account_cleared=selected_account_cleared,
+        tokens_cleared=bool(tokens),
+    )
+
+
 def _require_pro_plan(db: Session, workspace_id: int) -> None:
     if not can_schedule_report(db, workspace_id):
         raise http_error(403, "plan_required", "Current plan does not allow more scheduled reports.")
@@ -5881,6 +6492,240 @@ def _get_or_create_meta_integration_for_workspace(db: Session, workspace_id: int
         integration.provider,
     )
     return integration
+
+
+def _get_or_create_meta_ads_integration_for_workspace(db: Session, workspace_id: int) -> Integration:
+    integration = (
+        db.query(Integration)
+        .filter(Integration.workspace_id == workspace_id, Integration.provider == "meta_ads")
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    if integration:
+        return integration
+
+    integration = Integration(
+        workspace_id=workspace_id,
+        provider="meta_ads",
+        name="Meta Ads",
+        status="disconnected",
+    )
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+    return integration
+
+
+def _get_meta_ads_integration(
+    db: Session,
+    current_user: User,
+    integration_id: int,
+    *,
+    require_access: bool = True,
+) -> Integration:
+    integration = db.get(Integration, integration_id)
+    if not integration or integration.provider != "meta_ads":
+        raise http_error(404, "integration_not_found", "Meta Ads integration not found.")
+    if require_access:
+        _require_workspace_access(db, current_user.id, integration.workspace_id)
+    return integration
+
+
+def _get_meta_ads_token_account(db: Session, integration_id: int) -> IntegrationAccount | None:
+    return (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration_id,
+            IntegrationAccount.external_account_id == _meta_token_account_external_id(integration_id),
+        )
+        .first()
+    )
+
+
+def _ensure_meta_ads_token_account(db: Session, integration: Integration) -> IntegrationAccount:
+    token_account = _get_meta_ads_token_account(db, integration.id)
+    if token_account is not None:
+        return token_account
+
+    token_account = IntegrationAccount(
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+        external_account_id=_meta_token_account_external_id(integration.id),
+        display_name="Meta Ads token store",
+    )
+    db.add(token_account)
+    db.commit()
+    db.refresh(token_account)
+    return token_account
+
+
+def _get_meta_ads_access_token(db: Session, integration: Integration) -> str:
+    token_account = _get_meta_ads_token_account(db, integration.id)
+    if token_account is None:
+        raise http_error(401, "missing_token", "Meta Ads token not found.")
+    latest_token = _get_latest_integration_token(db, token_account.id)
+    if latest_token is None or not str(latest_token.access_token or "").strip():
+        raise http_error(401, "missing_token", "Meta Ads token not found.")
+    return str(latest_token.access_token)
+
+
+def _meta_ads_account_out(record: MetaAdAccount, *, source: str | None = None) -> MetaAdsAccountOut:
+    return MetaAdsAccountOut(
+        id=record.id,
+        account_id=record.account_id,
+        name=record.account_name,
+        currency=record.currency,
+        timezone_name=record.timezone_name,
+        account_status=record.account_status,
+        business_id=record.business_id,
+        business_name=record.business_name,
+        is_selected=record.is_selected,
+        last_synced_at=record.last_synced_at,
+        source=source,
+    )
+
+
+def _upsert_meta_ads_account(
+    db: Session,
+    *,
+    integration: Integration,
+    account_payload: dict[str, Any],
+    is_selected: bool | None = None,
+) -> MetaAdAccount:
+    raw_account_id = str(account_payload.get("account_id") or account_payload.get("id") or "").strip()
+    normalized_account_id = _normalize_meta_ad_account_id(raw_account_id)
+    if not normalized_account_id:
+        raise http_error(400, "invalid_ad_account", "Meta Ads account id is required.")
+
+    business_payload = account_payload.get("business") if isinstance(account_payload.get("business"), dict) else {}
+    record = (
+        db.query(MetaAdAccount)
+        .filter(
+            MetaAdAccount.integration_id == integration.id,
+            MetaAdAccount.account_id == normalized_account_id,
+        )
+        .first()
+    )
+    if record is None:
+        record = MetaAdAccount(
+            integration_id=integration.id,
+            workspace_id=integration.workspace_id,
+            account_id=normalized_account_id,
+            account_name=str(account_payload.get("name") or normalized_account_id),
+        )
+        db.add(record)
+
+    record.account_name = str(account_payload.get("name") or record.account_name or normalized_account_id)
+    record.currency = str(account_payload.get("currency") or "").strip() or None
+    record.timezone_name = str(account_payload.get("timezone_name") or "").strip() or None
+    account_status = account_payload.get("account_status")
+    record.account_status = str(account_status).strip() if account_status not in (None, "") else None
+    record.business_id = str(business_payload.get("id") or "").strip() or None
+    record.business_name = str(business_payload.get("name") or "").strip() or None
+    if is_selected is not None:
+        record.is_selected = bool(is_selected)
+    db.add(record)
+    db.flush()
+    return record
+
+
+def _save_meta_ads_selected_account(
+    db: Session,
+    *,
+    integration: Integration,
+    account_payload: dict[str, Any],
+) -> MetaAdAccount:
+    existing_accounts = (
+        db.query(MetaAdAccount)
+        .filter(MetaAdAccount.integration_id == integration.id)
+        .all()
+    )
+    for account in existing_accounts:
+        account.is_selected = False
+        db.add(account)
+    record = _upsert_meta_ads_account(
+        db,
+        integration=integration,
+        account_payload=account_payload,
+        is_selected=True,
+    )
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+def _get_selected_meta_ads_account(db: Session, integration_id: int) -> MetaAdAccount | None:
+    return (
+        db.query(MetaAdAccount)
+        .filter(
+            MetaAdAccount.integration_id == integration_id,
+            MetaAdAccount.is_selected.is_(True),
+        )
+        .order_by(MetaAdAccount.updated_at.desc(), MetaAdAccount.id.desc())
+        .first()
+    )
+
+
+def _meta_ads_find_account_payload(accounts: list[dict[str, Any]], ad_account_id: str) -> dict[str, Any] | None:
+    requested_id = _normalize_meta_ad_account_id(ad_account_id)
+    for account in accounts:
+        account_ids = {
+            _normalize_meta_ad_account_id(str(account.get("id") or "")),
+            _normalize_meta_ad_account_id(str(account.get("account_id") or "")),
+        }
+        if requested_id in account_ids:
+            return account
+    return None
+
+
+def _meta_ads_status_message(*, status: str, connected: bool, accounts_count: int) -> str | None:
+    if not connected:
+        return "Connect Meta Ads to load ad accounts and sync reporting data."
+    if status == "reauthorization_required":
+        return "Reconnect Meta Ads to refresh permissions or access."
+    if accounts_count == 0:
+        return "No ad accounts found for this Meta Ads connection."
+    return None
+
+
+def _disconnect_meta_ads_integration(
+    db: Session,
+    integration: Integration,
+    *,
+    revoke_permissions: bool = True,
+) -> MetaAdsDisconnectOut:
+    token_account = _get_meta_ads_token_account(db, integration.id)
+    token = _get_latest_integration_token(db, token_account.id) if token_account is not None else None
+    accounts = db.query(MetaAdAccount).filter(MetaAdAccount.integration_id == integration.id).all()
+    account_ids = [account.id for account in accounts]
+    rows = (
+        db.query(MetaAdsInsightDaily)
+        .filter(MetaAdsInsightDaily.integration_id == integration.id)
+        .all()
+    )
+    cleared_accounts = len(accounts)
+    cleared_rows = len(rows)
+
+    token_revoked = False
+    if revoke_permissions and token is not None and str(token.access_token or "").strip():
+        token_revoked = _revoke_meta_permissions(token.access_token) == "success"
+
+    for row in rows:
+        db.delete(row)
+    for account in accounts:
+        db.delete(account)
+    if token_account is not None:
+        db.delete(token_account)
+    integration.status = "disconnected"
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+
+    return MetaAdsDisconnectOut(
+        cleared_accounts=cleared_accounts,
+        cleared_rows=cleared_rows,
+        token_revoked=token_revoked,
+    )
 
 
 def _resolve_meta_pages_exchange_redirect_uri(redirect_uri: str | None) -> str:
@@ -6920,6 +7765,67 @@ def _sum_meta_daily_series(points: list[dict] | None) -> int | None:
     return sum(numeric_values)
 
 
+def _facebook_metric_unavailable_reason(
+    *,
+    value: Any,
+    points: list[dict] | None,
+    source_metric: str | None,
+) -> str | None:
+    if isinstance(value, (int, float)) or _sum_meta_daily_series(points) is not None:
+        return None
+    if source_metric:
+        return "Meta did not return this metric for the selected period."
+    return "Meta did not return this metric for the selected period."
+
+
+def _facebook_metric_audit_entry(
+    *,
+    source_metric: str | None,
+    raw_value: Any,
+    points: list[dict] | None,
+    unavailable_reason: str | None = None,
+) -> dict[str, Any]:
+    normalized_points = _meta_series_points(points or [])
+    return {
+        "source_metric": source_metric,
+        "raw_value": raw_value,
+        "sum_value": _sum_meta_daily_series(normalized_points),
+        "points_count": len(normalized_points),
+        "unavailable_reason": unavailable_reason,
+    }
+
+
+def _log_facebook_pages_metric_event(
+    event_name: str,
+    *,
+    report_id: int | None = None,
+    dataset_id: int | None = None,
+    page_id: str | None = None,
+    page_name: str | None = None,
+    metric_name: str,
+    source_metric: str | None = None,
+    raw_value: Any = None,
+    points: list[dict] | None = None,
+    unavailable_reason: str | None = None,
+) -> None:
+    normalized_points = _meta_series_points(points or [])
+    logger.info(
+        event_name,
+        extra={
+            "report_id": report_id,
+            "dataset_id": dataset_id,
+            "page_id": page_id,
+            "page_name": page_name,
+            "metric_name": metric_name,
+            "source_metric": source_metric,
+            "raw_value": raw_value,
+            "sum_value": _sum_meta_daily_series(normalized_points),
+            "points_count": len(normalized_points),
+            "unavailable_reason": unavailable_reason,
+        },
+    )
+
+
 def _meta_daily_series_bounds(points: list[dict] | None) -> tuple[str | None, str | None]:
     dated_points = [
         str(point.get("date"))
@@ -7797,6 +8703,7 @@ def _meta_oauth_frontend_callback_url(
     source: str | None = None,
     integration_id: int | None = None,
     error: str | None = None,
+    callback_path: str = "/integrations/meta/callback",
 ) -> str:
     params: dict[str, str | int] = {"status": status}
     if integration_id is not None:
@@ -7805,7 +8712,7 @@ def _meta_oauth_frontend_callback_url(
         params["source"] = source
     if error:
         params["error"] = error
-    return f"{_meta_frontend_base_url()}/integrations/meta/callback?{urlencode(params)}"
+    return f"{_meta_frontend_base_url()}{callback_path}?{urlencode(params)}"
 
 
 def _meta_oauth_frontend_redirect_response(
@@ -7814,12 +8721,14 @@ def _meta_oauth_frontend_redirect_response(
     source: str | None = None,
     integration_id: int | None = None,
     error: str | None = None,
+    callback_path: str = "/integrations/meta/callback",
 ) -> RedirectResponse:
     target_url = _meta_oauth_frontend_callback_url(
         status=status,
         source=source,
         integration_id=integration_id,
         error=error,
+        callback_path=callback_path,
     )
     logger.warning(
         "Meta Pages callback redirecting to frontend status=%s integration_id=%s source=%s error=%s redirect_target=%s",
@@ -7839,12 +8748,15 @@ def _meta_oauth_popup_response(
     integration_id: int | None = None,
     error: str | None = None,
     message: str | None = None,
+    callback_path: str = "/integrations/meta/callback",
+    provider: str = "meta",
 ) -> HTMLResponse:
     target_url = _meta_oauth_frontend_callback_url(
         status=status,
         source=source,
         integration_id=integration_id,
         error=error,
+        callback_path=callback_path,
     )
     frontend_origin = _meta_frontend_origin()
     event_type = "MEASURABLE_META_CONNECT_SUCCESS" if status == "connected" else "MEASURABLE_META_CONNECT_ERROR"
@@ -7855,7 +8767,7 @@ def _meta_oauth_popup_response(
     )
     payload: dict[str, Any] = {
         "type": event_type,
-        "provider": "meta",
+        "provider": provider,
         "status": status,
     }
     if integration_id is not None:
@@ -8235,6 +9147,18 @@ def _run_meta_pages_oauth_callback(
             len(page_payloads),
             [page.name for page in page_payloads],
             len(instagram_accounts),
+        )
+        callback_user = load_current_user(db, effective_user_id)
+        _track_meta_event(
+            event_name="MetaConnected",
+            user=callback_user,
+            event_source_url=_tracking_event_source_url(None, "/integrations"),
+            custom_data={
+                "integration_id": integration.id,
+                "workspace_id": workspace_id,
+                "facebook_pages_count": len(page_payloads),
+                "instagram_accounts_count": len(instagram_accounts),
+            },
         )
         if redirect_to_frontend:
             return _meta_oauth_popup_response(
@@ -8945,7 +9869,8 @@ METRIC_LABELS_ES: dict[str, str] = {
     "followers": "Seguidores",
 }
 
-METRIC_UNAVAILABLE_MESSAGE = "Dato no disponible en este momento con los permisos actuales de Meta."
+METRIC_UNAVAILABLE_MESSAGE = "Meta did not return this metric for the selected period."
+LEGACY_METRIC_UNAVAILABLE_MESSAGE = "Dato no disponible en este momento con los permisos actuales de Meta."
 
 
 def normalizeMetricValue(value) -> float | int | None:
@@ -9017,11 +9942,256 @@ def _meta_series_stats(points) -> dict:
     }
 
 
+def _meta_ads_decimal(value: Any) -> float:
+    numeric = _meta_number(value)
+    return float(numeric) if numeric is not None else 0.0
+
+
+def _meta_ads_int(value: Any) -> int:
+    numeric = _meta_number(value)
+    return int(round(numeric)) if numeric is not None else 0
+
+
+def _meta_ads_primary_result(actions: Any) -> dict[str, Any] | None:
+    if not isinstance(actions, list):
+        return None
+    preferred_order = (
+        "purchase",
+        "omni_purchase",
+        "offsite_conversion.purchase",
+        "lead",
+        "onsite_web_lead",
+        "omni_lead",
+        "complete_registration",
+    )
+    by_type: dict[str, dict[str, Any]] = {}
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        action_type = str(action.get("action_type") or "").strip()
+        if action_type:
+            by_type[action_type] = action
+    for action_type in preferred_order:
+        if action_type in by_type:
+            return by_type[action_type]
+    return next(iter(by_type.values()), None) if by_type else None
+
+
+def _meta_ads_primary_cost(costs: Any, primary_action_type: str | None) -> float | None:
+    if not isinstance(costs, list):
+        return None
+    if primary_action_type:
+        for item in costs:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("action_type") or "").strip() == primary_action_type:
+                numeric = _meta_number(item.get("value"))
+                return float(numeric) if numeric is not None else None
+    for item in costs:
+        if not isinstance(item, dict):
+            continue
+        numeric = _meta_number(item.get("value"))
+        if numeric is not None:
+            return float(numeric)
+    return None
+
+
+def _build_meta_ads_dataset_data(
+    *,
+    account: MetaAdAccount,
+    timeframe_config: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    total_spend = 0.0
+    total_impressions = 0
+    total_reach = 0
+    total_clicks = 0
+    total_inline_link_clicks = 0
+    top_campaigns: dict[str, dict[str, Any]] = {}
+    daily_trend_map: dict[str, dict[str, Any]] = {}
+    total_results = 0.0
+    weighted_ctr_numerator = 0.0
+    weighted_cpc_numerator = 0.0
+    weighted_cpm_numerator = 0.0
+    primary_action_type: str | None = None
+    last_primary_cost: float | None = None
+
+    for row in rows:
+        spend = _meta_ads_decimal(row.get("spend"))
+        impressions = _meta_ads_int(row.get("impressions"))
+        reach = _meta_ads_int(row.get("reach"))
+        clicks = _meta_ads_int(row.get("clicks"))
+        inline_link_clicks = _meta_ads_int(row.get("inline_link_clicks"))
+        date_key = str(row.get("date_start") or "").strip()
+        campaign_id = str(row.get("campaign_id") or "").strip() or "unknown_campaign"
+        campaign_name = str(row.get("campaign_name") or campaign_id).strip() or campaign_id
+        primary_action = _meta_ads_primary_result(row.get("actions"))
+        result_value = _meta_number(primary_action.get("value")) if isinstance(primary_action, dict) else None
+        result_count = float(result_value) if result_value is not None else 0.0
+        action_type = (
+            str(primary_action.get("action_type") or "").strip()
+            if isinstance(primary_action, dict)
+            else None
+        ) or None
+        if primary_action_type is None and action_type:
+            primary_action_type = action_type
+        if action_type:
+            last_primary_cost = _meta_ads_primary_cost(row.get("cost_per_action_type"), action_type)
+
+        total_spend += spend
+        total_impressions += impressions
+        total_reach += reach
+        total_clicks += clicks
+        total_inline_link_clicks += inline_link_clicks
+        total_results += result_count
+        ctr_value = _meta_number(row.get("ctr"))
+        if ctr_value is not None and impressions > 0:
+            weighted_ctr_numerator += float(ctr_value) * impressions
+        cpc_value = _meta_number(row.get("cpc"))
+        if cpc_value is not None and clicks > 0:
+            weighted_cpc_numerator += float(cpc_value) * clicks
+        cpm_value = _meta_number(row.get("cpm"))
+        if cpm_value is not None and impressions > 0:
+            weighted_cpm_numerator += float(cpm_value) * impressions
+
+        top_campaign = top_campaigns.setdefault(
+            campaign_id,
+            {
+                "campaign_id": campaign_id,
+                "campaign_name": campaign_name,
+                "spend": 0.0,
+                "clicks": 0,
+                "results": 0.0,
+            },
+        )
+        top_campaign["spend"] += spend
+        top_campaign["clicks"] += clicks
+        top_campaign["results"] += result_count
+
+        daily_point = daily_trend_map.setdefault(
+            date_key,
+            {
+                "date": date_key,
+                "spend": 0.0,
+                "impressions": 0,
+                "reach": 0,
+                "clicks": 0,
+                "results": 0.0,
+            },
+        )
+        daily_point["spend"] += spend
+        daily_point["impressions"] += impressions
+        daily_point["reach"] += reach
+        daily_point["clicks"] += clicks
+        daily_point["results"] += result_count
+
+    average_ctr = (weighted_ctr_numerator / total_impressions) if total_impressions > 0 else None
+    average_cpc = (weighted_cpc_numerator / total_clicks) if total_clicks > 0 else None
+    average_cpm = (weighted_cpm_numerator / total_impressions) if total_impressions > 0 else None
+    cost_per_result = (total_spend / total_results) if total_results > 0 else last_primary_cost
+    top_campaign_rows = sorted(
+        top_campaigns.values(),
+        key=lambda item: (-float(item["spend"]), -float(item["results"]), -int(item["clicks"])),
+    )[:5]
+    daily_trend = [daily_trend_map[key] for key in sorted(daily_trend_map.keys())]
+
+    return {
+        "integration_type": "meta_ads",
+        "integration_display_name": "Meta Ads",
+        "provider": "meta_ads",
+        "channel": "meta_ads",
+        "social_network": "meta_ads",
+        "account_id": account.account_id,
+        "account_name": account.account_name,
+        "currency": account.currency,
+        "timezone_name": account.timezone_name,
+        "account_status": account.account_status,
+        "business_id": account.business_id,
+        "business_name": account.business_name,
+        "timeframe": {
+            "key": timeframe_config["key"],
+            "label": timeframe_config["label"],
+            "preset": timeframe_config["preset"],
+            "since": timeframe_config["since"],
+            "until": timeframe_config["until"],
+            "requested_since": timeframe_config.get("requested_since"),
+            "requested_until": timeframe_config.get("requested_until"),
+            "current_since": timeframe_config.get("current_since"),
+            "current_until": timeframe_config.get("current_until"),
+            "previous_since": timeframe_config.get("previous_since"),
+            "previous_until": timeframe_config.get("previous_until"),
+            "selected_timeframe": timeframe_config.get("selected_timeframe"),
+        },
+        "total_spend": round(total_spend, 2),
+        "total_impressions": total_impressions,
+        "total_reach": total_reach,
+        "total_clicks": total_clicks,
+        "inline_link_clicks": total_inline_link_clicks,
+        "average_ctr": round(average_ctr, 4) if average_ctr is not None else None,
+        "average_cpc": round(average_cpc, 4) if average_cpc is not None else None,
+        "average_cpm": round(average_cpm, 4) if average_cpm is not None else None,
+        "total_results": round(total_results, 4) if total_results else None,
+        "primary_result_type": primary_action_type,
+        "cost_per_result": round(cost_per_result, 4) if cost_per_result is not None else None,
+        "top_campaigns": [
+            {
+                **item,
+                "spend": round(float(item["spend"]), 2),
+                "results": round(float(item["results"]), 4) if item["results"] else 0,
+            }
+            for item in top_campaign_rows
+        ],
+        "daily_trend": [
+            {
+                **point,
+                "spend": round(float(point["spend"]), 2),
+                "results": round(float(point["results"]), 4) if point["results"] else 0,
+            }
+            for point in daily_trend
+        ],
+        "normalized_report_metrics": {
+            "total_spend": round(total_spend, 2),
+            "total_impressions": total_impressions,
+            "total_reach": total_reach,
+            "total_clicks": total_clicks,
+            "average_ctr": round(average_ctr, 4) if average_ctr is not None else None,
+            "average_cpc": round(average_cpc, 4) if average_cpc is not None else None,
+            "average_cpm": round(average_cpm, 4) if average_cpm is not None else None,
+            "total_results": round(total_results, 4) if total_results else None,
+            "cost_per_result": round(cost_per_result, 4) if cost_per_result is not None else None,
+            "daily_spend": [
+                {"date": point["date"], "label": _meta_point_label(point["date"]), "value": point["spend"]}
+                for point in daily_trend
+            ],
+            "daily_impressions": [
+                {"date": point["date"], "label": _meta_point_label(point["date"]), "value": point["impressions"]}
+                for point in daily_trend
+            ],
+            "daily_reach": [
+                {"date": point["date"], "label": _meta_point_label(point["date"]), "value": point["reach"]}
+                for point in daily_trend
+            ],
+            "daily_clicks": [
+                {"date": point["date"], "label": _meta_point_label(point["date"]), "value": point["clicks"]}
+                for point in daily_trend
+            ],
+            "daily_results": [
+                {"date": point["date"], "label": _meta_point_label(point["date"]), "value": point["results"]}
+                for point in daily_trend
+            ],
+        },
+        "insights_rows": rows,
+    }
+
+
 def _multi_source_source_label(source_type: str) -> str:
     normalized = str(source_type or "").strip().lower()
     return {
         "facebook_pages": "Facebook",
         "instagram_business": "Instagram",
+        "shopify": "Shopify",
+        "meta_ads": "Meta Ads",
+        "tiktok_ads": "TikTok Ads",
     }.get(normalized, normalized.replace("_", " ").title() or "Source")
 
 
@@ -9568,6 +10738,12 @@ def _meta_metric_unavailable_reason(context: dict, metric: str) -> str | None:
         if value:
             return value
     return None
+
+
+def _metric_unavailable_message_for_context(context: dict) -> str:
+    if _meta_integration_type(context) in {"facebook_pages", "meta_pages"}:
+        return METRIC_UNAVAILABLE_MESSAGE
+    return LEGACY_METRIC_UNAVAILABLE_MESSAGE
 
 
 def _meta_first_series(*values) -> list[dict]:
@@ -10209,13 +11385,26 @@ def build_metric_ai_insight(metric_slide: dict[str, Any], context: dict[str, Any
     daily_series = metric_slide.get("daily_series") if isinstance(metric_slide.get("daily_series"), list) else []
     highest_label = _metric_day_label(metric_slide.get("highest_day"))
     lowest_label = _metric_day_label(metric_slide.get("lowest_day"))
-    unavailable_message = str(metric_slide.get("unavailable_message") or METRIC_UNAVAILABLE_MESSAGE)
+    unavailable_message = str(
+        metric_slide.get("unavailable_message") or _metric_unavailable_message_for_context(context)
+    )
 
     if not metric_slide.get("is_available"):
-        full = (
-            f"Este dato no está disponible en este momento con los permisos actuales de Meta. "
-            "El reporte puede seguir interpretando las métricas disponibles y esta sección se actualizará cuando la fuente entregue más información."
+        impressions_payload = (
+            buildMetricSlidePayload(context, metric_key="impressions", metric_label="Impressions")
+            if metric_key == "reach"
+            else None
         )
+        if metric_key == "reach" and isinstance(impressions_payload, dict) and impressions_payload.get("is_available"):
+            full = (
+                "Meta did not return reach for the selected period. "
+                f"Impressions are available at {impressions_payload.get('formatted_total')}, so visibility can still be reviewed without treating impressions as reach."
+            )
+        else:
+            full = (
+                "Meta did not return this metric for the selected period. "
+                "The report keeps interpreting the metrics that are available and will update this section if Meta returns the metric later."
+            )
         return {
             "insight_short": truncateInsight(full, 260),
             "insight": truncateInsight(full, 420),
@@ -10242,11 +11431,18 @@ def build_metric_ai_insight(metric_slide: dict[str, Any], context: dict[str, Any
             "Analiza formato, copy y llamada a la acción del mejor día."
         )
     elif metric_key == "page_views":
-        full = (
-            f"Las visitas a la página llegaron a {total}.{peak}{low} "
-            f"{trend or 'La evolución diaria ayuda a entender cuándo la audiencia mostró mayor intención de visitar la página.'} "
-            "Conecta esos picos con publicaciones, llamadas a la acción o campañas que impulsaron interés."
-        )
+        if daily_series:
+            full = (
+                f"Las visitas a la página llegaron a {total}.{peak}{low} "
+                f"{trend or 'La evolución diaria ayuda a entender cuándo la audiencia mostró mayor intención de visitar la página.'} "
+                "Conecta esos picos con publicaciones, llamadas a la acción o campañas que impulsaron interés."
+            )
+        else:
+            full = (
+                f"Las visitas a la página llegaron a {total}. "
+                "Daily series not available for this metric. "
+                "Usa el total como referencia ejecutiva y confirma en el siguiente sync si Meta entrega el desglose diario."
+            )
     elif metric_key == "followers":
         full = (
             f"La comunidad cerró el periodo con {total} seguidores. "
@@ -10300,7 +11496,7 @@ def build_final_ai_summary(slides: dict[str, dict[str, Any]], context: dict[str,
         )
     else:
         summary = (
-            f"Durante {period_label}, las métricas principales no están disponibles con los permisos actuales de Meta. "
+            f"Durante {period_label}, Meta did not return the main metrics for the selected period. "
             "El reporte conserva la estructura y se actualizará cuando la fuente entregue más información."
         )
     if unavailable:
@@ -10318,7 +11514,7 @@ def build_final_ai_summary(slides: dict[str, dict[str, Any]], context: dict[str,
             "y úsalo como referencia para el siguiente periodo."
         )
     elif unavailable and len(unavailable) == len(slides):
-        recommendation = "Confirma permisos y disponibilidad de datos antes de comparar rendimiento entre periodos."
+        recommendation = "Confirm that Meta returned the selected-period metrics before comparing performance across periods."
     else:
         recommendation = "Prioriza las métricas disponibles y evita interpretar como cero cualquier dato marcado como N/A."
 
@@ -10369,7 +11565,7 @@ def buildMetricSlidePayload(
         metric_source = "direct_meta_metric"
         is_available = total is not None
     unavailable_reason = None if is_available else _metric_unavailable_reason(context, normalized_metric_key)
-    unavailable_message = None if is_available else METRIC_UNAVAILABLE_MESSAGE
+    unavailable_message = None if is_available else _metric_unavailable_message_for_context(context)
     total_value: Any = total if is_available else None
     value = total_value
     formatted_total = _format_metric_summary_value(total_value)
@@ -12065,6 +13261,11 @@ def build_5_blocks(dataset: dict) -> list[dict]:
         metric_key="page_views",
         metric_label="Page Views",
     )
+    impressions_payload = buildMetricSlidePayload(
+        metric_context,
+        metric_key="impressions",
+        metric_label="Impressions",
+    )
     if _meta_integration_type(metric_context) in {"facebook_pages", "meta_pages"}:
         report_inputs = _meta_report_inputs(metric_context)
         logger.info(
@@ -12131,6 +13332,7 @@ def build_5_blocks(dataset: dict) -> list[dict]:
                 "title": "Reach",
                 "label": "Reach",
                 "semantic_name": "reach_overview",
+                "secondary_metric": _build_summary_metric_card("impressions", impressions_payload),
                 **reach_payload,
             },
         ),
@@ -12171,7 +13373,23 @@ def build_5_blocks(dataset: dict) -> list[dict]:
             ["text"],
         ),
     ]
-    return _meta_enrich_data_blocks(metric_context, _renumber_blocks(blocks[:5]))
+    final_blocks = _meta_enrich_data_blocks(metric_context, _renumber_blocks(blocks[:5]))
+    logger.info(
+        "FACEBOOK_REPORT_BLOCKS_CREATED",
+        extra={
+            "report_id": metric_context.get("report_id"),
+            "dataset_id": metric_context.get("dataset_id"),
+            "page_id": metric_context.get("page_id"),
+            "page_name": metric_context.get("page_name"),
+            "metric_name": "report_blocks",
+            "source_metric": None,
+            "raw_value": len(final_blocks),
+            "sum_value": len(final_blocks),
+            "points_count": len(final_blocks),
+            "unavailable_reason": None,
+        },
+    )
+    return final_blocks
 
 
 def build_10_blocks(dataset: dict) -> list[dict]:
@@ -12663,6 +13881,7 @@ def get_dataset(
 @app.post("/reports", response_model=ReportOut)
 def create_report(
     payload: ReportCreateIn,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ReportOut:
@@ -12841,6 +14060,18 @@ def create_report(
         },
         workspace_id=dataset.workspace_id,
     )
+    _track_meta_event(
+        event_name="ReportCreated",
+        user=current_user,
+        request=request,
+        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
+        custom_data={
+            "report_id": report.id,
+            "workspace_id": dataset.workspace_id,
+            "dataset_id": dataset.id,
+            "generation_mode": "standard",
+        },
+    )
 
     integration_metadata = derive_report_integration_metadata(db, report, dataset=dataset)
     return ReportOut(
@@ -12860,6 +14091,161 @@ def create_report(
         thumbnail_url=_report_thumbnail_url(report),
         created_at=report.created_at,
         updated_at=report.updated_at,
+    )
+
+
+def _create_shopify_report(
+    *,
+    dataset: Dataset,
+    payload: ShopifyReportCreateIn,
+    current_user: User,
+    request: Request,
+    db: Session,
+) -> MetaPagesReportCreateOut:
+    dataset_data = dataset.data if isinstance(dataset.data, dict) else {}
+    if str(dataset_data.get("integration_type") or "").strip().lower() != "shopify":
+        raise http_error(400, "invalid_shopify_dataset", "Dataset is not a Shopify dataset.")
+    dataset_file = _get_latest_dataset_file(db, dataset.id)
+    if dataset_file is None:
+        raise http_error(404, "dataset_file_not_found", "Dataset file not found.")
+    requested_slides = payload.requested_slides if payload.requested_slides is not None else payload.slide_count
+    if requested_slides not in (None, 5):
+        raise http_error(400, "invalid_shopify_slide_count", "Shopify MVP currently supports only 5-slide reports.")
+    report_limit_response = _enforce_report_creation_limit_or_response(db, dataset.workspace_id)
+    if report_limit_response is not None:
+        return report_limit_response
+    slide_limits = resolve_report_slide_limits(
+        db,
+        dataset.workspace_id,
+        requested_slides=5,
+        default_slides=5,
+    )
+    locale = normalize_report_locale(payload.locale)
+    ai_mode = normalize_ai_mode(payload.ai_mode)
+    ai_plan_context = build_ai_agent_plan_context(
+        plan=slide_limits["plan"],
+        effective_slide_limit=slide_limits["effective_slide_limit"],
+        dataset_context={"dataset_id": dataset.id},
+        report_context={"generation_mode": "shopify", "ai_mode": ai_mode},
+    )
+    if ai_mode == "agents" and not ai_plan_context["allow_ai_agents"]:
+        raise http_error(403, "plan_restricted", "AI agents are not available for current plan.")
+    ai_agent_metadata = build_ai_agent_metadata(
+        ai_mode=ai_mode,
+        allow_ai_agents=bool(ai_plan_context["allow_ai_agents"]),
+    )
+    report_branding = resolve_report_branding_for_workspace(db, dataset.workspace_id)
+    title = payload.title or f"{dataset_data.get('shop_name') or dataset_data.get('shop_domain') or 'Shopify'} Overview"
+    timeframe = dataset_data.get("timeframe") if isinstance(dataset_data.get("timeframe"), dict) else {}
+    integration = (
+        db.query(Integration)
+        .filter(Integration.workspace_id == dataset.workspace_id, Integration.provider == SHOPIFY_PROVIDER)
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    if integration is None:
+        integration = _get_or_create_shopify_integration_for_workspace(db, dataset.workspace_id)
+    connection = _shopify_connection_for_workspace(db, workspace_id=dataset.workspace_id)
+    block_specs = _build_shopify_report_blocks(dataset_data, title=title, branding=report_branding)
+    report = Report(
+        workspace_id=dataset.workspace_id,
+        dataset_id=dataset.id,
+        name=title,
+        description=json.dumps(
+            {
+                "source": "shopify_v1",
+                "locale": locale,
+                "timeframe": timeframe,
+                "branding": report_branding,
+                "requested_slides": 5,
+                "effective_slide_limit": slide_limits["effective_slide_limit"],
+                "plan_at_generation": slide_limits["plan"],
+                "generation_mode": "shopify",
+                "plan_capabilities": slide_limits["capabilities"],
+                **ai_agent_metadata,
+            }
+        ),
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    record_first_report_conversion(db, user_id=current_user.id)
+    db.commit()
+
+    report_source = ReportSource(
+        report_id=report.id,
+        workspace_id=report.workspace_id,
+        provider=SHOPIFY_PROVIDER,
+        source_type=SHOPIFY_PROVIDER,
+        integration_id=integration.id,
+        integration_account_id=None,
+        dataset_id=dataset.id,
+        position=0,
+        label=str(dataset_data.get("shop_name") or dataset_data.get("shop_domain") or "Shopify"),
+        config_json={
+            "shop_domain": dataset_data.get("shop_domain"),
+            "shop_name": dataset_data.get("shop_name"),
+            "channel": "shopify",
+            "account_name": dataset_data.get("shop_name") or dataset_data.get("shop_domain"),
+            "source_type": "shopify",
+        },
+    )
+    db.add(report_source)
+    db.commit()
+
+    report_version = ReportVersion(report_id=report.id, version=1)
+    db.add(report_version)
+    db.commit()
+    db.refresh(report_version)
+
+    blocks = [
+        ReportBlock(
+            report_version_id=report_version.id,
+            type=str(block_spec["type"]),
+            order=int(block_spec["order"]),
+            data_json=str(block_spec["data_json"]),
+            editable_fields_json=str(block_spec["editable_fields_json"]),
+        )
+        for block_spec in block_specs
+    ]
+    for block in blocks:
+        db.add(block)
+    db.commit()
+    try:
+        _generate_and_store_report_thumbnail(
+            db=db,
+            report=report,
+            report_version=report_version,
+            user_id=current_user.id,
+            sync_branding_from_user=False,
+        )
+    except HTTPException:
+        logger.exception("Shopify thumbnail generation failed", extra={"report_id": report.id})
+    except Exception:
+        logger.exception("Unexpected Shopify thumbnail generation failure", extra={"report_id": report.id})
+
+    _track_meta_event(
+        event_name="ReportCreated",
+        user=current_user,
+        request=request,
+        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
+        custom_data={
+            "report_id": report.id,
+            "workspace_id": dataset.workspace_id,
+            "dataset_id": dataset.id,
+            "generation_mode": "shopify",
+        },
+    )
+    integration_metadata = derive_report_integration_metadata(db, report, dataset=dataset)
+    return MetaPagesReportCreateOut(
+        report_id=report.id,
+        version_id=report_version.id,
+        version=report_version.version,
+        dataset_id=dataset.id,
+        title=title,
+        locale=locale,
+        status="ready",
+        selected_integration_metadata=integration_metadata,
     )
 
 
@@ -12925,6 +14311,26 @@ def _resolve_instagram_business_report_dataset(
         404,
         "instagram_dataset_not_found",
         "Instagram Business dataset not found for selected account.",
+    )
+
+
+@app.post("/reports/shopify", response_model=MetaPagesReportCreateOut)
+def create_shopify_report(
+    payload: ShopifyReportCreateIn,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaPagesReportCreateOut:
+    dataset = db.get(Dataset, payload.dataset_id)
+    if dataset is None:
+        raise http_error(404, "dataset_not_found", "Dataset not found.")
+    _require_workspace_access(db, current_user.id, dataset.workspace_id)
+    return _create_shopify_report(
+        dataset=dataset,
+        payload=payload,
+        current_user=current_user,
+        request=request,
+        db=db,
     )
 
 
@@ -12995,6 +14401,7 @@ def _resolve_report_source_integration_account(
 @app.post("/reports/multi-source", response_model=ReportOut)
 def create_multi_source_report(
     payload: MultiSourceReportCreateRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ReportOut:
@@ -13249,6 +14656,19 @@ def create_multi_source_report(
         )
         raise
 
+    _track_meta_event(
+        event_name="ReportCreated",
+        user=current_user,
+        request=request,
+        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
+        custom_data={
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "dataset_id": report.dataset_id,
+            "generation_mode": "multi_source",
+            "sources_count": len(resolved_sources),
+        },
+    )
     integration_metadata = derive_report_integration_metadata(db, report, dataset=first_dataset)
     return ReportOut(
         id=report.id,
@@ -13277,6 +14697,7 @@ def _create_meta_dataset_report(
     dataset: Dataset,
     payload: MetaPagesReportCreateIn | InstagramBusinessReportCreateIn,
     current_user: User,
+    request: Request | None,
     db: Session,
     report_source: str,
     generation_mode: str,
@@ -13984,6 +15405,19 @@ def _create_meta_dataset_report(
     except Exception:
         logger.exception("Unexpected Meta Pages thumbnail generation failure", extra={"report_id": report.id})
 
+    _track_meta_event(
+        event_name="ReportCreated",
+        user=current_user,
+        request=request,
+        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
+        custom_data={
+            "report_id": report.id,
+            "workspace_id": dataset.workspace_id,
+            "dataset_id": dataset.id,
+            "generation_mode": generation_mode,
+            "report_source": report_source,
+        },
+    )
     integration_metadata = derive_report_integration_metadata(db, report, dataset=dataset)
     return MetaPagesReportCreateOut(
         report_id=report.id,
@@ -14000,6 +15434,7 @@ def _create_meta_dataset_report(
 @app.post("/reports/meta-pages", response_model=MetaPagesReportCreateOut)
 def create_meta_pages_report(
     payload: MetaPagesReportCreateIn,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> MetaPagesReportCreateOut:
@@ -14021,6 +15456,7 @@ def create_meta_pages_report(
         dataset=dataset,
         payload=payload,
         current_user=current_user,
+        request=request,
         db=db,
         report_source="meta_pages_v2",
         generation_mode="meta_pages",
@@ -14030,6 +15466,7 @@ def create_meta_pages_report(
 @app.post("/reports/instagram-business", response_model=MetaPagesReportCreateOut)
 def create_instagram_business_report(
     payload: InstagramBusinessReportCreateIn,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> MetaPagesReportCreateOut:
@@ -14095,6 +15532,7 @@ def create_instagram_business_report(
             dataset=dataset,
             payload=payload,
             current_user=current_user,
+            request=request,
             db=db,
             report_source="instagram_business_v1",
             generation_mode="instagram_business",
@@ -15112,6 +16550,17 @@ def export_report(
             "download_key": export.download_key,
         },
     )
+    _track_meta_event(
+        event_name="ExportPPTX",
+        user=current_user,
+        event_source_url=_tracking_event_source_url(None, f"/reports/{report.id}"),
+        custom_data={
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "export_id": export.id,
+            "format": "pptx",
+        },
+    )
 
     return {
         "status": export_result["status"],
@@ -15434,6 +16883,17 @@ def download_report_pdf(
             "file_name": file_name,
         },
     )
+    _track_meta_event(
+        event_name="ExportPDF",
+        user=current_user,
+        request=request,
+        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
+        custom_data={
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "format": "pdf",
+        },
+    )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -15726,6 +17186,1673 @@ def list_integrations(
         .all()
     )
     return integrations
+
+
+def _resolve_meta_ads_status_integration(
+    db: Session,
+    current_user: User,
+    *,
+    integration_id: int | None,
+    workspace_id: int | None,
+) -> Integration:
+    if integration_id is not None:
+        return _get_meta_ads_integration(db, current_user, integration_id)
+    resolved_workspace_id = _resolve_meta_connect_workspace_id(
+        db,
+        user_id=current_user.id,
+        requested_workspace_id=workspace_id,
+    )
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    return _get_or_create_meta_ads_integration_for_workspace(db, resolved_workspace_id)
+
+
+def _run_meta_ads_sync(
+    *,
+    db: Session,
+    integration: Integration,
+    account: MetaAdAccount,
+    timeframe: str,
+    start_date: str | None,
+    end_date: str | None,
+) -> MetaAdsSyncOut:
+    access_token = _get_meta_ads_access_token(db, integration)
+    timeframe_config = resolve_meta_pages_timeframe(
+        timeframe,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    insights = fetch_campaign_insights(
+        access_token,
+        account.account_id,
+        since=str(timeframe_config["since"]),
+        until=str(timeframe_config["until"]),
+    )
+
+    db.query(MetaAdsInsightDaily).filter(
+        MetaAdsInsightDaily.meta_ad_account_id == account.id,
+        MetaAdsInsightDaily.date_start >= date.fromisoformat(str(timeframe_config["since"])),
+        MetaAdsInsightDaily.date_start <= date.fromisoformat(str(timeframe_config["until"])),
+    ).delete(synchronize_session=False)
+
+    persisted_rows: list[dict[str, Any]] = []
+    for row in insights:
+        date_start_raw = str(row.get("date_start") or "").strip()
+        date_stop_raw = str(row.get("date_stop") or date_start_raw).strip()
+        if not date_start_raw or not date_stop_raw:
+            continue
+        try:
+            row_date_start = date.fromisoformat(date_start_raw)
+            row_date_stop = date.fromisoformat(date_stop_raw)
+        except ValueError:
+            continue
+
+        db.add(
+            MetaAdsInsightDaily(
+                integration_id=integration.id,
+                workspace_id=integration.workspace_id,
+                meta_ad_account_id=account.id,
+                date_start=row_date_start,
+                date_stop=row_date_stop,
+                spend=_meta_number(row.get("spend")),
+                impressions=_meta_ads_int(row.get("impressions")) or None,
+                reach=_meta_ads_int(row.get("reach")) or None,
+                clicks=_meta_ads_int(row.get("clicks")) or None,
+                inline_link_clicks=_meta_ads_int(row.get("inline_link_clicks")) or None,
+                ctr=_meta_number(row.get("ctr")),
+                cpc=_meta_number(row.get("cpc")),
+                cpm=_meta_number(row.get("cpm")),
+                frequency=_meta_number(row.get("frequency")),
+                actions=row.get("actions") if isinstance(row.get("actions"), list) else None,
+                cost_per_action_type=(
+                    row.get("cost_per_action_type")
+                    if isinstance(row.get("cost_per_action_type"), list)
+                    else None
+                ),
+                campaign_id=str(row.get("campaign_id") or "").strip() or None,
+                campaign_name=str(row.get("campaign_name") or "").strip() or None,
+                adset_id=str(row.get("adset_id") or "").strip() or None,
+                adset_name=str(row.get("adset_name") or "").strip() or None,
+                ad_id=str(row.get("ad_id") or "").strip() or None,
+                ad_name=str(row.get("ad_name") or "").strip() or None,
+            )
+        )
+        persisted_rows.append(
+            {
+                "date_start": row_date_start.isoformat(),
+                "date_stop": row_date_stop.isoformat(),
+                "spend": round(_meta_ads_decimal(row.get("spend")), 2),
+                "impressions": _meta_ads_int(row.get("impressions")),
+                "reach": _meta_ads_int(row.get("reach")),
+                "clicks": _meta_ads_int(row.get("clicks")),
+                "inline_link_clicks": _meta_ads_int(row.get("inline_link_clicks")),
+                "ctr": _meta_number(row.get("ctr")),
+                "cpc": _meta_number(row.get("cpc")),
+                "cpm": _meta_number(row.get("cpm")),
+                "frequency": _meta_number(row.get("frequency")),
+                "actions": row.get("actions") if isinstance(row.get("actions"), list) else [],
+                "cost_per_action_type": (
+                    row.get("cost_per_action_type")
+                    if isinstance(row.get("cost_per_action_type"), list)
+                    else []
+                ),
+                "campaign_id": str(row.get("campaign_id") or "").strip() or None,
+                "campaign_name": str(row.get("campaign_name") or "").strip() or None,
+                "adset_id": str(row.get("adset_id") or "").strip() or None,
+                "adset_name": str(row.get("adset_name") or "").strip() or None,
+                "ad_id": str(row.get("ad_id") or "").strip() or None,
+                "ad_name": str(row.get("ad_name") or "").strip() or None,
+            }
+        )
+
+    account.last_synced_at = datetime.now(timezone.utc)
+    integration.status = "connected"
+    db.add(account)
+    db.add(integration)
+    db.commit()
+    db.refresh(account)
+
+    dataset_data = _build_meta_ads_dataset_data(
+        account=account,
+        timeframe_config=timeframe_config,
+        rows=persisted_rows,
+    )
+    csv_output = io.StringIO()
+    fieldnames = [
+        "date_start",
+        "date_stop",
+        "spend",
+        "impressions",
+        "reach",
+        "clicks",
+        "inline_link_clicks",
+        "ctr",
+        "cpc",
+        "cpm",
+        "frequency",
+        "campaign_id",
+        "campaign_name",
+        "adset_id",
+        "adset_name",
+        "ad_id",
+        "ad_name",
+        "actions",
+        "cost_per_action_type",
+    ]
+    writer = csv.DictWriter(csv_output, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in persisted_rows:
+        writer.writerow(
+            {
+                **row,
+                "actions": json.dumps(row.get("actions") or []),
+                "cost_per_action_type": json.dumps(row.get("cost_per_action_type") or []),
+            }
+        )
+    csv_bytes = csv_output.getvalue().encode("utf-8")
+    filename = f"meta_ads_{account.account_id}_{timeframe_config['since']}_{timeframe_config['until']}.csv"
+
+    _enforce_workspace_storage_for_upload(db, integration.workspace_id, len(csv_bytes))
+    dataset = Dataset(
+        workspace_id=integration.workspace_id,
+        name=filename,
+        description="Meta Ads insights",
+        data=dataset_data,
+    )
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+
+    key = f"workspaces/{integration.workspace_id}/datasets/{dataset.id}/{filename}"
+    s3 = boto3.client("s3", region_name=settings.aws_region)
+    try:
+        s3.put_object(Bucket=settings.s3_inputs_bucket, Key=key, Body=csv_bytes)
+    except Exception:
+        db.delete(dataset)
+        db.commit()
+        raise http_error(502, "s3_upload_failed", "Failed to upload file.")
+
+    dataset_file = DatasetFile(
+        dataset_id=dataset.id,
+        workspace_id=integration.workspace_id,
+        s3_key=key,
+        size_bytes=len(csv_bytes),
+        content_type="text/csv",
+    )
+    db.add(dataset_file)
+    db.commit()
+    db.refresh(dataset_file)
+
+    return MetaAdsSyncOut(
+        integration_id=integration.id,
+        dataset_id=dataset.id,
+        dataset_file_id=dataset_file.id,
+        ad_account_id=account.account_id,
+        ad_account_name=account.account_name,
+        status="synced",
+        timeframe=dataset_data["timeframe"],
+        last_synced_at=account.last_synced_at,
+    )
+
+
+@app.get("/integrations/meta-ads/connect", response_model=MetaAdsConnectOut)
+def meta_ads_connect(
+    workspace_id: int | None = Query(default=None),
+    reconnect: bool = Query(default=False),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaAdsConnectOut:
+    resolved_workspace_id = _resolve_meta_connect_workspace_id(
+        db,
+        user_id=current_user.id,
+        requested_workspace_id=workspace_id,
+    )
+    integration = _get_or_create_meta_ads_integration_for_workspace(db, resolved_workspace_id)
+    state = encode_state(
+        {
+            "workspace_id": resolved_workspace_id,
+            "user_id": current_user.id,
+            "integration_id": integration.id,
+            "provider": "meta_ads",
+            "callback_route": "/integrations/meta-ads/callback",
+            "reconnect": reconnect,
+        }
+    )
+    return MetaAdsConnectOut(
+        auth_url=oauth_connect_url(
+            state,
+            scope=META_ADS_OAUTH_SCOPE,
+            redirect_uri=get_meta_ads_redirect_uri(),
+        ),
+        integration_id=integration.id,
+        scope=META_ADS_OAUTH_SCOPE,
+        message="Connect Meta Ads to sync read-only ad performance data.",
+    )
+
+
+@app.get("/integrations/meta-ads/callback")
+def meta_ads_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_reason: str | None = None,
+    error_description: str | None = None,
+    db: Session = Depends(get_db),
+) -> Response:
+    if error:
+        return _meta_oauth_popup_response(
+            status="error",
+            error=str(error_reason or error).strip() or "oauth_error",
+            message=str(error_description or error_reason or "Meta returned an OAuth error.").strip(),
+            callback_path="/integrations/meta-ads/callback",
+            provider="meta_ads",
+        )
+    if not code or not state:
+        return _meta_oauth_popup_response(
+            status="error",
+            error="invalid_state",
+            message="The Meta Ads connection could not be verified. Please try again.",
+            callback_path="/integrations/meta-ads/callback",
+            provider="meta_ads",
+        )
+
+    try:
+        state_payload = decode_state(state)
+    except ValueError:
+        return _meta_oauth_popup_response(
+            status="error",
+            error="invalid_state",
+            message="The Meta Ads connection request expired. Please try again.",
+            callback_path="/integrations/meta-ads/callback",
+            provider="meta_ads",
+        )
+
+    integration_id = int(state_payload.get("integration_id") or 0)
+    integration = db.get(Integration, integration_id)
+    if integration is None or integration.provider != "meta_ads":
+        return _meta_oauth_popup_response(
+            status="error",
+            error="integration_not_found",
+            message="Meta Ads integration not found.",
+            callback_path="/integrations/meta-ads/callback",
+            provider="meta_ads",
+        )
+
+    try:
+        token_payload = exchange_code_for_token(code, redirect_uri=get_meta_ads_redirect_uri())
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        message = str(detail.get("message") or exc.detail or "").strip()
+        return _meta_oauth_popup_response(
+            status="error",
+            error="token_exchange_failed",
+            message=message or "Could not finish the Meta Ads connection.",
+            integration_id=integration.id,
+            callback_path="/integrations/meta-ads/callback",
+            provider="meta_ads",
+        )
+
+    access_token = str(token_payload.get("access_token") or "").strip()
+    if not access_token:
+        return _meta_oauth_popup_response(
+            status="error",
+            error="missing_token",
+            message="Meta Ads did not return an access token.",
+            integration_id=integration.id,
+            callback_path="/integrations/meta-ads/callback",
+            provider="meta_ads",
+        )
+
+    token_account = _ensure_meta_ads_token_account(db, integration)
+    _replace_integration_token(
+        db,
+        account_id=token_account.id,
+        workspace_id=integration.workspace_id,
+        access_token=access_token,
+    )
+    _set_meta_integration_status(db, integration, status="connected")
+    return _meta_oauth_popup_response(
+        status="connected",
+        source="meta_ads",
+        integration_id=integration.id,
+        message="Meta Ads connected successfully.",
+        callback_path="/integrations/meta-ads/callback",
+        provider="meta_ads",
+    )
+
+
+@app.get("/integrations/meta-ads/status", response_model=MetaAdsStatusOut)
+def meta_ads_status(
+    integration_id: int | None = Query(default=None),
+    workspace_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaAdsStatusOut:
+    integration = _resolve_meta_ads_status_integration(
+        db,
+        current_user,
+        integration_id=integration_id,
+        workspace_id=workspace_id,
+    )
+    accounts = (
+        db.query(MetaAdAccount)
+        .filter(MetaAdAccount.integration_id == integration.id)
+        .order_by(MetaAdAccount.is_selected.desc(), MetaAdAccount.account_name.asc(), MetaAdAccount.id.asc())
+        .all()
+    )
+    selected_account = next((account for account in accounts if account.is_selected), None)
+    connected = integration.status == "connected"
+    return MetaAdsStatusOut(
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+        connected=connected,
+        status=integration.status,
+        scope=META_ADS_OAUTH_SCOPE,
+        selected_account=_meta_ads_account_out(selected_account, source="cache") if selected_account else None,
+        accounts_count=len(accounts),
+        last_synced_at=selected_account.last_synced_at if selected_account is not None else None,
+        reconnect_required=integration.status == "reauthorization_required",
+        permission_missing=integration.status == "reauthorization_required",
+        message=_meta_ads_status_message(
+            status=integration.status,
+            connected=connected,
+            accounts_count=len(accounts),
+        ),
+    )
+
+
+@app.get("/integrations/meta-ads/accounts", response_model=list[MetaAdsAccountOut])
+def meta_ads_accounts(
+    integration_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[MetaAdsAccountOut]:
+    integration = _get_meta_ads_integration(db, current_user, integration_id)
+    access_token = _get_meta_ads_access_token(db, integration)
+    try:
+        accounts = list_ad_accounts(access_token)
+    except HTTPException as exc:
+        if _is_meta_ads_permission_error(exc):
+            integration.status = "reauthorization_required"
+            db.add(integration)
+            db.commit()
+            raise http_error(
+                400,
+                "meta_ads_permissions_missing",
+                "Meta Ads permissions are missing for this connection.",
+            ) from exc
+        raise
+
+    selected_record = _get_selected_meta_ads_account(db, integration.id)
+    for account_payload in accounts:
+        is_selected = (
+            selected_record is not None
+            and _normalize_meta_ad_account_id(str(account_payload.get("account_id") or account_payload.get("id") or ""))
+            == selected_record.account_id
+        )
+        _upsert_meta_ads_account(
+            db,
+            integration=integration,
+            account_payload=account_payload,
+            is_selected=is_selected,
+        )
+    db.commit()
+
+    stored_accounts = (
+        db.query(MetaAdAccount)
+        .filter(MetaAdAccount.integration_id == integration.id)
+        .order_by(MetaAdAccount.is_selected.desc(), MetaAdAccount.account_name.asc(), MetaAdAccount.id.asc())
+        .all()
+    )
+    return [_meta_ads_account_out(account, source="meta_api") for account in stored_accounts]
+
+
+@app.post("/integrations/meta-ads/select-account", response_model=MetaAdsAccountOut)
+def meta_ads_select_account(
+    payload: MetaAdsSelectAccountIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaAdsAccountOut:
+    integration = _get_meta_ads_integration(db, current_user, payload.integration_id)
+    access_token = _get_meta_ads_access_token(db, integration)
+    accounts = list_ad_accounts(access_token)
+    account_payload = _meta_ads_find_account_payload(accounts, payload.ad_account_id)
+    if account_payload is None:
+        raise http_error(
+            400,
+            "meta_ads_account_not_authorized",
+            "The requested Meta ad account is not available for this token.",
+        )
+    selected_account = _save_meta_ads_selected_account(
+        db,
+        integration=integration,
+        account_payload=account_payload,
+    )
+    return _meta_ads_account_out(selected_account, source="meta_api")
+
+
+@app.post("/integrations/meta-ads/sync", response_model=MetaAdsSyncOut)
+def meta_ads_sync(
+    payload: MetaAdsSyncIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaAdsSyncOut:
+    integration = _get_meta_ads_integration(db, current_user, payload.integration_id)
+    account = None
+    if payload.ad_account_id:
+        account = (
+            db.query(MetaAdAccount)
+            .filter(
+                MetaAdAccount.integration_id == integration.id,
+                MetaAdAccount.account_id == _normalize_meta_ad_account_id(payload.ad_account_id),
+            )
+            .first()
+        )
+    if account is None:
+        account = _get_selected_meta_ads_account(db, integration.id)
+    if account is None:
+        raise http_error(
+            400,
+            "meta_ads_account_not_selected",
+            "No Meta Ads account selected. Call POST /integrations/meta-ads/select-account first.",
+        )
+
+    try:
+        return _run_meta_ads_sync(
+            db=db,
+            integration=integration,
+            account=account,
+            timeframe=payload.timeframe,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+        )
+    except HTTPException as exc:
+        if _is_meta_ads_permission_error(exc):
+            integration.status = "reauthorization_required"
+            db.add(integration)
+            db.commit()
+            raise http_error(
+                400,
+                "meta_ads_permissions_missing",
+                "Meta connected, but Ads permissions are missing for this ad account.",
+            ) from exc
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        message = str(detail.get("message") or "").lower()
+        if detail.get("code") == "meta_api_error" and "expired" in message:
+            integration.status = "reauthorization_required"
+            db.add(integration)
+            db.commit()
+            raise http_error(
+                401,
+                "meta_ads_token_expired",
+                "Meta Ads token expired. Reconnect required.",
+            ) from exc
+        raise
+
+
+@app.delete("/integrations/meta-ads/disconnect", response_model=MetaAdsDisconnectOut)
+def meta_ads_disconnect(
+    integration_id: int | None = Query(default=None),
+    workspace_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaAdsDisconnectOut:
+    integration = _resolve_meta_ads_status_integration(
+        db,
+        current_user,
+        integration_id=integration_id,
+        workspace_id=workspace_id,
+    )
+    return _disconnect_meta_ads_integration(db, integration, revoke_permissions=True)
+
+
+def _resolve_tiktok_sync_date_range(
+    *,
+    start_date: str | None,
+    end_date: str | None,
+) -> tuple[str, str]:
+    if start_date is None and end_date is None:
+        today = datetime.now(timezone.utc).date()
+        start = today - timedelta(days=27)
+        end = today
+        return start.isoformat(), end.isoformat()
+    if start_date is None or end_date is None:
+        raise http_error(
+            422,
+            "missing_date_range",
+            "start_date and end_date are both required when specifying a custom TikTok sync range.",
+        )
+    start = _parse_iso_date_or_400(start_date, field_name="start_date")
+    end = _parse_iso_date_or_400(end_date, field_name="end_date")
+    if start > end:
+        raise http_error(422, "invalid_date_range", "start_date must be on or before end_date.")
+    return start.isoformat(), end.isoformat()
+
+
+def _run_tiktok_sync(
+    *,
+    db: Session,
+    current_user: User,
+    integration: Integration,
+    advertiser_id: str,
+    advertiser_name: str,
+    start_date: str,
+    end_date: str,
+) -> TikTokSyncOut:
+    logger.info(
+        "TikTok sync started",
+        extra={
+            "integration_id": integration.id,
+            "workspace_id": integration.workspace_id,
+            "user_id": current_user.id,
+            "advertiser_id": advertiser_id,
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+    )
+    access_token = _get_tiktok_access_token(db, integration)
+    report_payload = fetch_daily_advertiser_report(
+        access_token,
+        advertiser_id=advertiser_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    rows = report_payload.get("rows") if isinstance(report_payload.get("rows"), list) else []
+    if not rows:
+        raise http_error(404, "tiktok_empty_report", "TikTok returned no report rows for this date range.")
+
+    dataset_payload = normalize_tiktok_report_to_dataset_payload(
+        advertiser_id=advertiser_id,
+        advertiser_name=advertiser_name,
+        start_date=start_date,
+        end_date=end_date,
+        report_payload=report_payload,
+    )
+    normalized_metrics = (
+        dataset_payload.get("normalized_report_metrics")
+        if isinstance(dataset_payload.get("normalized_report_metrics"), dict)
+        else {}
+    )
+
+    csv_output = io.StringIO()
+    metrics_requested = report_payload.get("metrics_requested") if isinstance(report_payload, dict) else []
+    fieldnames = ["stat_time_day"] + [str(metric) for metric in metrics_requested if str(metric).strip()]
+    writer = csv.DictWriter(csv_output, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        dimensions = row.get("dimensions") if isinstance(row.get("dimensions"), dict) else {}
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        writer.writerow(
+            {
+                "stat_time_day": dimensions.get("stat_time_day") or row.get("stat_time_day"),
+                **{field: metrics.get(field) for field in fieldnames if field != "stat_time_day"},
+            }
+        )
+
+    csv_bytes = csv_output.getvalue().encode("utf-8")
+    filename = f"tiktok_ads_{advertiser_id}_{start_date}_{end_date}.csv"
+    _enforce_workspace_storage_for_upload(db, integration.workspace_id, len(csv_bytes))
+    dataset = Dataset(
+        workspace_id=integration.workspace_id,
+        name=filename,
+        description="TikTok Ads insights",
+        data=dataset_payload,
+    )
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+
+    key = f"workspaces/{integration.workspace_id}/datasets/{dataset.id}/{filename}"
+    s3 = boto3.client("s3", region_name=settings.aws_region)
+    try:
+        s3.put_object(Bucket=settings.s3_inputs_bucket, Key=key, Body=csv_bytes)
+    except Exception:
+        db.delete(dataset)
+        db.commit()
+        raise http_error(502, "s3_upload_failed", "Failed to upload file.")
+
+    dataset_file = DatasetFile(
+        dataset_id=dataset.id,
+        workspace_id=integration.workspace_id,
+        s3_key=key,
+        size_bytes=len(csv_bytes),
+        content_type="text/csv",
+    )
+    db.add(dataset_file)
+    db.commit()
+    db.refresh(dataset_file)
+
+    logger.info(
+        "TikTok sync completed",
+        extra={
+            "integration_id": integration.id,
+            "workspace_id": integration.workspace_id,
+            "user_id": current_user.id,
+            "advertiser_id": advertiser_id,
+            "dataset_id": dataset.id,
+            "dataset_file_id": dataset_file.id,
+        },
+    )
+    return TikTokSyncOut(
+        integration_id=integration.id,
+        advertiser_id=advertiser_id,
+        advertiser_name=advertiser_name,
+        dataset_id=dataset.id,
+        dataset_file_id=dataset_file.id,
+        status="uploaded",
+        start_date=start_date,
+        end_date=end_date,
+        metrics_summary={
+            "reach_total": normalized_metrics.get("reach_total"),
+            "impressions_total": normalized_metrics.get("impressions_total"),
+            "engagement_total": normalized_metrics.get("engagement_total"),
+            "link_clicks_total": normalized_metrics.get("link_clicks_total"),
+            "spend_total": normalized_metrics.get("spend_total"),
+            "conversions_total": normalized_metrics.get("conversions_total"),
+        },
+    )
+
+
+@app.get("/integrations/tiktok/connect", response_model=TikTokConnectOut)
+def tiktok_connect(
+    workspace_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TikTokConnectOut:
+    resolved_workspace_id = _resolve_tiktok_workspace_id(
+        db,
+        user_id=current_user.id,
+        workspace_id=workspace_id,
+    )
+    integration = _get_or_create_tiktok_integration_for_workspace(db, resolved_workspace_id)
+    state = encode_tiktok_state(
+        {
+            "workspace_id": resolved_workspace_id,
+            "user_id": current_user.id,
+            "integration_id": integration.id,
+            "source": TIKTOK_OAUTH_STATE_SOURCE,
+        }
+    )
+    logger.info(
+        "TikTok connect started",
+        extra={
+            "workspace_id": resolved_workspace_id,
+            "user_id": current_user.id,
+            "integration_id": integration.id,
+        },
+    )
+    return TikTokConnectOut(
+        auth_url=build_tiktok_authorization_url(state),
+        integration_id=integration.id,
+    )
+
+
+@app.post("/integrations/tiktok/callback/complete", response_model=TikTokCallbackCompleteOut)
+def tiktok_callback_complete(
+    payload: TikTokCallbackCompleteIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TikTokCallbackCompleteOut:
+    logger.info("TikTok callback completion started", extra={"user_id": current_user.id})
+    try:
+        state_payload = decode_tiktok_state(payload.state)
+    except ValueError as exc:
+        raise http_error(400, "invalid_state", "The TikTok connection state is invalid or expired.") from exc
+
+    try:
+        state_user_id = int(state_payload.get("user_id", 0))
+        workspace_id = int(state_payload.get("workspace_id", 0))
+        state_integration_id = int(state_payload.get("integration_id", 0))
+    except (TypeError, ValueError) as exc:
+        raise http_error(400, "invalid_state", "The TikTok connection state is invalid.") from exc
+
+    if state_user_id != current_user.id:
+        raise http_error(403, "state_user_mismatch", "TikTok connection does not belong to the authenticated user.")
+
+    _require_workspace_access(db, current_user.id, workspace_id)
+    integration = _resolve_tiktok_integration(
+        db,
+        current_user=current_user,
+        integration_id=state_integration_id,
+        workspace_id=workspace_id,
+    )
+    logger.info(
+        "TikTok token exchange started",
+        extra={
+            "integration_id": integration.id,
+            "workspace_id": workspace_id,
+            "user_id": current_user.id,
+        },
+    )
+    token_data = exchange_auth_code_for_token(code=payload.code, auth_code=payload.auth_code)
+    access_token = str(token_data.get("access_token") or "").strip()
+    if not access_token:
+        raise http_error(400, "missing_token", "TikTok did not return an access token.")
+
+    expires_at = None
+    expires_in = token_data.get("expires_in")
+    if isinstance(expires_in, (int, float)) or str(expires_in or "").isdigit():
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+
+    token_account = _get_or_create_tiktok_token_account(db, integration)
+    _replace_integration_token_with_refresh(
+        db,
+        account_id=token_account.id,
+        workspace_id=integration.workspace_id,
+        access_token=access_token,
+        refresh_token=str(token_data.get("refresh_token") or "").strip() or None,
+        expires_at=expires_at,
+    )
+    integration.status = "connected"
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+    logger.info(
+        "TikTok token exchange success",
+        extra={"integration_id": integration.id, "workspace_id": workspace_id, "user_id": current_user.id},
+    )
+
+    advertisers: list[dict[str, Any]] = []
+    advertisers_message: str | None = None
+    try:
+        advertisers = get_authorized_advertisers(access_token)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        advertisers_message = str(detail.get("message") or "TikTok advertiser accounts could not be loaded.")
+        logger.warning(
+            "TikTok advertisers fetch failed",
+            extra={
+                "integration_id": integration.id,
+                "workspace_id": workspace_id,
+                "user_id": current_user.id,
+                "error": detail or str(exc.detail),
+            },
+        )
+
+    stored_accounts = _store_tiktok_advertisers(db, integration=integration, advertisers=advertisers)
+    logger.info(
+        "TikTok advertisers fetched/stored",
+        extra={
+            "integration_id": integration.id,
+            "workspace_id": workspace_id,
+            "user_id": current_user.id,
+            "advertisers_count": len(stored_accounts),
+        },
+    )
+
+    selected_account = _get_selected_tiktok_advertiser_account(db, integration)
+    if selected_account is None and stored_accounts:
+        selected_account = _select_tiktok_advertiser_account(
+            db,
+            integration=integration,
+            advertiser_id=stored_accounts[0].external_account_id,
+        )
+    selected_advertiser_id = (
+        str(selected_account.external_account_id).strip() if selected_account is not None else None
+    )
+    selected_out = (
+        _tiktok_advertiser_out(
+            db,
+            integration=integration,
+            account=selected_account,
+            selected_advertiser_id=selected_advertiser_id,
+        )
+        if selected_account is not None
+        else None
+    )
+    return TikTokCallbackCompleteOut(
+        integration_id=integration.id,
+        advertisers_count=len(stored_accounts),
+        selected_account=selected_out,
+        message=advertisers_message,
+    )
+
+
+@app.get("/integrations/tiktok/advertiser-accounts", response_model=TikTokAdvertiserAccountsOut)
+def tiktok_advertiser_accounts(
+    integration_id: int | None = None,
+    workspace_id: int | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TikTokAdvertiserAccountsOut:
+    integration = _resolve_tiktok_integration(
+        db,
+        current_user=current_user,
+        integration_id=integration_id,
+        workspace_id=workspace_id,
+    )
+    selected_account = _get_selected_tiktok_advertiser_account(db, integration)
+    selected_advertiser_id = (
+        str(selected_account.external_account_id).strip() if selected_account is not None else None
+    )
+    accounts = [
+        _tiktok_advertiser_out(
+            db,
+            integration=integration,
+            account=account,
+            selected_advertiser_id=selected_advertiser_id,
+        )
+        for account in _list_tiktok_advertiser_accounts(db, integration.id)
+    ]
+    return TikTokAdvertiserAccountsOut(
+        accounts=accounts,
+        message=None if accounts else "No TikTok advertiser accounts are stored for this workspace yet.",
+    )
+
+
+@app.post("/integrations/tiktok/select-account", response_model=TikTokAdvertiserAccountOut)
+def tiktok_select_account(
+    payload: TikTokSelectAccountIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TikTokAdvertiserAccountOut:
+    integration = _resolve_tiktok_integration(
+        db,
+        current_user=current_user,
+        integration_id=payload.integration_id,
+        workspace_id=payload.workspace_id,
+    )
+    selected_account = _select_tiktok_advertiser_account(
+        db,
+        integration=integration,
+        advertiser_id=payload.advertiser_id,
+    )
+    logger.info(
+        "TikTok account selected",
+        extra={
+            "integration_id": integration.id,
+            "workspace_id": integration.workspace_id,
+            "user_id": current_user.id,
+            "advertiser_id": payload.advertiser_id,
+        },
+    )
+    return _tiktok_advertiser_out(
+        db,
+        integration=integration,
+        account=selected_account,
+        selected_advertiser_id=str(selected_account.external_account_id or "").strip(),
+    )
+
+
+@app.post("/integrations/tiktok/sync", response_model=TikTokSyncOut)
+def tiktok_sync(
+    payload: TikTokSyncIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TikTokSyncOut:
+    integration = _resolve_tiktok_integration(
+        db,
+        current_user=current_user,
+        integration_id=payload.integration_id,
+        workspace_id=payload.workspace_id,
+    )
+    advertiser_id = str(payload.advertiser_id or "").strip()
+    selected_account = None
+    if advertiser_id:
+        selected_account = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id == advertiser_id,
+            )
+            .first()
+        )
+    else:
+        selected_account = _get_selected_tiktok_advertiser_account(db, integration)
+
+    if selected_account is None:
+        raise http_error(
+            400,
+            "no_selected_advertiser_account",
+            "No TikTok advertiser account selected. Call POST /integrations/tiktok/select-account first.",
+        )
+
+    start_date, end_date = _resolve_tiktok_sync_date_range(
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+    )
+    return _run_tiktok_sync(
+        db=db,
+        current_user=current_user,
+        integration=integration,
+        advertiser_id=str(selected_account.external_account_id),
+        advertiser_name=str(selected_account.display_name or selected_account.external_account_id),
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+@app.get("/integrations/tiktok/status", response_model=TikTokStatusOut)
+def tiktok_status(
+    workspace_id: int | None = Query(default=None),
+    integration_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TikTokStatusOut:
+    missing_flags = tiktok_missing_env_flags()
+    missing_env = missing_flags["app_id_missing"] or missing_flags["secret_missing"]
+
+    integration: Integration | None = None
+    if integration_id is not None:
+        integration = db.get(Integration, int(integration_id))
+        if integration is not None:
+            if integration.provider != "tiktok_ads":
+                raise http_error(404, "integration_not_found", "TikTok integration not found.")
+            _require_workspace_access(db, current_user.id, integration.workspace_id)
+    else:
+        resolved_workspace_id = _resolve_tiktok_workspace_id(
+            db,
+            user_id=current_user.id,
+            workspace_id=workspace_id,
+        )
+        integration = (
+            db.query(Integration)
+            .filter(Integration.workspace_id == resolved_workspace_id, Integration.provider == "tiktok_ads")
+            .order_by(Integration.id.asc())
+            .first()
+        )
+
+    if integration is None:
+        return TikTokStatusOut(missing_env=missing_env)
+
+    selected_account = _get_selected_tiktok_advertiser_account(db, integration)
+    selected_advertiser_id = (
+        str(selected_account.external_account_id).strip() if selected_account is not None else None
+    )
+    advertisers = _list_tiktok_advertiser_accounts(db, integration.id)
+    selected_out = (
+        _tiktok_advertiser_out(
+            db,
+            integration=integration,
+            account=selected_account,
+            selected_advertiser_id=selected_advertiser_id,
+        )
+        if selected_account is not None
+        else None
+    )
+    return TikTokStatusOut(
+        connected=str(integration.status or "").strip().lower() == "connected",
+        status=str(integration.status or "disconnected"),
+        advertisers_count=len(advertisers),
+        selected_advertiser=selected_out,
+        last_sync=_tiktok_account_last_synced_at(
+            db,
+            workspace_id=integration.workspace_id,
+            advertiser_id=selected_advertiser_id,
+        ),
+        missing_env=missing_env,
+        integration_id=integration.id,
+    )
+
+
+@app.post("/integrations/tiktok/disconnect", response_model=TikTokDisconnectOut)
+def tiktok_disconnect(
+    integration_id: int | None = Body(default=None),
+    workspace_id: int | None = Body(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TikTokDisconnectOut:
+    integration = _resolve_tiktok_integration(
+        db,
+        current_user=current_user,
+        integration_id=integration_id,
+        workspace_id=workspace_id,
+    )
+    return _disconnect_tiktok_integration(db, integration)
+
+
+def _resolve_shopify_workspace_id(
+    db: Session,
+    *,
+    user_id: int,
+    workspace_id: int | None,
+) -> int:
+    return _resolve_meta_connect_workspace_id(
+        db,
+        user_id=user_id,
+        requested_workspace_id=workspace_id,
+    )
+
+
+def _get_or_create_shopify_integration_for_workspace(db: Session, workspace_id: int) -> Integration:
+    integration = (
+        db.query(Integration)
+        .filter(Integration.workspace_id == workspace_id, Integration.provider == SHOPIFY_PROVIDER)
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    if integration is not None:
+        return integration
+    integration = Integration(
+        workspace_id=workspace_id,
+        provider=SHOPIFY_PROVIDER,
+        name="Shopify",
+        status=SHOPIFY_STATUS_DISCONNECTED,
+    )
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+    return integration
+
+
+def _shopify_connection_for_workspace(db: Session, *, workspace_id: int) -> ShopifyConnection | None:
+    return (
+        db.query(ShopifyConnection)
+        .filter(ShopifyConnection.workspace_id == workspace_id)
+        .order_by(ShopifyConnection.updated_at.desc(), ShopifyConnection.id.desc())
+        .first()
+    )
+
+
+def _resolve_shopify_connection(
+    db: Session,
+    *,
+    current_user: User,
+    workspace_id: int | None,
+) -> ShopifyConnection | None:
+    resolved_workspace_id = _resolve_shopify_workspace_id(db, user_id=current_user.id, workspace_id=workspace_id)
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    return _shopify_connection_for_workspace(db, workspace_id=resolved_workspace_id)
+
+
+def _shopify_success_redirect_url() -> str:
+    return (
+        str(settings.shopify_connect_success_redirect or "").strip()
+        or str(settings.frontend_base_url or settings.frontend_url or "").rstrip("/")
+        or "http://localhost:3000"
+    )
+
+
+def _shopify_error_redirect_url() -> str:
+    return (
+        str(settings.shopify_connect_error_redirect or "").strip()
+        or _shopify_success_redirect_url()
+    )
+
+
+def _redirect_with_query(base_url: str, **params: Any) -> RedirectResponse:
+    query = {key: value for key, value in params.items() if value not in (None, "")}
+    separator = "&" if "?" in base_url else "?"
+    url = f"{base_url}{separator}{urlencode(query)}" if query else base_url
+    return RedirectResponse(url=url, status_code=302)
+
+
+def _utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _shopify_status_message(connection: ShopifyConnection | None) -> str | None:
+    if connection is None:
+        return "Connect Shopify to sync store sales and create reports."
+    if str(connection.status or "").strip().lower() == SHOPIFY_STATUS_ERROR:
+        return "Reconnect Shopify to restore access."
+    if not str(connection.access_token_encrypted or "").strip():
+        return "Reconnect Shopify to restore access."
+    return None
+
+
+def _shopify_status_out(connection: ShopifyConnection | None, integration_id: int | None = None) -> ShopifyStatusOut:
+    if connection is None:
+        return ShopifyStatusOut(
+            connected=False,
+            status=SHOPIFY_STATUS_DISCONNECTED,
+            integration_id=integration_id,
+            reconnect_required=False,
+            message=_shopify_status_message(None),
+        )
+    status = str(connection.status or SHOPIFY_STATUS_DISCONNECTED).strip().lower()
+    return ShopifyStatusOut(
+        connected=status == SHOPIFY_STATUS_CONNECTED and bool(str(connection.access_token_encrypted or "").strip()),
+        status=status,
+        integration_id=connection.integration_id,
+        shop_domain=connection.shop_domain,
+        shop_name=connection.shop_name,
+        last_sync_at=connection.last_sync_at,
+        reconnect_required=status == SHOPIFY_STATUS_ERROR or not bool(str(connection.access_token_encrypted or "").strip()),
+        message=_shopify_status_message(connection),
+    )
+
+
+def _format_shopify_currency(amount: float | int | None, currency: str | None) -> str:
+    if amount is None:
+        return "N/A"
+    currency_code = str(currency or "USD").upper()
+    symbols = {"USD": "$", "MXN": "$", "EUR": "EUR ", "GBP": "GBP "}
+    prefix = symbols.get(currency_code, f"{currency_code} ")
+    return f"{prefix}{float(amount):,.2f}"
+
+
+def _shopify_block(block_type: str, order: int, data: dict[str, Any], editable_fields: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "type": block_type,
+        "order": order,
+        "data_json": json.dumps(data),
+        "editable_fields_json": json.dumps(editable_fields or []),
+    }
+
+
+def _build_shopify_report_blocks(dataset_row: dict[str, Any], *, title: str, branding: dict[str, Any]) -> list[dict[str, Any]]:
+    timeframe = dataset_row.get("timeframe") if isinstance(dataset_row.get("timeframe"), dict) else {}
+    period_label = str(timeframe.get("label") or "Selected period")
+    shop_name = str(dataset_row.get("shop_name") or dataset_row.get("shop_domain") or "Shopify store")
+    currency = str(dataset_row.get("currency") or "USD")
+    revenue = float(dataset_row.get("revenue") or 0.0)
+    orders = int(dataset_row.get("orders") or 0)
+    aov = float(dataset_row.get("aov") or 0.0)
+    sales_by_day = dataset_row.get("sales_by_day") if isinstance(dataset_row.get("sales_by_day"), list) else []
+    orders_by_day = dataset_row.get("orders_by_day") if isinstance(dataset_row.get("orders_by_day"), list) else []
+    top_products = dataset_row.get("top_products") if isinstance(dataset_row.get("top_products"), list) else []
+    top_variants = dataset_row.get("top_variants") if isinstance(dataset_row.get("top_variants"), list) else []
+    summary = str(dataset_row.get("summary") or "").strip() or "No Shopify summary available."
+    blocks = [
+        _shopify_block(
+            "title",
+            1,
+            {
+                "slide_number": 1,
+                "slide_type": "cover",
+                "text": title,
+                "subtitle": f"{shop_name} performance report · {period_label}",
+                "timeframe": timeframe,
+                "branding": branding,
+                "semantic_name": "cover",
+            },
+            ["text", "subtitle"],
+        ),
+        _shopify_block(
+            "stat",
+            2,
+            {
+                "slide_number": 2,
+                "slide_type": "metric",
+                "title": "Revenue",
+                "label": "Revenue",
+                "metric_key": "revenue",
+                "total": revenue,
+                "current_value": revenue,
+                "formatted_total": _format_shopify_currency(revenue, currency),
+                "daily_series": sales_by_day,
+                "chart": {"label": f"Sales by day - {period_label}", "metric": "revenue", "points": sales_by_day},
+                "currency": currency,
+                "summary": f"Revenue closed at {_format_shopify_currency(revenue, currency)}.",
+                "semantic_name": "revenue_overview",
+            },
+        ),
+        _shopify_block(
+            "stat",
+            3,
+            {
+                "slide_number": 3,
+                "slide_type": "metric",
+                "title": "Orders",
+                "label": "Orders",
+                "metric_key": "orders",
+                "total": orders,
+                "current_value": orders,
+                "formatted_total": f"{orders:,}",
+                "daily_series": orders_by_day,
+                "chart": {"label": f"Orders by day - {period_label}", "metric": "orders", "points": orders_by_day},
+                "secondary_text": f"AOV: {_format_shopify_currency(aov, currency)}",
+                "currency": currency,
+                "summary": f"{orders:,} orders with average order value {_format_shopify_currency(aov, currency)}.",
+                "semantic_name": "orders_overview",
+            },
+        ),
+        _shopify_block(
+            "text",
+            4,
+            {
+                "slide_number": 4,
+                "slide_type": "insights",
+                "title": "Top Products",
+                "top_products": top_products,
+                "top_variants": top_variants,
+                "summary": "Top products ranked by revenue for the selected period.",
+                "text": " | ".join(
+                    f"{item.get('title')}: {_format_shopify_currency(item.get('revenue'), currency)}"
+                    for item in top_products[:5]
+                )
+                or "No top products available for the selected period.",
+                "semantic_name": "top_products",
+            },
+            ["text"],
+        ),
+        _shopify_block(
+            "text",
+            5,
+            {
+                "slide_number": 5,
+                "slide_type": "summary",
+                "title": "Executive Summary",
+                "text": summary,
+                "summary": summary,
+                "ai_summary": summary,
+                "semantic_name": "executive_summary",
+                "metrics_summary": {
+                    "revenue": {
+                        "label": "Revenue",
+                        "value": revenue,
+                        "formatted_value": _format_shopify_currency(revenue, currency),
+                    },
+                    "orders": {
+                        "label": "Orders",
+                        "value": orders,
+                        "formatted_value": f"{orders:,}",
+                    },
+                    "aov": {
+                        "label": "AOV",
+                        "value": aov,
+                        "formatted_value": _format_shopify_currency(aov, currency),
+                    },
+                },
+            },
+            ["text"],
+        ),
+    ]
+    return blocks
+
+
+def _build_shopify_dataset_payload(
+    *,
+    shop_domain: str,
+    shop_name: str | None,
+    timeframe: dict[str, str],
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
+    currency = str(metrics.get("currency") or "USD")
+    revenue = round(float(metrics.get("total_sales") or 0.0), 2)
+    orders = int(metrics.get("orders_count") or 0)
+    aov = round(float(metrics.get("average_order_value") or 0.0), 2)
+    sales_by_day = metrics.get("sales_by_day") if isinstance(metrics.get("sales_by_day"), list) else []
+    top_products = metrics.get("top_products") if isinstance(metrics.get("top_products"), list) else []
+    top_variants = metrics.get("top_variants") if isinstance(metrics.get("top_variants"), list) else []
+    return {
+        "integration_type": "shopify",
+        "integration_display_name": "Shopify",
+        "provider": "shopify",
+        "channel": "shopify",
+        "social_network": "shopify",
+        "account_name": shop_name or shop_domain,
+        "page_name": shop_name or shop_domain,
+        "shop_domain": shop_domain,
+        "shop_name": shop_name,
+        "timeframe": timeframe,
+        "currency": currency,
+        "revenue": revenue,
+        "orders": orders,
+        "aov": aov,
+        "sales_by_day": sales_by_day,
+        "orders_by_day": metrics.get("orders_by_day") if isinstance(metrics.get("orders_by_day"), list) else [],
+        "top_products": top_products,
+        "top_variants": top_variants,
+        "discounts": round(float(metrics.get("discounts_total") or 0.0), 2),
+        "refunds": round(float(metrics.get("refunds_total") or 0.0), 2),
+        "summary": str(metrics.get("summary") or "").strip(),
+        "raw_orders_count": int(metrics.get("raw_orders_count") or 0),
+        "normalized_report_metrics": {
+            "revenue": revenue,
+            "orders": orders,
+            "aov": aov,
+            "sales_by_day": sales_by_day,
+            "top_products": top_products,
+            "discounts": round(float(metrics.get("discounts_total") or 0.0), 2),
+            "refunds": round(float(metrics.get("refunds_total") or 0.0), 2),
+        },
+    }
+
+
+def _create_shopify_dataset_snapshot(
+    *,
+    db: Session,
+    connection: ShopifyConnection,
+    timeframe: dict[str, str],
+    dataset_payload: dict[str, Any],
+    raw_metrics: dict[str, Any],
+) -> tuple[Dataset, DatasetFile, ShopifySnapshot]:
+    csv_output = io.StringIO()
+    writer = csv.DictWriter(csv_output, fieldnames=["date", "sales", "orders"])
+    writer.writeheader()
+    for point in dataset_payload.get("sales_by_day") or []:
+        writer.writerow(
+            {
+                "date": point.get("date"),
+                "sales": point.get("value"),
+                "orders": point.get("orders"),
+            }
+        )
+    csv_bytes = csv_output.getvalue().encode("utf-8")
+    filename = f"shopify_{connection.shop_domain}_{timeframe['since']}_{timeframe['until']}.csv"
+    _enforce_workspace_storage_for_upload(db, connection.workspace_id, len(csv_bytes))
+    dataset = Dataset(
+        workspace_id=connection.workspace_id,
+        name=filename,
+        description="Shopify sales snapshot",
+        data=dataset_payload,
+    )
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+
+    key = f"workspaces/{connection.workspace_id}/datasets/{dataset.id}/{filename}"
+    s3 = boto3.client("s3", region_name=settings.aws_region)
+    try:
+        s3.put_object(Bucket=settings.s3_inputs_bucket, Key=key, Body=csv_bytes)
+    except Exception:
+        db.delete(dataset)
+        db.commit()
+        raise http_error(502, "s3_upload_failed", "Failed to upload file.")
+
+    dataset_file = DatasetFile(
+        dataset_id=dataset.id,
+        workspace_id=connection.workspace_id,
+        s3_key=key,
+        size_bytes=len(csv_bytes),
+        content_type="text/csv",
+    )
+    db.add(dataset_file)
+    db.commit()
+    db.refresh(dataset_file)
+
+    snapshot = ShopifySnapshot(
+        user_id=connection.user_id,
+        workspace_id=connection.workspace_id,
+        connection_id=connection.id,
+        dataset_id=dataset.id,
+        timeframe=timeframe,
+        start_date=date.fromisoformat(timeframe["since"]),
+        end_date=date.fromisoformat(timeframe["until"]),
+        metrics_json=dataset_payload,
+        raw_json={"raw_orders": raw_metrics.get("raw_orders")},
+    )
+    db.add(snapshot)
+    db.commit()
+    db.refresh(snapshot)
+    return dataset, dataset_file, snapshot
+
+
+@app.get("/integrations/shopify/connect")
+def shopify_connect(
+    shop: str,
+    workspace_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    missing = shopify_missing_config()
+    if missing:
+        raise http_error(500, "shopify_config_missing", f"Missing Shopify config: {', '.join(missing)}.")
+    shop_domain = normalize_shop_domain(shop)
+    resolved_workspace_id = _resolve_shopify_workspace_id(
+        db,
+        user_id=current_user.id,
+        workspace_id=workspace_id,
+    )
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    integration = _get_or_create_shopify_integration_for_workspace(db, resolved_workspace_id)
+    state_token = create_oauth_state(purpose=SHOPIFY_OAUTH_STATE_PURPOSE)
+    oauth_state = ShopifyOAuthState(
+        user_id=current_user.id,
+        workspace_id=resolved_workspace_id,
+        shop_domain=shop_domain,
+        state_token=state_token,
+        purpose=SHOPIFY_OAUTH_STATE_PURPOSE,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+    )
+    db.add(oauth_state)
+    db.commit()
+    logger.info(
+        "Shopify connect started",
+        extra={
+            "workspace_id": resolved_workspace_id,
+            "user_id": current_user.id,
+            "integration_id": integration.id,
+            "shop_domain": shop_domain,
+        },
+    )
+    return RedirectResponse(url=shopify_authorize_url(shop_domain=shop_domain, state=state_token), status_code=302)
+
+
+@app.get("/integrations/shopify/callback")
+def shopify_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    params = dict(request.query_params)
+    if not shopify_callback_hmac_valid(params):
+        return _redirect_with_query(_shopify_error_redirect_url(), provider="shopify", status="error", error="invalid_hmac")
+    code = str(params.get("code") or "").strip()
+    state = str(params.get("state") or "").strip()
+    shop_domain = normalize_shop_domain(str(params.get("shop") or ""))
+    if not code or not state:
+        return _redirect_with_query(_shopify_error_redirect_url(), provider="shopify", status="error", error="invalid_state")
+    try:
+        state_payload = decode_oauth_state(state)
+    except TokenError:
+        return _redirect_with_query(_shopify_error_redirect_url(), provider="shopify", status="error", error="invalid_state")
+    if str(state_payload.get("purpose") or "") != SHOPIFY_OAUTH_STATE_PURPOSE:
+        return _redirect_with_query(_shopify_error_redirect_url(), provider="shopify", status="error", error="invalid_state")
+    oauth_state = (
+        db.query(ShopifyOAuthState)
+        .filter(ShopifyOAuthState.state_token == state)
+        .order_by(ShopifyOAuthState.id.desc())
+        .first()
+    )
+    expires_at = _utc_datetime(oauth_state.expires_at) if oauth_state is not None else None
+    if oauth_state is None or oauth_state.used_at is not None or expires_at is None or expires_at < datetime.now(timezone.utc):
+        return _redirect_with_query(_shopify_error_redirect_url(), provider="shopify", status="error", error="invalid_state")
+    if oauth_state.shop_domain != shop_domain:
+        return _redirect_with_query(_shopify_error_redirect_url(), provider="shopify", status="error", error="state_shop_mismatch")
+
+    token_payload = exchange_shopify_code_for_access_token(shop_domain=shop_domain, code=code)
+    access_token = str(token_payload.get("access_token") or "").strip()
+    if not access_token:
+        return _redirect_with_query(_shopify_error_redirect_url(), provider="shopify", status="error", error="missing_token")
+
+    integration = _get_or_create_shopify_integration_for_workspace(db, oauth_state.workspace_id)
+    connection = (
+        db.query(ShopifyConnection)
+        .filter(
+            ShopifyConnection.user_id == oauth_state.user_id,
+            ShopifyConnection.shop_domain == shop_domain,
+        )
+        .first()
+    )
+    if connection is None:
+        connection = ShopifyConnection(
+            user_id=oauth_state.user_id,
+            workspace_id=oauth_state.workspace_id,
+            integration_id=integration.id,
+            shop_domain=shop_domain,
+        )
+        db.add(connection)
+        db.flush()
+
+    shop_details = {}
+    try:
+        shop_details = fetch_shop_details(shop_domain=shop_domain, access_token=access_token)
+    except HTTPException:
+        logger.exception("Shopify shop details fetch failed", extra={"shop_domain": shop_domain})
+
+    connection.workspace_id = oauth_state.workspace_id
+    connection.integration_id = integration.id
+    connection.shop_name = str(shop_details.get("name") or "").strip() or None
+    connection.access_token_encrypted = encrypt_secret(access_token)
+    connection.scopes = [scope for scope in str(token_payload.get("scope") or settings.shopify_scopes).split(",") if scope.strip()]
+    connection.status = SHOPIFY_STATUS_CONNECTED
+    integration.status = SHOPIFY_STATUS_CONNECTED
+    oauth_state.used_at = datetime.now(timezone.utc)
+    db.add_all([connection, integration, oauth_state])
+    db.commit()
+    return _redirect_with_query(
+        _shopify_success_redirect_url(),
+        provider="shopify",
+        status="success",
+        shop_domain=shop_domain,
+        message="Shopify connected successfully.",
+    )
+
+
+@app.get("/integrations/shopify/status", response_model=ShopifyStatusOut)
+def shopify_status(
+    workspace_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ShopifyStatusOut:
+    resolved_workspace_id = _resolve_shopify_workspace_id(db, user_id=current_user.id, workspace_id=workspace_id)
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    integration = (
+        db.query(Integration)
+        .filter(Integration.workspace_id == resolved_workspace_id, Integration.provider == SHOPIFY_PROVIDER)
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    connection = _shopify_connection_for_workspace(db, workspace_id=resolved_workspace_id)
+    return _shopify_status_out(connection, integration_id=integration.id if integration else None)
+
+
+@app.post("/integrations/shopify/sync", response_model=ShopifySyncOut)
+def shopify_sync(
+    payload: ShopifySyncIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ShopifySyncOut:
+    connection = _resolve_shopify_connection(db, current_user=current_user, workspace_id=payload.workspace_id)
+    if connection is None:
+        raise http_error(404, "shopify_not_connected", "Shopify connection not found.")
+    if not str(connection.access_token_encrypted or "").strip():
+        raise http_error(401, "shopify_reconnect_required", "Shopify reconnect required.")
+    timeframe = resolve_shopify_timeframe(
+        payload.timeframe,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+    )
+    try:
+        access_token = decrypt_secret(connection.access_token_encrypted)
+        shop_details = fetch_shop_details(shop_domain=connection.shop_domain, access_token=access_token)
+        metrics = fetch_orders_metrics(
+            shop_domain=connection.shop_domain,
+            access_token=access_token,
+            timeframe=timeframe,
+        )
+    except HTTPException as exc:
+        if exc.status_code in {401, 403}:
+            connection.status = SHOPIFY_STATUS_ERROR
+            connection.integration.status = SHOPIFY_STATUS_ERROR
+            db.add(connection)
+            db.add(connection.integration)
+            db.commit()
+        raise
+    dataset_payload = _build_shopify_dataset_payload(
+        shop_domain=connection.shop_domain,
+        shop_name=str(shop_details.get("name") or connection.shop_name or "").strip() or None,
+        timeframe=timeframe,
+        metrics=metrics,
+    )
+    connection.shop_name = str(shop_details.get("name") or connection.shop_name or "").strip() or None
+    dataset, dataset_file, _snapshot = _create_shopify_dataset_snapshot(
+        db=db,
+        connection=connection,
+        timeframe=timeframe,
+        dataset_payload=dataset_payload,
+        raw_metrics=metrics,
+    )
+    connection.status = SHOPIFY_STATUS_CONNECTED
+    connection.last_sync_at = datetime.now(timezone.utc)
+    connection.integration.status = SHOPIFY_STATUS_CONNECTED
+    db.add(connection)
+    db.add(connection.integration)
+    db.commit()
+    metrics_out = {
+        "revenue": dataset_payload.get("revenue"),
+        "orders": dataset_payload.get("orders"),
+        "aov": dataset_payload.get("aov"),
+        "sales_by_day": dataset_payload.get("sales_by_day"),
+        "top_products": dataset_payload.get("top_products"),
+        "top_variants": dataset_payload.get("top_variants"),
+        "summary": dataset_payload.get("summary"),
+        "currency": dataset_payload.get("currency"),
+        "refunds": dataset_payload.get("refunds"),
+        "discounts": dataset_payload.get("discounts"),
+    }
+    return ShopifySyncOut(
+        integration_id=connection.integration_id,
+        connection_id=connection.id,
+        dataset_id=dataset.id,
+        dataset_file_id=dataset_file.id,
+        shop_domain=connection.shop_domain,
+        shop_name=connection.shop_name,
+        status="uploaded",
+        timeframe=timeframe,
+        metrics=metrics_out,
+        last_synced_at=connection.last_sync_at,
+    )
+
+
+@app.delete("/integrations/shopify/disconnect", response_model=ShopifyDisconnectOut)
+def shopify_disconnect(
+    workspace_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ShopifyDisconnectOut:
+    connection = _resolve_shopify_connection(db, current_user=current_user, workspace_id=workspace_id)
+    if connection is None:
+        return ShopifyDisconnectOut(success=True, status=SHOPIFY_STATUS_DISCONNECTED, token_cleared=False)
+    token_cleared = bool(str(connection.access_token_encrypted or "").strip())
+    connection.access_token_encrypted = None
+    connection.status = SHOPIFY_STATUS_DISCONNECTED
+    connection.integration.status = SHOPIFY_STATUS_DISCONNECTED
+    db.add(connection)
+    db.add(connection.integration)
+    db.commit()
+    return ShopifyDisconnectOut(success=True, status=SHOPIFY_STATUS_DISCONNECTED, token_cleared=token_cleared)
+
+
+@app.post("/integrations/shopify/webhooks")
+async def shopify_webhooks(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    raw_body = await request.body()
+    hmac_header = request.headers.get("X-Shopify-Hmac-SHA256")
+    if not shopify_webhook_hmac_valid(raw_body, hmac_header):
+        raise http_error(401, "invalid_shopify_webhook_hmac", "Invalid Shopify webhook signature.")
+    topic = str(request.headers.get("X-Shopify-Topic") or "").strip()
+    shop_domain = str(request.headers.get("X-Shopify-Shop-Domain") or "").strip().lower() or None
+    payload = json.loads(raw_body.decode("utf-8") or "{}") if raw_body else {}
+    logger.info("Shopify webhook received", extra={"topic": topic, "shop_domain": shop_domain})
+    if shop_domain:
+        connection = (
+            db.query(ShopifyConnection)
+            .filter(ShopifyConnection.shop_domain == shop_domain)
+            .order_by(ShopifyConnection.updated_at.desc(), ShopifyConnection.id.desc())
+            .first()
+        )
+    else:
+        connection = None
+    if topic == "app/uninstalled" and connection is not None:
+        connection.access_token_encrypted = None
+        connection.status = SHOPIFY_STATUS_DISCONNECTED
+        connection.integration.status = SHOPIFY_STATUS_DISCONNECTED
+        db.add(connection)
+        db.add(connection.integration)
+        db.commit()
+    elif topic == "shop/redact" and connection is not None:
+        connection.access_token_encrypted = None
+        connection.shop_name = None
+        connection.status = SHOPIFY_STATUS_DISCONNECTED
+        db.add(connection)
+        snapshots = db.query(ShopifySnapshot).filter(ShopifySnapshot.connection_id == connection.id).all()
+        for snapshot in snapshots:
+            snapshot.raw_json = None
+            db.add(snapshot)
+        db.commit()
+    elif topic in SHOPIFY_COMPLIANCE_TOPICS:
+        logger.info("Shopify compliance webhook acknowledged", extra={"topic": topic, "payload_keys": sorted(payload.keys()) if isinstance(payload, dict) else []})
+    return Response(status_code=200)
 
 
 @app.get("/integrations/meta/connect")
@@ -17711,6 +20838,21 @@ def _run_meta_pages_sync(
                 "timeframe": timeframe,
             },
         )
+        logger.info(
+            "FACEBOOK_PAGES_SYNC_START",
+            extra={
+                "report_id": None,
+                "dataset_id": None,
+                "page_id": resolved_page_id,
+                "page_name": page_name,
+                "metric_name": "sync",
+                "source_metric": None,
+                "raw_value": None,
+                "sum_value": None,
+                "points_count": 0,
+                "unavailable_reason": None,
+            },
+        )
         access_token: str | None = None
         try:
             access_token = _get_meta_page_access_token(db, integration, selected_page)
@@ -17744,6 +20886,10 @@ def _run_meta_pages_sync(
         link_clicks_metric_name: str | None = None
         page_visits_metric_name: str | None = None
         followers_growth_metric_name: str | None = None
+        reach_unavailable_reason: str | None = "Meta did not return this metric for the selected period."
+        impressions_unavailable_reason: str | None = "Meta did not return this metric for the selected period."
+        engagement_unavailable_reason: str | None = "Meta did not return this metric for the selected period."
+        views_unavailable_reason: str | None = "Meta did not return this metric for the selected period."
 
         if access_token:
             try:
@@ -17768,6 +20914,21 @@ def _run_meta_pages_sync(
             except HTTPException as exc:
                 if not _is_meta_api_error(exc):
                     raise
+            logger.info(
+                "FACEBOOK_PAGE_SELECTED",
+                extra={
+                    "report_id": None,
+                    "dataset_id": None,
+                    "page_id": resolved_page_id,
+                    "page_name": page_name,
+                    "metric_name": "page",
+                    "source_metric": None,
+                    "raw_value": None,
+                    "sum_value": None,
+                    "points_count": 0,
+                    "unavailable_reason": None,
+                },
+            )
 
             try:
                 page_counts = fetch_page_info(
@@ -17781,6 +20942,24 @@ def _run_meta_pages_sync(
 
             accepted_metrics: list[str] = []
             rejected_metrics: list[str] = []
+            logger.info(
+                "FACEBOOK_INSIGHTS_REQUEST",
+                extra={
+                    "report_id": None,
+                    "dataset_id": None,
+                    "page_id": resolved_page_id,
+                    "page_name": page_name,
+                    "metric_name": "insights_request",
+                    "source_metric": None,
+                    "raw_value": {
+                        "since": timeframe_config["since"],
+                        "until": timeframe_config["until"],
+                    },
+                    "sum_value": None,
+                    "points_count": 0,
+                    "unavailable_reason": None,
+                },
+            )
             reach_payload = _fetch_meta_pages_reach_payload(
                 access_token,
                 resolved_page_id,
@@ -17827,6 +21006,21 @@ def _run_meta_pages_sync(
                         "metric_candidates": META_PAGES_REACH_METRIC_CANDIDATES,
                     },
                 )
+            reach_unavailable_reason = _facebook_metric_unavailable_reason(
+                value=reach_payload.get("value"),
+                points=reach_daily,
+                source_metric=reach_metric_name,
+            )
+            _log_facebook_pages_metric_event(
+                "FACEBOOK_METRIC_RESOLVED_REACH",
+                page_id=resolved_page_id,
+                page_name=page_name,
+                metric_name="reach",
+                source_metric=reach_metric_name,
+                raw_value=reach_payload.get("value"),
+                points=reach_daily,
+                unavailable_reason=reach_unavailable_reason,
+            )
             impressions_payload = _fetch_meta_pages_impressions_payload(
                 access_token,
                 resolved_page_id,
@@ -17875,6 +21069,21 @@ def _run_meta_pages_sync(
                         "metric_candidates": META_PAGES_IMPRESSIONS_METRIC_CANDIDATES,
                     },
                 )
+            impressions_unavailable_reason = _facebook_metric_unavailable_reason(
+                value=impressions_payload.get("value"),
+                points=impressions_daily,
+                source_metric=impressions_metric_name,
+            )
+            _log_facebook_pages_metric_event(
+                "FACEBOOK_METRIC_RESOLVED_IMPRESSIONS",
+                page_id=resolved_page_id,
+                page_name=page_name,
+                metric_name="impressions",
+                source_metric=impressions_metric_name,
+                raw_value=impressions_payload.get("value"),
+                points=impressions_daily,
+                unavailable_reason=impressions_unavailable_reason,
+            )
             views_payload = _fetch_meta_pages_metric_payload(
                 access_token,
                 resolved_page_id,
@@ -17903,8 +21112,23 @@ def _run_meta_pages_sync(
                 previous_until=str(timeframe_config.get("previous_until") or ""),
                 points=views_daily,
             )
-            insights["report_views_total"] = _sum_meta_daily_series(views_daily)
+            insights["report_views_total"] = _first_non_none(_sum_meta_daily_series(views_daily), views_payload.get("value"))
             insights["report_views_end_time"] = views_payload.get("end_time")
+            views_unavailable_reason = _facebook_metric_unavailable_reason(
+                value=views_payload.get("value"),
+                points=views_daily,
+                source_metric=views_metric_name,
+            )
+            _log_facebook_pages_metric_event(
+                "FACEBOOK_METRIC_RESOLVED_PAGE_VIEWS",
+                page_id=resolved_page_id,
+                page_name=page_name,
+                metric_name="page_views",
+                source_metric=views_metric_name,
+                raw_value=views_payload.get("value"),
+                points=views_daily,
+                unavailable_reason=views_unavailable_reason,
+            )
 
             interactions_payload = _fetch_meta_pages_metric_payload(
                 access_token,
@@ -17934,8 +21158,26 @@ def _run_meta_pages_sync(
                 previous_until=str(timeframe_config.get("previous_until") or ""),
                 points=interactions_daily,
             )
-            insights["report_interactions_total"] = _sum_meta_daily_series(interactions_daily)
+            insights["report_interactions_total"] = _first_non_none(
+                _sum_meta_daily_series(interactions_daily),
+                interactions_payload.get("value"),
+            )
             insights["report_interactions_end_time"] = interactions_payload.get("end_time")
+            engagement_unavailable_reason = _facebook_metric_unavailable_reason(
+                value=interactions_payload.get("value"),
+                points=interactions_daily,
+                source_metric=interactions_metric_name,
+            )
+            _log_facebook_pages_metric_event(
+                "FACEBOOK_METRIC_RESOLVED_ENGAGEMENT",
+                page_id=resolved_page_id,
+                page_name=page_name,
+                metric_name="engagement",
+                source_metric=interactions_metric_name,
+                raw_value=interactions_payload.get("value"),
+                points=interactions_daily,
+                unavailable_reason=engagement_unavailable_reason,
+            )
 
             link_clicks_payload = _fetch_meta_pages_metric_payload(
                 access_token,
@@ -18081,6 +21323,24 @@ def _run_meta_pages_sync(
                     + 1,
                 },
             )
+            logger.info(
+                "FACEBOOK_INSIGHTS_RESPONSE_METRICS",
+                extra={
+                    "report_id": None,
+                    "dataset_id": None,
+                    "page_id": resolved_page_id,
+                    "page_name": page_name,
+                    "metric_name": "insights_response",
+                    "source_metric": None,
+                    "raw_value": {
+                        "accepted_metrics": accepted_metrics,
+                        "rejected_metrics": rejected_metrics,
+                    },
+                    "sum_value": len(accepted_metrics),
+                    "points_count": len(accepted_metrics),
+                    "unavailable_reason": None,
+                },
+            )
 
             try:
                 posts = fetch_page_posts(access_token, resolved_page_id, limit=5)
@@ -18155,9 +21415,13 @@ def _run_meta_pages_sync(
         writer.writeheader()
         normalized_posts = normalize_meta_recent_posts(posts)
         followers = page_counts.get("followers_count")
+        followers_unavailable_reason = (
+            None if isinstance(followers, (int, float)) else "Meta did not return this metric for the selected period."
+        )
         impressions = insights.get("page_impressions")
         reach = insights.get("page_reach")
         engagement = insights.get("page_post_engagements")
+        page_views_total = _first_non_none(insights.get("report_views_total"), insights.get("page_views_total"))
         profile_visits = _first_non_none(
             insights.get("page_profile_views"),
             insights.get("page_engaged_users"),
@@ -18172,6 +21436,16 @@ def _run_meta_pages_sync(
             insights.get("page_engaged_users"),
         )
         followers_growth = insights.get("page_fan_adds")
+        _log_facebook_pages_metric_event(
+            "FACEBOOK_METRIC_RESOLVED_FOLLOWERS",
+            page_id=resolved_page_id,
+            page_name=page_name,
+            metric_name="followers",
+            source_metric="followers_count" if isinstance(followers, (int, float)) else "fan_count",
+            raw_value=followers,
+            points=[],
+            unavailable_reason=followers_unavailable_reason,
+        )
         missing_metrics = [
             metric_name
             for metric_name, metric_value in {
@@ -18190,8 +21464,6 @@ def _run_meta_pages_sync(
                 "missing_metrics": missing_metrics,
             },
         )
-        print("REACH:", reach)
-        print("IMPRESSIONS:", impressions)
         writer.writerow(
             {
                 "page_id": resolved_page_id,
@@ -18224,13 +21496,22 @@ def _run_meta_pages_sync(
         dataset_data = {
             "page_name": page_name,
             "followers": followers,
+            "followers_total": followers,
             "reach": reach,
+            "reach_total": reach,
             "engagement": engagement,
+            "engagement_total": insights.get("report_interactions_total"),
             "impressions": impressions,
+            "impressions_total": impressions,
+            "page_views_total": page_views_total,
             "profile_visits": profile_visits,
             "content_interactions": content_interactions,
             "link_clicks": link_clicks,
             "followers_growth": followers_growth,
+            "daily_reach": reach_daily,
+            "daily_impressions": impressions_daily,
+            "daily_engagement": interactions_daily,
+            "daily_page_views": views_daily,
             "timeframe": {
                 "key": timeframe_config["key"],
                 "label": timeframe_config["label"],
@@ -18247,13 +21528,54 @@ def _run_meta_pages_sync(
             },
             "reach_source_metric": reach_metric_name,
             "impressions_source_metric": impressions_metric_name,
+            "page_views_source_metric": views_metric_name,
+            "engagement_source_metric": interactions_metric_name,
             "impressions_daily": impressions_daily,
             "reach_daily": reach_daily,
+            "facebook_metric_audit": {
+                "reach": _facebook_metric_audit_entry(
+                    source_metric=reach_metric_name,
+                    raw_value=reach,
+                    points=reach_daily,
+                    unavailable_reason=reach_unavailable_reason,
+                ),
+                "impressions": _facebook_metric_audit_entry(
+                    source_metric=impressions_metric_name,
+                    raw_value=impressions,
+                    points=impressions_daily,
+                    unavailable_reason=impressions_unavailable_reason,
+                ),
+                "engagement": _facebook_metric_audit_entry(
+                    source_metric=interactions_metric_name,
+                    raw_value=insights.get("report_interactions_total"),
+                    points=interactions_daily,
+                    unavailable_reason=engagement_unavailable_reason,
+                ),
+                "followers": _facebook_metric_audit_entry(
+                    source_metric="followers_count" if isinstance(followers, (int, float)) else "fan_count",
+                    raw_value=followers,
+                    points=[],
+                    unavailable_reason=followers_unavailable_reason,
+                ),
+                "page_views": _facebook_metric_audit_entry(
+                    source_metric=views_metric_name,
+                    raw_value=page_views_total,
+                    points=views_daily,
+                    unavailable_reason=views_unavailable_reason,
+                ),
+            },
+            "unavailable_metrics": {
+                "reach": reach_unavailable_reason,
+                "impressions": impressions_unavailable_reason,
+                "engagement": engagement_unavailable_reason,
+                "page_views": views_unavailable_reason,
+                "followers": followers_unavailable_reason,
+            },
             "report_metric_mapping": {
                 "views": _build_meta_report_metric_entry(
                     facebook_ui_target_label="Visualizaciones",
                     source_metric_name=views_metric_name,
-                    total=insights.get("report_views_total"),
+                    total=page_views_total,
                     daily_series=views_daily,
                     timeframe_since=timeframe_config["since"],
                     timeframe_until=timeframe_config["until"],
@@ -18300,9 +21622,17 @@ def _run_meta_pages_sync(
                 ),
             },
             "normalized_report_metrics": {
+                "reach_total": reach,
+                "daily_reach": reach_daily,
                 "impressions_total": impressions,
                 "impressions_daily": impressions_daily,
-                "views_total": insights.get("report_views_total"),
+                "daily_impressions": impressions_daily,
+                "page_views_total": page_views_total,
+                "daily_page_views": views_daily,
+                "engagement_total": insights.get("report_interactions_total"),
+                "daily_engagement": interactions_daily,
+                "followers_total": followers,
+                "views_total": page_views_total,
                 "views_daily": views_daily,
                 "viewers_total": reach,
                 "viewers_daily": reach_daily,
@@ -18361,21 +21691,6 @@ def _run_meta_pages_sync(
                 previous_until=str(timeframe_config.get("previous_until") or ""),
                 points=metric_points,
             )
-        raw_meta_data = {
-            "page_id": resolved_page_id,
-            "timeframe": timeframe_config,
-            "reach": {
-                "metric": reach_metric_name,
-                "total": reach,
-                "daily": reach_daily,
-            },
-            "impressions": {
-                "metric": impressions_metric_name,
-                "total": impressions,
-                "daily": impressions_daily,
-            },
-        }
-        print("RAW META DATA:", raw_meta_data)
         logger.info(
             "[MetaTimeframeBackend] sync metrics resolved",
             extra={
@@ -18420,6 +21735,24 @@ def _run_meta_pages_sync(
         db.add(dataset)
         db.commit()
         db.refresh(dataset)
+        logger.info(
+            "FACEBOOK_REPORT_DATASET_NORMALIZED",
+            extra={
+                "report_id": None,
+                "dataset_id": dataset.id,
+                "page_id": resolved_page_id,
+                "page_name": page_name,
+                "metric_name": "dataset",
+                "source_metric": None,
+                "raw_value": {
+                    "keys": sorted(dataset_data.keys()),
+                    "normalized_metric_keys": sorted((dataset_data.get("normalized_report_metrics") or {}).keys()),
+                },
+                "sum_value": None,
+                "points_count": 0,
+                "unavailable_reason": None,
+            },
+        )
         saved_dataset_data = dataset.data if isinstance(dataset.data, dict) else {}
         saved_dataset_timeframe = (
             saved_dataset_data.get("timeframe")

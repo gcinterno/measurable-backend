@@ -2211,6 +2211,12 @@ META_PAGES_TIMEFRAME_PRESETS = {
     "last_7_days": 7,
     "last_14_days": 14,
     "last_28_days": 28,
+    "last_30_days": 30,
+}
+
+META_PAGES_TIMEFRAME_ALIASES = {
+    "last_7d": "last_7_days",
+    "last_30d": "last_30_days",
 }
 
 
@@ -2223,6 +2229,7 @@ def resolve_meta_pages_timeframe(
 ) -> dict[str, str | None]:
     current_day = today or date.today()
     selected_timeframe = str(timeframe or "last_28_days").strip() or "last_28_days"
+    selected_timeframe = META_PAGES_TIMEFRAME_ALIASES.get(selected_timeframe, selected_timeframe)
 
     def _build_timeframe_payload(
         *,
@@ -2341,7 +2348,7 @@ def resolve_meta_pages_timeframe(
     raise http_error(
         400,
         "invalid_timeframe",
-        "timeframe must be one of: last_7_days, last_14_days, last_28_days, this_month, last_month, custom.",
+        "timeframe must be one of: last_7_days, last_14_days, last_28_days, last_30_days, this_month, last_month, custom.",
     )
 
 
@@ -2416,6 +2423,7 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
     )
     integration_type = str(row.get("integration_type") or "").strip() or None
     is_instagram_business = integration_type == "instagram_business"
+    is_meta_ads = integration_type == "meta_ads"
     has_dataset_timeframe = bool(timeframe)
     timeframe_preset = (
         str(timeframe.get("preset") or "") or None
@@ -2463,6 +2471,9 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
     page_visits_daily = normalize_meta_timeseries(page_visits_daily_raw)
     followers_growth_daily_raw = normalized_metrics.get("followers_growth_daily")
     followers_growth_daily = normalize_meta_timeseries(followers_growth_daily_raw)
+    meta_ads_daily_reach = normalize_meta_timeseries(normalized_metrics.get("daily_reach"))
+    meta_ads_daily_impressions = normalize_meta_timeseries(normalized_metrics.get("daily_impressions"))
+    meta_ads_daily_clicks = normalize_meta_timeseries(normalized_metrics.get("daily_clicks"))
     unavailable_metrics_raw = row.get("unavailable_metrics")
     if isinstance(unavailable_metrics_raw, str):
         unavailable_metrics = _load_json(unavailable_metrics_raw, {})
@@ -2471,6 +2482,12 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
     else:
         unavailable_metrics = {}
     reach = _to_int(row.get("reach"))
+    if reach is None:
+        reach = _to_int(row.get("reach_total"))
+    if reach is None and is_meta_ads:
+        reach = _to_int(row.get("total_reach"))
+    if reach is None:
+        reach = _to_int(normalized_metrics.get("reach_total"))
     if reach is None:
         reach = _to_int(normalized_metrics.get("viewers_total"))
     if reach is None:
@@ -2483,6 +2500,10 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
             reach = sum(reach_values)
     impressions = _to_int(row.get("impressions"))
     if impressions is None:
+        impressions = _to_int(row.get("impressions_total"))
+    if impressions is None and is_meta_ads:
+        impressions = _to_int(row.get("total_impressions"))
+    if impressions is None:
         impressions = _to_int(normalized_metrics.get("impressions_total"))
     if impressions is None:
         impression_values = [
@@ -2494,10 +2515,16 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
             impressions = sum(impression_values)
     followers = _to_int(row.get("followers"))
     if followers is None:
+        followers = _to_int(row.get("followers_total"))
+    if followers is None:
         followers = _to_int(row.get("followers_count"))
     if followers is None:
         followers = _to_int(normalized_metrics.get("followers_growth_total"))
     engagement = _to_int(row.get("engagement"))
+    if engagement is None:
+        engagement = _to_int(row.get("engagement_total"))
+    if engagement is None and is_meta_ads:
+        engagement = _to_int(row.get("total_clicks"))
     if engagement is None:
         engagement = _to_int(row.get("total_interactions"))
     if engagement is None:
@@ -2515,11 +2542,19 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
     if content_interactions is None:
         content_interactions = _to_int(normalized_metrics.get("content_interactions"))
     link_clicks = _to_int(row.get("link_clicks"))
+    if link_clicks is None and is_meta_ads:
+        link_clicks = _to_int(row.get("total_clicks"))
     if link_clicks is None:
         link_clicks = _to_int(row.get("website_clicks"))
     if link_clicks is None:
         link_clicks = _to_int(normalized_metrics.get("link_clicks_total"))
     views = _to_int(row.get("views"))
+    if views is None:
+        views = _to_int(row.get("page_views_total"))
+    if views is None and is_meta_ads:
+        views = _to_int(row.get("total_impressions"))
+    if views is None:
+        views = _to_int(normalized_metrics.get("page_views_total"))
     if views is None:
         views = _to_int(normalized_metrics.get("views_total"))
     followers_growth = _to_int(row.get("followers_growth"))
@@ -2527,13 +2562,29 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         followers_growth = _to_int(normalized_metrics.get("followers_growth_total"))
 
     if not reach_daily:
+        reach_daily = normalize_meta_timeseries(normalized_metrics.get("daily_reach"))
+    if not reach_daily:
         reach_daily = normalize_meta_timeseries(normalized_metrics.get("viewers_daily"))
+    if not reach_daily and is_meta_ads:
+        reach_daily = meta_ads_daily_reach
+    if not impressions_daily and is_meta_ads:
+        impressions_daily = meta_ads_daily_impressions
+    if not impressions_daily:
+        impressions_daily = normalize_meta_timeseries(normalized_metrics.get("daily_impressions"))
     if not interactions_daily:
         interactions_daily = normalize_meta_timeseries(normalized_metrics.get("interactions_daily"))
+    if not interactions_daily and is_meta_ads:
+        interactions_daily = meta_ads_daily_clicks
+    if not daily_engagement:
+        daily_engagement = normalize_meta_timeseries(normalized_metrics.get("daily_engagement"))
     if not daily_engagement:
         daily_engagement = interactions_daily
     if not link_clicks_daily:
         link_clicks_daily = normalize_meta_timeseries(normalized_metrics.get("link_clicks_daily"))
+    if not link_clicks_daily and is_meta_ads:
+        link_clicks_daily = meta_ads_daily_clicks
+    if not page_visits_daily:
+        page_visits_daily = normalize_meta_timeseries(normalized_metrics.get("daily_page_views"))
     if not page_visits_daily:
         page_visits_daily = normalize_meta_timeseries(
             normalized_metrics.get("page_visits_daily") or normalized_metrics.get("views_daily")
@@ -2573,6 +2624,8 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         "page_name": str(row.get("page_name") or row.get("account_name") or "Meta Page"),
         "account_name": str(row.get("account_name") or row.get("page_name") or "Meta Page"),
         "username": str(row.get("username") or "") or None,
+        "spend": row.get("total_spend"),
+        "total_spend": row.get("total_spend"),
         "followers": followers,
         "reach": reach,
         "engagement": engagement,
@@ -2592,17 +2645,22 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         "reach_source_metric": str(row.get("reach_source_metric") or "") or None,
         "engagement_source_metric": str(row.get("engagement_source_metric") or "") or None,
         "impressions_source_metric": str(row.get("impressions_source_metric") or "") or None,
+        "page_views_source_metric": str(row.get("page_views_source_metric") or "") or None,
         "impressions_daily": impressions_daily,
         "reach_daily": reach_daily,
         "interactions_daily": interactions_daily,
         "engagement_daily": interactions_daily,
         "daily_engagement": daily_engagement,
         "content_interactions_daily": interactions_daily,
+        "page_views_daily": page_visits_daily,
         "link_clicks_daily": link_clicks_daily,
         "page_visits_daily": page_visits_daily,
         "followers_growth_daily": followers_growth_daily,
         "recent_posts": recent_posts,
         "unavailable_metrics": unavailable_metrics if isinstance(unavailable_metrics, dict) else {},
+        "facebook_metric_audit": row.get("facebook_metric_audit")
+        if isinstance(row.get("facebook_metric_audit"), dict)
+        else {},
     }
 
 
@@ -2633,6 +2691,21 @@ def build_meta_pages_summary(report_inputs: dict[str, Any], locale: str = "en") 
     timeframe_label = str(report_inputs.get("timeframe_label") or "").strip()
     integration_type = str(report_inputs.get("integration_type") or "").strip()
     is_instagram_business = integration_type == "instagram_business"
+    if integration_type == "meta_ads":
+        spend = report_inputs.get("spend") or report_inputs.get("total_spend")
+        impressions = report_inputs.get("impressions")
+        clicks = report_inputs.get("link_clicks")
+        if locale == "es":
+            return (
+                f"Meta Ads registró {spend or 'N/A'} de gasto, "
+                f"{impressions or 'N/A'} impresiones y {clicks or 'N/A'} clics"
+                + (f" en {timeframe_label}." if timeframe_label else ".")
+            )
+        return (
+            f"Meta Ads delivered {spend or 'N/A'} in spend, "
+            f"{impressions or 'N/A'} impressions, and {clicks or 'N/A'} clicks"
+            + (f" during {timeframe_label}." if timeframe_label else ".")
+        )
     unavailable_metrics = (
         report_inputs.get("unavailable_metrics")
         if isinstance(report_inputs.get("unavailable_metrics"), dict)
