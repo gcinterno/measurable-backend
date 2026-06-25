@@ -12,12 +12,13 @@ from ..config import settings
 from ..errors import http_error
 
 logger = logging.getLogger(__name__)
-META_ADS_OAUTH_SCOPE = "ads_read,ads_management,business_management"
+META_ADS_OAUTH_SCOPE = "ads_read,business_management"
 META_PAGES_OAUTH_SCOPE = (
     "pages_show_list,pages_read_engagement,read_insights,"
     "instagram_basic,instagram_manage_insights,business_management"
 )
 META_PAGES_CALLBACK_PATH = "/integrations/meta/callback-pages"
+META_ADS_CALLBACK_PATH = "/integrations/meta-ads/callback"
 META_OAUTH_STATE_PURPOSE = "meta_pages_oauth"
 
 
@@ -77,6 +78,23 @@ def _raise_meta_api_error(resp: requests.Response) -> None:
 def _require_meta_config() -> None:
     if not settings.meta_app_id or not settings.meta_app_secret or not settings.meta_redirect_uri:
         raise RuntimeError("META config missing")
+
+
+def get_meta_ads_redirect_uri() -> str:
+    _require_meta_config()
+    configured_redirect_uri = str(settings.meta_redirect_uri or "").strip()
+    api_base_url = str(settings.api_base_url or "").strip().rstrip("/")
+    if api_base_url:
+        return f"{api_base_url}{META_ADS_CALLBACK_PATH}"
+
+    parsed = urlparse(configured_redirect_uri)
+    if not parsed.scheme or not parsed.netloc:
+        raise http_error(
+            status_code=500,
+            code="meta_ads_config_invalid",
+            message="META_REDIRECT_URI must be an absolute URL.",
+        )
+    return urlunparse((parsed.scheme, parsed.netloc, META_ADS_CALLBACK_PATH, "", "", ""))
 
 
 def _require_meta_pages_config() -> None:
@@ -255,7 +273,11 @@ def exchange_pages_code_for_token(code: str, *, redirect_uri: str | None = None)
 
 def list_ad_accounts(access_token: str) -> list[dict[str, Any]]:
     url = f"https://graph.facebook.com/{settings.meta_api_version}/me/adaccounts"
-    params = {"fields": "id,name,account_id", "access_token": access_token}
+    params = {
+        "fields": "id,account_id,name,currency,timezone_name,account_status,business{id,name}",
+        "limit": 200,
+        "access_token": access_token,
+    }
     resp = requests.get(url, params=params, timeout=30)
     _raise_meta_api_error(resp)
     data = resp.json()
@@ -277,7 +299,11 @@ def get_businesses(access_token: str) -> list[dict[str, Any]]:
 
 def get_owned_ad_accounts(access_token: str, business_id: str) -> list[dict[str, Any]]:
     url = f"https://graph.facebook.com/{settings.meta_api_version}/{business_id}/owned_ad_accounts"
-    params = {"fields": "id,name,account_id", "access_token": access_token}
+    params = {
+        "fields": "id,account_id,name,currency,timezone_name,account_status,business{id,name}",
+        "limit": 200,
+        "access_token": access_token,
+    }
     resp = requests.get(url, params=params, timeout=30)
     _raise_meta_api_error(resp)
     data = resp.json()
@@ -643,15 +669,29 @@ def _normalize_meta_ad_account_node_id(ad_account_id: str) -> str:
     return f"act_{normalized_id}"
 
 
-def fetch_campaign_insights(access_token: str, ad_account_id: str) -> list[dict[str, Any]]:
+def fetch_campaign_insights(
+    access_token: str,
+    ad_account_id: str,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[dict[str, Any]]:
     account_node_id = _normalize_meta_ad_account_node_id(ad_account_id)
     url = f"https://graph.facebook.com/{settings.meta_api_version}/{account_node_id}/insights"
-    params = {
-        "fields": "date_start,campaign_name,impressions,clicks,spend,ctr,cpc,reach",
-        "level": "campaign",
+    params: dict[str, Any] = {
+        "fields": (
+            "date_start,date_stop,spend,impressions,reach,clicks,inline_link_clicks,"
+            "ctr,cpc,cpm,frequency,actions,cost_per_action_type,"
+            "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name"
+        ),
+        "level": "ad",
         "time_increment": 1,
         "access_token": access_token,
     }
+    if since:
+        params["since"] = since
+    if until:
+        params["until"] = until
     logger.info("Fetching Meta campaign insights", extra={"url": url, "ad_account_id": account_node_id})
     resp = requests.get(url, params=params, timeout=60)
     _raise_meta_api_error(resp)

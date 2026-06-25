@@ -83,10 +83,47 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("META_PAGES_REDIRECT_URI", "META_REDIRECT_URI"),
     )
+    meta_capi_pixel_id: str | None = Field(default=None, validation_alias="META_CAPI_PIXEL_ID")
+    meta_capi_access_token: str | None = Field(default=None, validation_alias="META_CAPI_ACCESS_TOKEN")
+    meta_capi_test_event_code: str | None = Field(default=None, validation_alias="META_CAPI_TEST_EVENT_CODE")
+    meta_capi_api_version: str = Field(default="v25.0", validation_alias="META_CAPI_API_VERSION")
+    meta_capi_enabled: bool = Field(default=False, validation_alias="META_CAPI_ENABLED")
     google_client_id: str | None = Field(default=None, validation_alias="GOOGLE_CLIENT_ID")
     google_client_secret: str | None = Field(default=None, validation_alias="GOOGLE_CLIENT_SECRET")
     google_redirect_uri: str | None = Field(default=None, validation_alias="GOOGLE_REDIRECT_URI")
     meta_api_version: str = "v19.0"
+    tiktok_app_id: str | None = Field(default=None, validation_alias="TIKTOK_APP_ID")
+    tiktok_secret: str | None = Field(default=None, validation_alias="TIKTOK_SECRET")
+    tiktok_api_base: str = Field(
+        default="https://business-api.tiktok.com/open_api/v1.3",
+        validation_alias="TIKTOK_API_BASE",
+    )
+    tiktok_redirect_uri: str | None = Field(default=None, validation_alias="TIKTOK_REDIRECT_URI")
+    tiktok_connect_success_redirect: str | None = Field(
+        default=None,
+        validation_alias="TIKTOK_CONNECT_SUCCESS_REDIRECT",
+    )
+    tiktok_connect_error_redirect: str | None = Field(
+        default=None,
+        validation_alias="TIKTOK_CONNECT_ERROR_REDIRECT",
+    )
+    integration_encryption_key: str | None = Field(
+        default=None,
+        validation_alias="INTEGRATION_ENCRYPTION_KEY",
+    )
+    shopify_api_key: str | None = Field(default=None, validation_alias="SHOPIFY_API_KEY")
+    shopify_api_secret: str | None = Field(default=None, validation_alias="SHOPIFY_API_SECRET")
+    shopify_redirect_uri: str | None = Field(default=None, validation_alias="SHOPIFY_REDIRECT_URI")
+    shopify_scopes: str = Field(default="read_orders,read_products", validation_alias="SHOPIFY_SCOPES")
+    shopify_api_version: str = Field(default="2025-10", validation_alias="SHOPIFY_API_VERSION")
+    shopify_connect_success_redirect: str | None = Field(
+        default=None,
+        validation_alias="SHOPIFY_CONNECT_SUCCESS_REDIRECT",
+    )
+    shopify_connect_error_redirect: str | None = Field(
+        default=None,
+        validation_alias="SHOPIFY_CONNECT_ERROR_REDIRECT",
+    )
 
 
 settings = Settings()

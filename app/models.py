@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -327,6 +328,15 @@ class Integration(Base):
     meta_pages: Mapped[list[MetaPage]] = relationship(
         back_populates="integration", cascade="all, delete-orphan"
     )
+    meta_ad_accounts: Mapped[list[MetaAdAccount]] = relationship(
+        back_populates="integration", cascade="all, delete-orphan"
+    )
+    meta_ads_insights_daily: Mapped[list[MetaAdsInsightDaily]] = relationship(
+        back_populates="integration", cascade="all, delete-orphan"
+    )
+    shopify_connections: Mapped[list[ShopifyConnection]] = relationship(
+        back_populates="integration", cascade="all, delete-orphan"
+    )
 
 
 class IntegrationAccount(Base):
@@ -412,6 +422,179 @@ class MetaPage(Base):
     )
 
     integration: Mapped[Integration] = relationship(back_populates="meta_pages")
+
+
+class MetaAdAccount(Base):
+    __tablename__ = "meta_ad_accounts"
+    __table_args__ = (
+        UniqueConstraint("integration_id", "account_id", name="uq_meta_ad_accounts_integration_account"),
+        Index("ix_meta_ad_accounts_integration_id", "integration_id"),
+        Index("ix_meta_ad_accounts_workspace_id", "workspace_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    integration_id: Mapped[int] = mapped_column(ForeignKey("integrations.id"), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    account_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    currency: Mapped[Optional[str]] = mapped_column(String(10))
+    timezone_name: Mapped[Optional[str]] = mapped_column(String(100))
+    account_status: Mapped[Optional[str]] = mapped_column(String(50))
+    business_id: Mapped[Optional[str]] = mapped_column(String(255))
+    business_name: Mapped[Optional[str]] = mapped_column(String(255))
+    is_selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    integration: Mapped[Integration] = relationship(back_populates="meta_ad_accounts")
+    workspace: Mapped[Workspace] = relationship()
+    insights_daily: Mapped[list[MetaAdsInsightDaily]] = relationship(
+        back_populates="meta_ad_account", cascade="all, delete-orphan"
+    )
+
+
+class MetaAdsInsightDaily(Base):
+    __tablename__ = "meta_ads_insights_daily"
+    __table_args__ = (
+        UniqueConstraint(
+            "meta_ad_account_id",
+            "date_start",
+            "campaign_id",
+            "adset_id",
+            "ad_id",
+            name="uq_meta_ads_insights_daily_grain",
+        ),
+        Index("ix_meta_ads_insights_daily_integration_id", "integration_id"),
+        Index("ix_meta_ads_insights_daily_workspace_id", "workspace_id"),
+        Index("ix_meta_ads_insights_daily_meta_ad_account_id", "meta_ad_account_id"),
+        Index("ix_meta_ads_insights_daily_date_start", "date_start"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    integration_id: Mapped[int] = mapped_column(ForeignKey("integrations.id"), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    meta_ad_account_id: Mapped[int] = mapped_column(ForeignKey("meta_ad_accounts.id"), nullable=False)
+    date_start: Mapped[date] = mapped_column(Date, nullable=False)
+    date_stop: Mapped[date] = mapped_column(Date, nullable=False)
+    spend: Mapped[Optional[float]] = mapped_column(Numeric(14, 4))
+    impressions: Mapped[Optional[int]] = mapped_column(Integer)
+    reach: Mapped[Optional[int]] = mapped_column(Integer)
+    clicks: Mapped[Optional[int]] = mapped_column(Integer)
+    inline_link_clicks: Mapped[Optional[int]] = mapped_column(Integer)
+    ctr: Mapped[Optional[float]] = mapped_column(Numeric(12, 4))
+    cpc: Mapped[Optional[float]] = mapped_column(Numeric(14, 4))
+    cpm: Mapped[Optional[float]] = mapped_column(Numeric(14, 4))
+    frequency: Mapped[Optional[float]] = mapped_column(Numeric(12, 4))
+    actions: Mapped[Optional[list[dict]]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    cost_per_action_type: Mapped[Optional[list[dict]]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    campaign_id: Mapped[Optional[str]] = mapped_column(String(255))
+    campaign_name: Mapped[Optional[str]] = mapped_column(String(255))
+    adset_id: Mapped[Optional[str]] = mapped_column(String(255))
+    adset_name: Mapped[Optional[str]] = mapped_column(String(255))
+    ad_id: Mapped[Optional[str]] = mapped_column(String(255))
+    ad_name: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    integration: Mapped[Integration] = relationship(back_populates="meta_ads_insights_daily")
+    workspace: Mapped[Workspace] = relationship()
+    meta_ad_account: Mapped[MetaAdAccount] = relationship(back_populates="insights_daily")
+
+
+class ShopifyConnection(Base):
+    __tablename__ = "shopify_connections"
+    __table_args__ = (
+        UniqueConstraint("user_id", "shop_domain", name="uq_shopify_connections_user_shop_domain"),
+        UniqueConstraint("integration_id", name="uq_shopify_connections_integration_id"),
+        Index("ix_shopify_connections_user_id", "user_id"),
+        Index("ix_shopify_connections_workspace_id", "workspace_id"),
+        Index("ix_shopify_connections_shop_domain", "shop_domain"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    integration_id: Mapped[int] = mapped_column(ForeignKey("integrations.id", ondelete="CASCADE"), nullable=False)
+    shop_domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    shop_name: Mapped[Optional[str]] = mapped_column(String(255))
+    access_token_encrypted: Mapped[Optional[str]] = mapped_column(Text)
+    scopes: Mapped[Optional[list[str]]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="disconnected")
+    last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    integration: Mapped[Integration] = relationship(back_populates="shopify_connections")
+    workspace: Mapped[Workspace] = relationship()
+    user: Mapped[User] = relationship()
+    snapshots: Mapped[list[ShopifySnapshot]] = relationship(
+        back_populates="connection", cascade="all, delete-orphan"
+    )
+
+
+class ShopifySnapshot(Base):
+    __tablename__ = "shopify_snapshots"
+    __table_args__ = (
+        Index("ix_shopify_snapshots_user_id", "user_id"),
+        Index("ix_shopify_snapshots_workspace_id", "workspace_id"),
+        Index("ix_shopify_snapshots_connection_id", "connection_id"),
+        Index("ix_shopify_snapshots_dataset_id", "dataset_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    connection_id: Mapped[int] = mapped_column(ForeignKey("shopify_connections.id", ondelete="CASCADE"), nullable=False)
+    dataset_id: Mapped[Optional[int]] = mapped_column(ForeignKey("datasets.id", ondelete="SET NULL"))
+    timeframe: Mapped[Optional[dict]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    metrics_json: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=False)
+    raw_json: Mapped[Optional[dict]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    connection: Mapped[ShopifyConnection] = relationship(back_populates="snapshots")
+    workspace: Mapped[Workspace] = relationship()
+    user: Mapped[User] = relationship()
+    dataset: Mapped[Optional[Dataset]] = relationship()
+
+
+class ShopifyOAuthState(Base):
+    __tablename__ = "shopify_oauth_states"
+    __table_args__ = (
+        UniqueConstraint("state_token", name="uq_shopify_oauth_states_state_token"),
+        Index("ix_shopify_oauth_states_user_id", "user_id"),
+        Index("ix_shopify_oauth_states_workspace_id", "workspace_id"),
+        Index("ix_shopify_oauth_states_shop_domain", "shop_domain"),
+        Index("ix_shopify_oauth_states_expires_at", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    shop_domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    state_token: Mapped[str] = mapped_column(String(1024), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(50), nullable=False, default="shopify_oauth")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class ReferralPartner(Base):

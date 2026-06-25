@@ -86,6 +86,20 @@ class AuthMessageOut(BaseModel):
     message: str
 
 
+class MetaTrackingEventIn(BaseModel):
+    event_name: str
+    event_id: Optional[str] = None
+    event_source_url: Optional[str] = None
+    fbp: Optional[str] = None
+    fbc: Optional[str] = None
+    custom_data: Optional[dict[str, Any]] = None
+
+
+class MetaTrackingEventOut(BaseModel):
+    ok: bool = True
+    sent: bool = False
+
+
 class ReferralPartnerCreateIn(BaseModel):
     name: str
     code: str
@@ -877,6 +891,77 @@ class MetaSelectAccountIn(BaseModel):
     ad_account_id: str
 
 
+class MetaAdsConnectOut(BaseModel):
+    auth_url: str
+    integration_id: int
+    scope: str
+    message: str
+
+
+class MetaAdsAccountOut(BaseModel):
+    id: int
+    account_id: str
+    name: str
+    currency: Optional[str] = None
+    timezone_name: Optional[str] = None
+    account_status: Optional[str] = None
+    business_id: Optional[str] = None
+    business_name: Optional[str] = None
+    is_selected: bool = False
+    last_synced_at: Optional[datetime] = None
+    source: Optional[str] = None
+
+
+class MetaAdsStatusOut(BaseModel):
+    integration_id: int
+    workspace_id: int
+    provider: str = "meta_ads"
+    connected: bool = False
+    status: str = "disconnected"
+    scope: str
+    selected_account: Optional[MetaAdsAccountOut] = None
+    accounts_count: int = 0
+    last_synced_at: Optional[datetime] = None
+    reconnect_required: bool = False
+    permission_missing: bool = False
+    message: Optional[str] = None
+
+
+class MetaAdsSelectAccountIn(BaseModel):
+    integration_id: int
+    ad_account_id: str
+
+
+class MetaAdsSyncIn(BaseModel):
+    integration_id: int
+    ad_account_id: Optional[str] = None
+    timeframe: str = "last_30d"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+class MetaAdsSyncOut(BaseModel):
+    integration_id: int
+    dataset_id: int
+    dataset_file_id: int
+    provider: str = "meta_ads"
+    source_type: str = "meta_ads"
+    ad_account_id: str
+    ad_account_name: str
+    status: str
+    timeframe: Optional[dict] = None
+    last_synced_at: Optional[datetime] = None
+
+
+class MetaAdsDisconnectOut(BaseModel):
+    success: bool = True
+    provider: str = "meta_ads"
+    status: str = "disconnected"
+    cleared_accounts: int = 0
+    cleared_rows: int = 0
+    token_revoked: bool = False
+
+
 class MetaSelectAccountManualIn(BaseModel):
     integration_id: int
     ad_account_id: str
@@ -908,6 +993,139 @@ class MetaDisconnectOut(BaseModel):
     )
     cleared: MetaDisconnectClearedOut = Field(default_factory=MetaDisconnectClearedOut)
     meta_revoke_status: str = "skipped"
+
+
+class TikTokConnectOut(BaseModel):
+    auth_url: str
+    integration_id: int
+    status: str = "pending"
+
+
+class TikTokCallbackCompleteIn(BaseModel):
+    code: Optional[str] = None
+    auth_code: Optional[str] = None
+    state: str
+
+
+class TikTokAdvertiserAccountOut(BaseModel):
+    advertiser_id: str
+    advertiser_name: str
+    currency: Optional[str] = None
+    timezone: Optional[str] = None
+    selected: bool = False
+    last_synced_at: Optional[datetime] = None
+
+
+class TikTokAdvertiserAccountsOut(BaseModel):
+    accounts: list[TikTokAdvertiserAccountOut] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
+class TikTokCallbackCompleteOut(BaseModel):
+    connected: bool = True
+    integration_id: int
+    advertisers_count: int = 0
+    selected_account: Optional[TikTokAdvertiserAccountOut] = None
+    status: str = "connected"
+    message: Optional[str] = None
+
+
+class TikTokSelectAccountIn(BaseModel):
+    advertiser_id: str
+    integration_id: Optional[int] = None
+    workspace_id: Optional[int] = None
+
+
+class TikTokSyncIn(BaseModel):
+    advertiser_id: Optional[str] = None
+    integration_id: Optional[int] = None
+    workspace_id: Optional[int] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+class TikTokSyncOut(BaseModel):
+    integration_id: int
+    advertiser_id: str
+    advertiser_name: str
+    dataset_id: int
+    dataset_file_id: int
+    status: str
+    start_date: str
+    end_date: str
+    metrics_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class TikTokStatusOut(BaseModel):
+    connected: bool = False
+    status: str = "disconnected"
+    advertisers_count: int = 0
+    selected_advertiser: Optional[TikTokAdvertiserAccountOut] = None
+    last_sync: Optional[datetime] = None
+    missing_env: bool = False
+    integration_id: Optional[int] = None
+
+
+class TikTokDisconnectOut(BaseModel):
+    success: bool = True
+    provider: str = "tiktok_ads"
+    status: str = "disconnected"
+    advertisers_cleared: int = 0
+    selected_account_cleared: bool = False
+    tokens_cleared: bool = False
+
+
+class ShopifyStatusOut(BaseModel):
+    connected: bool = False
+    status: str = "disconnected"
+    provider: str = "shopify"
+    integration_id: Optional[int] = None
+    shop_domain: Optional[str] = None
+    shop_name: Optional[str] = None
+    last_sync_at: Optional[datetime] = None
+    reconnect_required: bool = False
+    message: Optional[str] = None
+
+
+class ShopifySyncIn(BaseModel):
+    workspace_id: Optional[int] = None
+    timeframe: str = "last_30d"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+class ShopifySyncOut(BaseModel):
+    integration_id: int
+    connection_id: int
+    dataset_id: int
+    dataset_file_id: int
+    provider: str = "shopify"
+    source_type: str = "shopify"
+    shop_domain: str
+    shop_name: Optional[str] = None
+    status: str
+    timeframe: dict[str, Any]
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    last_synced_at: Optional[datetime] = None
+
+
+class ShopifyDisconnectOut(BaseModel):
+    success: bool = True
+    provider: str = "shopify"
+    status: str = "disconnected"
+    token_cleared: bool = False
+
+
+class ShopifyReportCreateIn(BaseModel):
+    dataset_id: int
+    title: Optional[str] = None
+    locale: str = "en"
+    timeframe: str = "last_30d"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    requested_slides: Optional[int] = None
+    slide_count: Optional[int] = None
+    ai_mode: Literal["standard", "agents"] = "standard"
 
 
 class MetaSelectPageIn(BaseModel):
