@@ -2498,14 +2498,14 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         ]
         if reach_values:
             reach = sum(reach_values)
-    impressions = _to_int(row.get("impressions"))
+    impressions = _to_int(row.get("impressions_total"))
     if impressions is None:
-        impressions = _to_int(row.get("impressions_total"))
+        impressions = _to_int(row.get("impressions"))
     if impressions is None and is_meta_ads:
         impressions = _to_int(row.get("total_impressions"))
     if impressions is None:
         impressions = _to_int(normalized_metrics.get("impressions_total"))
-    if impressions is None:
+    if impressions is None and is_meta_ads:
         impression_values = [
             int(point["value"])
             for point in impressions_daily
@@ -2520,9 +2520,9 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         followers = _to_int(row.get("followers_count"))
     if followers is None:
         followers = _to_int(normalized_metrics.get("followers_growth_total"))
-    engagement = _to_int(row.get("engagement"))
+    engagement = _to_int(row.get("engagement_total"))
     if engagement is None:
-        engagement = _to_int(row.get("engagement_total"))
+        engagement = _to_int(row.get("engagement"))
     if engagement is None and is_meta_ads:
         engagement = _to_int(row.get("total_clicks"))
     if engagement is None:
@@ -2627,13 +2627,38 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         "spend": row.get("total_spend"),
         "total_spend": row.get("total_spend"),
         "followers": followers,
+        "followers_total": _to_int(row.get("followers_total"))
+        if _to_int(row.get("followers_total")) is not None
+        else _to_int(normalized_metrics.get("followers_total"))
+        if _to_int(normalized_metrics.get("followers_total")) is not None
+        else followers,
         "reach": reach,
+        "reach_total": _to_int(row.get("reach_total"))
+        if _to_int(row.get("reach_total")) is not None
+        else _to_int(normalized_metrics.get("reach_total"))
+        if _to_int(normalized_metrics.get("reach_total")) is not None
+        else reach,
         "engagement": engagement,
+        "engagement_total": _to_int(row.get("engagement_total"))
+        if _to_int(row.get("engagement_total")) is not None
+        else _to_int(normalized_metrics.get("engagement_total"))
+        if _to_int(normalized_metrics.get("engagement_total")) is not None
+        else engagement,
         "total_interactions": _to_int(row.get("total_interactions")),
         "accounts_engaged": _to_int(row.get("accounts_engaged")),
         "impressions": impressions,
+        "impressions_total": _to_int(row.get("impressions_total"))
+        if _to_int(row.get("impressions_total")) is not None
+        else _to_int(normalized_metrics.get("impressions_total"))
+        if _to_int(normalized_metrics.get("impressions_total")) is not None
+        else impressions,
         "profile_visits": profile_visits,
         "views": views,
+        "page_views_total": _to_int(row.get("page_views_total"))
+        if _to_int(row.get("page_views_total")) is not None
+        else _to_int(normalized_metrics.get("page_views_total"))
+        if _to_int(normalized_metrics.get("page_views_total")) is not None
+        else views,
         "content_interactions": content_interactions,
         "link_clicks": link_clicks,
         "followers_growth": followers_growth,

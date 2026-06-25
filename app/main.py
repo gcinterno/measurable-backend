@@ -7828,6 +7828,138 @@ def _log_facebook_pages_metric_event(
     )
 
 
+def _log_facebook_graph_request(
+    *,
+    page_id: str,
+    page_name: str,
+    since: str | None,
+    until: str | None,
+    period: str,
+    metric_requested: str,
+) -> None:
+    logger.info(
+        "FACEBOOK_GRAPH_PAGE_INSIGHTS_REQUEST",
+        extra={
+            "page_id": page_id,
+            "page_name": page_name,
+            "since": since,
+            "until": until,
+            "period": period,
+            "metric_requested": metric_requested,
+            "metric_returned": None,
+            "raw_values": [],
+            "raw_sum": None,
+            "points_count": 0,
+            "normalized_field": None,
+            "unavailable_reason": None,
+        },
+    )
+
+
+def _log_facebook_graph_raw_response(
+    *,
+    page_id: str,
+    page_name: str,
+    since: str | None,
+    until: str | None,
+    period: str,
+    metric_requested: str,
+    metric_returned: str | None,
+    raw_body: Any,
+    raw_values: list[Any],
+    raw_sum: Any,
+    points_count: int,
+    normalized_field: str,
+    unavailable_reason: str | None,
+) -> None:
+    logger.info(
+        "FACEBOOK_GRAPH_PAGE_INSIGHTS_RAW_RESPONSE",
+        extra={
+            "page_id": page_id,
+            "page_name": page_name,
+            "since": since,
+            "until": until,
+            "period": period,
+            "metric_requested": metric_requested,
+            "metric_returned": metric_returned,
+            "raw_values": raw_values,
+            "raw_sum": raw_sum,
+            "points_count": points_count,
+            "normalized_field": normalized_field,
+            "unavailable_reason": unavailable_reason,
+            "raw_body": raw_body,
+        },
+    )
+
+
+def _log_facebook_metric_raw_values(
+    *,
+    page_id: str,
+    page_name: str,
+    since: str | None,
+    until: str | None,
+    period: str,
+    metric_requested: str,
+    metric_returned: str | None,
+    raw_values: list[Any],
+    raw_sum: Any,
+    points_count: int,
+    normalized_field: str,
+    unavailable_reason: str | None,
+) -> None:
+    logger.info(
+        "FACEBOOK_METRIC_RAW_VALUES",
+        extra={
+            "page_id": page_id,
+            "page_name": page_name,
+            "since": since,
+            "until": until,
+            "period": period,
+            "metric_requested": metric_requested,
+            "metric_returned": metric_returned,
+            "raw_values": raw_values,
+            "raw_sum": raw_sum,
+            "points_count": points_count,
+            "normalized_field": normalized_field,
+            "unavailable_reason": unavailable_reason,
+        },
+    )
+
+
+def _log_facebook_metric_normalized(
+    *,
+    page_id: str,
+    page_name: str,
+    since: str | None,
+    until: str | None,
+    period: str,
+    metric_requested: str,
+    metric_returned: str | None,
+    raw_values: list[Any],
+    raw_sum: Any,
+    points_count: int,
+    normalized_field: str,
+    unavailable_reason: str | None,
+) -> None:
+    logger.info(
+        "FACEBOOK_METRIC_NORMALIZED",
+        extra={
+            "page_id": page_id,
+            "page_name": page_name,
+            "since": since,
+            "until": until,
+            "period": period,
+            "metric_requested": metric_requested,
+            "metric_returned": metric_returned,
+            "raw_values": raw_values,
+            "raw_sum": raw_sum,
+            "points_count": points_count,
+            "normalized_field": normalized_field,
+            "unavailable_reason": unavailable_reason,
+        },
+    )
+
+
 def _meta_daily_series_bounds(points: list[dict] | None) -> tuple[str | None, str | None]:
     dated_points = [
         str(point.get("date"))
@@ -8291,10 +8423,19 @@ def _build_general_insights_slide_payload(dataset_row: dict[str, object]) -> dic
 def _fetch_meta_pages_reach_payload(
     access_token: str,
     page_id: str,
+    page_name: str,
     timeframe_config: dict[str, str],
     integration_id: int,
 ) -> dict[str, object | None]:
     for metric_name in META_PAGES_REACH_METRIC_CANDIDATES:
+        _log_facebook_graph_request(
+            page_id=page_id,
+            page_name=page_name,
+            since=timeframe_config["since"],
+            until=timeframe_config["until"],
+            period="day",
+            metric_requested=metric_name,
+        )
         try:
             metric_insight = fetch_page_insights(
                 access_token,
@@ -8320,6 +8461,36 @@ def _fetch_meta_pages_reach_payload(
 
         metric_value = metric_insight.get(metric_name)
         if metric_value is None:
+            unavailable_reason = "Meta did not return this metric for the selected period."
+            _log_facebook_graph_raw_response(
+                page_id=page_id,
+                page_name=page_name,
+                since=timeframe_config["since"],
+                until=timeframe_config["until"],
+                period="day",
+                metric_requested=metric_name,
+                metric_returned=metric_name,
+                raw_body=metric_insight.get("_meta_raw_body"),
+                raw_values=[],
+                raw_sum=None,
+                points_count=0,
+                normalized_field="reach_total",
+                unavailable_reason=unavailable_reason,
+            )
+            _log_facebook_metric_normalized(
+                page_id=page_id,
+                page_name=page_name,
+                since=timeframe_config["since"],
+                until=timeframe_config["until"],
+                period="day",
+                metric_requested=metric_name,
+                metric_returned=metric_name,
+                raw_values=[],
+                raw_sum=None,
+                points_count=0,
+                normalized_field="reach_total",
+                unavailable_reason=unavailable_reason,
+            )
             logger.info(
                 "Meta Pages reach metric returned no value",
                 extra={
@@ -8354,6 +8525,51 @@ def _fetch_meta_pages_reach_payload(
             )
             reach_daily = []
 
+        raw_values = [point.get("value") for point in reach_daily if isinstance(point, dict)]
+        raw_sum = _sum_meta_daily_series(reach_daily)
+        _log_facebook_graph_raw_response(
+            page_id=page_id,
+            page_name=page_name,
+            since=timeframe_config["since"],
+            until=timeframe_config["until"],
+            period="day",
+            metric_requested=metric_name,
+            metric_returned=metric_name,
+            raw_body=metric_insight.get("_meta_raw_body"),
+            raw_values=raw_values,
+            raw_sum=raw_sum,
+            points_count=len(reach_daily),
+            normalized_field="reach_total",
+            unavailable_reason=None,
+        )
+        _log_facebook_metric_raw_values(
+            page_id=page_id,
+            page_name=page_name,
+            since=timeframe_config["since"],
+            until=timeframe_config["until"],
+            period="day",
+            metric_requested=metric_name,
+            metric_returned=metric_name,
+            raw_values=raw_values,
+            raw_sum=raw_sum,
+            points_count=len(reach_daily),
+            normalized_field="reach_total",
+            unavailable_reason=None,
+        )
+        _log_facebook_metric_normalized(
+            page_id=page_id,
+            page_name=page_name,
+            since=timeframe_config["since"],
+            until=timeframe_config["until"],
+            period="day",
+            metric_requested=metric_name,
+            metric_returned=metric_name,
+            raw_values=[metric_value],
+            raw_sum=metric_value,
+            points_count=len(reach_daily),
+            normalized_field="reach_total",
+            unavailable_reason=None,
+        )
         logger.info(
             "Meta Pages reach metric resolved",
             extra={
@@ -8383,10 +8599,19 @@ def _fetch_meta_pages_reach_payload(
 def _fetch_meta_pages_impressions_payload(
     access_token: str,
     page_id: str,
+    page_name: str,
     timeframe_config: dict[str, str],
     integration_id: int,
 ) -> dict[str, object | None]:
     for metric_name in META_PAGES_IMPRESSIONS_METRIC_CANDIDATES:
+        _log_facebook_graph_request(
+            page_id=page_id,
+            page_name=page_name,
+            since=timeframe_config["since"],
+            until=timeframe_config["until"],
+            period="day",
+            metric_requested=metric_name,
+        )
         try:
             metric_insight = fetch_page_insights(
                 access_token,
@@ -8412,6 +8637,36 @@ def _fetch_meta_pages_impressions_payload(
 
         metric_value = metric_insight.get(metric_name)
         if metric_value is None:
+            unavailable_reason = "Meta did not return this metric for the selected period."
+            _log_facebook_graph_raw_response(
+                page_id=page_id,
+                page_name=page_name,
+                since=timeframe_config["since"],
+                until=timeframe_config["until"],
+                period="day",
+                metric_requested=metric_name,
+                metric_returned=metric_name,
+                raw_body=metric_insight.get("_meta_raw_body"),
+                raw_values=[],
+                raw_sum=None,
+                points_count=0,
+                normalized_field="impressions_total",
+                unavailable_reason=unavailable_reason,
+            )
+            _log_facebook_metric_normalized(
+                page_id=page_id,
+                page_name=page_name,
+                since=timeframe_config["since"],
+                until=timeframe_config["until"],
+                period="day",
+                metric_requested=metric_name,
+                metric_returned=metric_name,
+                raw_values=[],
+                raw_sum=None,
+                points_count=0,
+                normalized_field="impressions_total",
+                unavailable_reason=unavailable_reason,
+            )
             logger.info(
                 "Meta Pages impressions metric returned no value",
                 extra={
@@ -8446,6 +8701,51 @@ def _fetch_meta_pages_impressions_payload(
             )
             impressions_daily = []
 
+        raw_values = [point.get("value") for point in impressions_daily if isinstance(point, dict)]
+        raw_sum = _sum_meta_daily_series(impressions_daily)
+        _log_facebook_graph_raw_response(
+            page_id=page_id,
+            page_name=page_name,
+            since=timeframe_config["since"],
+            until=timeframe_config["until"],
+            period="day",
+            metric_requested=metric_name,
+            metric_returned=metric_name,
+            raw_body=metric_insight.get("_meta_raw_body"),
+            raw_values=raw_values,
+            raw_sum=raw_sum,
+            points_count=len(impressions_daily),
+            normalized_field="impressions_total",
+            unavailable_reason=None,
+        )
+        _log_facebook_metric_raw_values(
+            page_id=page_id,
+            page_name=page_name,
+            since=timeframe_config["since"],
+            until=timeframe_config["until"],
+            period="day",
+            metric_requested=metric_name,
+            metric_returned=metric_name,
+            raw_values=raw_values,
+            raw_sum=raw_sum,
+            points_count=len(impressions_daily),
+            normalized_field="impressions_total",
+            unavailable_reason=None,
+        )
+        _log_facebook_metric_normalized(
+            page_id=page_id,
+            page_name=page_name,
+            since=timeframe_config["since"],
+            until=timeframe_config["until"],
+            period="day",
+            metric_requested=metric_name,
+            metric_returned=metric_name,
+            raw_values=[metric_value],
+            raw_sum=metric_value,
+            points_count=len(impressions_daily),
+            normalized_field="impressions_total",
+            unavailable_reason=None,
+        )
         logger.info(
             "Meta Pages impressions metric resolved",
             extra={
@@ -8475,6 +8775,7 @@ def _fetch_meta_pages_impressions_payload(
 def _fetch_meta_pages_metric_payload(
     access_token: str,
     page_id: str,
+    page_name: str,
     timeframe_config: dict[str, str],
     integration_id: int,
     *,
@@ -8482,6 +8783,14 @@ def _fetch_meta_pages_metric_payload(
     label: str,
     daily_key: str = "daily_series",
 ) -> dict[str, object | None]:
+    _log_facebook_graph_request(
+        page_id=page_id,
+        page_name=page_name,
+        since=timeframe_config["since"],
+        until=timeframe_config["until"],
+        period="day",
+        metric_requested=metric_name,
+    )
     try:
         metric_insight = fetch_page_insights(
             access_token,
@@ -8536,6 +8845,51 @@ def _fetch_meta_pages_metric_payload(
         )
         daily_series = []
 
+    raw_values = [point.get("value") for point in daily_series if isinstance(point, dict)]
+    raw_sum = _sum_meta_daily_series(daily_series)
+    _log_facebook_graph_raw_response(
+        page_id=page_id,
+        page_name=page_name,
+        since=timeframe_config["since"],
+        until=timeframe_config["until"],
+        period="day",
+        metric_requested=metric_name,
+        metric_returned=metric_name,
+        raw_body=metric_insight.get("_meta_raw_body"),
+        raw_values=raw_values,
+        raw_sum=raw_sum,
+        points_count=len(daily_series),
+        normalized_field=daily_key,
+        unavailable_reason=None,
+    )
+    _log_facebook_metric_raw_values(
+        page_id=page_id,
+        page_name=page_name,
+        since=timeframe_config["since"],
+        until=timeframe_config["until"],
+        period="day",
+        metric_requested=metric_name,
+        metric_returned=metric_name,
+        raw_values=raw_values,
+        raw_sum=raw_sum,
+        points_count=len(daily_series),
+        normalized_field=daily_key,
+        unavailable_reason=None,
+    )
+    _log_facebook_metric_normalized(
+        page_id=page_id,
+        page_name=page_name,
+        since=timeframe_config["since"],
+        until=timeframe_config["until"],
+        period="day",
+        metric_requested=metric_name,
+        metric_returned=metric_name,
+        raw_values=[metric_value],
+        raw_sum=metric_value,
+        points_count=len(daily_series),
+        normalized_field=daily_key,
+        unavailable_reason=None,
+    )
     logger.info(
         "Meta Pages metric resolved",
         extra={
@@ -10290,15 +10644,18 @@ def _multi_source_normalize_source(source: dict[str, Any], *, dataset: Dataset, 
         "impressions": report_inputs.get("impressions"),
         "engagement": report_inputs.get("engagement"),
         "profile_visits": report_inputs.get("profile_visits"),
+        "page_visits": report_inputs.get("profile_visits"),
         "link_clicks": report_inputs.get("link_clicks"),
         "views": report_inputs.get("views"),
         "content_interactions": report_inputs.get("content_interactions"),
     }
     timeseries = {
         "followers_growth": report_inputs.get("followers_growth_daily") or [],
+        "followers": report_inputs.get("followers_daily") or report_inputs.get("fan_count_daily") or report_inputs.get("audience_daily") or [],
         "reach": report_inputs.get("reach_daily") or [],
         "impressions": report_inputs.get("impressions_daily") or [],
         "engagement": report_inputs.get("daily_engagement") or report_inputs.get("engagement_daily") or [],
+        "page_visits": report_inputs.get("page_visits_daily") or report_inputs.get("page_views_daily") or [],
     }
     posts = normalize_meta_recent_posts(report_inputs.get("recent_posts"))
     raw_summary_parts = [build_meta_pages_summary(report_inputs, locale)]
@@ -10316,6 +10673,7 @@ def _multi_source_normalize_source(source: dict[str, Any], *, dataset: Dataset, 
         "content": posts,
         "raw_summary": " ".join(part.strip() for part in raw_summary_parts if str(part or "").strip()),
         "report_inputs": report_inputs,
+        "report_timeframe": dataset_data.get("timeframe") if isinstance(dataset_data.get("timeframe"), dict) else {},
     }
 
 
@@ -10408,49 +10766,155 @@ def _multi_source_block_text_lines(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items if str(item or "").strip())
 
 
+def _top_content_title(post: dict[str, Any] | None) -> str:
+    if not isinstance(post, dict):
+        return "Untitled content"
+    return (
+        str(
+            post.get("title")
+            or post.get("message")
+            or post.get("caption")
+            or post.get("text")
+            or "Untitled content"
+        ).strip()
+        or "Untitled content"
+    )
+
+
+def _top_content_items(posts: list[dict[str, Any]], *, limit: int = 3) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for post in sorted(posts, key=_meta_post_score, reverse=True)[:limit]:
+        reach_value = _meta_number(post.get("reach"))
+        engagement_value = _meta_post_score(post)
+        items.append(
+            {
+                "id": post.get("id"),
+                "title": _top_content_title(post),
+                "date": post.get("created_time") or post.get("published_at") or post.get("date"),
+                "source": post.get("_source_label") or post.get("_account_name"),
+                "reach": reach_value,
+                "impressions": _meta_number(post.get("impressions")),
+                "engagement": engagement_value,
+                "engagement_rate": round((engagement_value / reach_value) * 100, 2)
+                if reach_value not in (None, 0)
+                else None,
+                "reactions": _meta_number(post.get("reactions")),
+                "comments": _meta_number(post.get("comments")),
+                "shares": _meta_number(post.get("shares")),
+                "saves": _meta_number(post.get("saves")),
+            }
+        )
+    return items
+
+
+def _posts_chart_payload(posts: list[dict[str, Any]], *, timeframe: dict[str, Any], title: str) -> dict[str, Any]:
+    grouped: dict[str, int] = {}
+    for post in posts:
+        post_date = _meta_post_date(post)
+        if not post_date:
+            continue
+        grouped[post_date] = grouped.get(post_date, 0) + 1
+    points = [
+        {"date": day, "label": _meta_point_label(day), "value": value}
+        for day, value in sorted(grouped.items())
+    ]
+    return {
+        "label": title,
+        "metric": "posts",
+        "points": points,
+        "data": points,
+        "series": points,
+        "timeframe": timeframe,
+        "is_available": bool(points),
+    }
+
+
 def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any]]:
-    # LEGACY / candidate for removal after frontend/backend contract is stable.
-    # Recommended source of truth for social 5-slide reports is build_5_blocks().
     sources = list(context.get("sources") or [])
     report_timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
     combined = context.get("combined") if isinstance(context.get("combined"), dict) else {}
     period_label = str(report_timeframe.get("label") or "Selected period")
     source_labels = [str(source.get("label") or source.get("account_name") or "Source") for source in sources[:2]]
     subtitle = f"{' + '.join(source_labels)} performance report · {period_label}"
-    top_content = combined.get("top_content") if isinstance(combined.get("top_content"), dict) else None
-    top_content_title = (
-        top_content.get("title")
-        or top_content.get("message")
-        or top_content.get("caption")
-        or "Top cross-platform content"
-        if top_content
-        else "Top cross-platform content"
-    )
-    top_content_text = (
-        f"{top_content.get('_source_label')} led with \"{top_content_title[:120]}\" and generated "
-        f"{_meta_format_number(_meta_post_score(top_content))} engagement signals."
-        if top_content
-        else "No post-level content was available across the selected sources."
-    )
-    summary_lines = [
-        f"Total reach: {_meta_format_number(combined.get('total_reach'))}",
-        f"Total impressions: {_meta_format_number(combined.get('total_impressions'))}",
-        f"Total engagement: {_meta_format_number(combined.get('total_engagement'))}",
-        f"Average engagement rate: {_multi_source_format_rate(combined.get('average_engagement_rate'))}",
-    ]
-    strongest_source = combined.get("strongest_source") if isinstance(combined.get("strongest_source"), dict) else None
-    if strongest_source:
-        summary_lines.append(
-            f"Strongest source: {strongest_source.get('label')} at "
-            f"{_multi_source_format_rate(_meta_number(strongest_source.get('engagement_rate')))} engagement rate"
-        )
-    audience_breakdown = [
-        f"{source.get('label')}: {_meta_format_number(source.get('metrics', {}).get('followers'))} followers"
-        for source in sources
-    ]
     reach_points, reach_series = _multi_source_merge_series(sources, "reach")
     impressions_points, impressions_series = _multi_source_merge_series(sources, "impressions")
     engagement_points, engagement_series = _multi_source_merge_series(sources, "engagement")
+    page_visits_points, page_visits_series = _multi_source_merge_series(sources, "page_visits")
+    followers_points, followers_series = _multi_source_merge_series(sources, "followers")
+    posts = [
+        {**post, "_source_label": source.get("label"), "_account_name": source.get("account_name")}
+        for source in sources
+        for post in list(source.get("content") or [])
+        if isinstance(post, dict)
+    ]
+    top_posts = _top_content_items(posts)
+    top_post = top_posts[0] if top_posts else None
+    content_chart = _posts_chart_payload(posts, timeframe=report_timeframe, title=f"Posting Rhythm - {period_label}")
+
+    def _aggregate_growth(metric: str, current_value) -> dict[str, object]:
+        previous_total = 0.0
+        has_previous = False
+        for source in sources:
+            source_context = {
+                "report_inputs": source.get("report_inputs"),
+                "report_timeframe": source.get("report_timeframe") or report_timeframe,
+            }
+            previous_value = _meta_previous_metric_total(
+                source_context,
+                "page_views" if metric == "page_visits" else metric,
+            )
+            if previous_value is None:
+                continue
+            has_previous = True
+            previous_total += float(previous_value)
+        return _growth_metadata_from_values(current_value, previous_total if has_previous else None)
+
+    reach_growth = _aggregate_growth("reach", combined.get("total_reach"))
+    impressions_growth = _aggregate_growth("impressions", combined.get("total_impressions"))
+    engagement_growth = _aggregate_growth("engagement", combined.get("total_engagement"))
+    page_visits_total = _multi_source_metric_sum(sources, "profile_visits")
+    page_visits_growth = _aggregate_growth("page_visits", page_visits_total)
+    followers_total = _multi_source_metric_sum(sources, "followers")
+    followers_growth = _aggregate_growth("followers", followers_total)
+    post_count = len(posts)
+    strongest_source = combined.get("strongest_source") if isinstance(combined.get("strongest_source"), dict) else None
+    weakest_source = (
+        min(sources, key=lambda source: _meta_number(source.get("metrics", {}).get("engagement")) or float("inf"))
+        if sources
+        else None
+    )
+    executive_lines = [
+        (
+            f"Strongest platform: {strongest_source.get('label')} with "
+            f"{_multi_source_format_rate(_meta_number(strongest_source.get('engagement_rate')))} engagement rate."
+        )
+        if strongest_source
+        else "Strongest platform could not be identified from the selected data.",
+        (
+            f"Weakest platform: {weakest_source.get('label')} based on current engagement volume."
+            if weakest_source
+            else "Weakest platform could not be identified from the selected data."
+        ),
+        f"Combined reach was {_meta_format_number(combined.get('total_reach'))} and combined engagement was {_meta_format_number(combined.get('total_engagement'))}.",
+        (
+            f"Top content came from {top_post.get('source')} and delivered {_meta_format_number(top_post.get('engagement'))} engagement signals."
+            if top_post
+            else "No post-level content was available, so content pattern analysis is limited."
+        ),
+    ]
+    recommendations = [
+        (
+            f"Scale the creative pattern from {strongest_source.get('label')} into the weaker platform during the next cycle."
+            if strongest_source and weakest_source and strongest_source.get("label") != weakest_source.get("label")
+            else "Keep the strongest creative theme consistent across both sources in the next reporting window."
+        ),
+        "Use the next report with the same platform mix so cross-platform movement can be compared period over period.",
+        (
+            f"Build the next content batch around the theme surfaced by \"{top_post.get('title')}\"."
+            if top_post
+            else "Improve post-level tracking so the next report can identify which content pattern wins by platform."
+        ),
+    ]
     return [
         _meta_report_block(
             "title",
@@ -10468,148 +10932,220 @@ def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any
             ["text", "subtitle"],
         ),
         _meta_report_block(
-            "text",
+            "stat",
             2,
             {
-                "title": "Executive Summary",
-                "text": _multi_source_block_text_lines(summary_lines + list(combined.get("key_insights") or [])),
-                "metrics": {
-                    "reach": combined.get("total_reach"),
-                    "impressions": combined.get("total_impressions"),
-                    "engagement": combined.get("total_engagement"),
+                "title": "Reach",
+                "label": "Total Reach",
+                "value": combined.get("total_reach"),
+                "current_value": reach_growth.get("current_value"),
+                "previous_value": reach_growth.get("previous_value"),
+                "growth": reach_growth,
+                "growth_percent": reach_growth.get("growth_percent"),
+                "growth_label": reach_growth.get("growth_label"),
+                "comparison_period": "previous_period",
+                "chart": {
+                    "label": f"Reach - {period_label}",
+                    "metric": "reach",
+                    "points": reach_points,
+                    "data": reach_points,
+                    "series": reach_series,
+                    "timeframe": report_timeframe,
+                    "is_available": bool(reach_points),
                 },
-                "semantic_name": "executive_summary",
+                "points": reach_points,
+                "metrics": {
+                    "main": reach_growth,
+                    "sources": [
+                        {"label": source.get("label"), "value": source.get("metrics", {}).get("reach")}
+                        for source in sources
+                    ],
+                },
+                "text": f"Reach totaled {_meta_format_number(combined.get('total_reach'))} across the selected platforms during {period_label}.",
+                "semantic_name": "reach",
             },
-            ["text"],
         ),
         _meta_report_block(
             "stat",
             3,
             {
-                "title": f"{sources[0].get('label')} Overview",
-                "label": f"{sources[0].get('label')} Overview",
-                "value": sources[0].get("metrics", {}).get("reach"),
-                "current_value": sources[0].get("metrics", {}).get("reach"),
-                "secondary_text": (
-                    f"Impressions {_meta_format_number(sources[0].get('metrics', {}).get('impressions'))} · "
-                    f"Engagement {_meta_format_number(sources[0].get('metrics', {}).get('engagement'))} · "
-                    f"Followers {_meta_format_number(sources[0].get('metrics', {}).get('followers'))}"
-                ),
-                "metrics": sources[0].get("metrics"),
-                "account_name": sources[0].get("account_name"),
-                "provider": sources[0].get("provider"),
-                "source_type": sources[0].get("source_type"),
-                "summary": sources[0].get("raw_summary"),
-                "text": sources[0].get("raw_summary"),
-                "semantic_name": "key_metrics_overview",
+                "title": "Impressions",
+                "label": "Total Impressions",
+                "value": combined.get("total_impressions"),
+                "current_value": impressions_growth.get("current_value"),
+                "previous_value": impressions_growth.get("previous_value"),
+                "growth": impressions_growth,
+                "growth_percent": impressions_growth.get("growth_percent"),
+                "growth_label": impressions_growth.get("growth_label"),
+                "comparison_period": "previous_period",
+                "chart": {
+                    "label": f"Impressions - {period_label}",
+                    "metric": "impressions",
+                    "points": impressions_points,
+                    "data": impressions_points,
+                    "series": impressions_series,
+                    "timeframe": report_timeframe,
+                    "is_available": bool(impressions_points),
+                },
+                "points": impressions_points,
+                "metrics": {
+                    "main": impressions_growth,
+                    "sources": [
+                        {"label": source.get("label"), "value": source.get("metrics", {}).get("impressions")}
+                        for source in sources
+                    ],
+                },
+                "text": f"Impressions reached {_meta_format_number(combined.get('total_impressions'))} across the selected platforms during {period_label}.",
+                "semantic_name": "impressions",
             },
         ),
         _meta_report_block(
             "stat",
             4,
             {
-                "title": f"{sources[1].get('label')} Overview",
-                "label": f"{sources[1].get('label')} Overview",
-                "value": sources[1].get("metrics", {}).get("reach"),
-                "current_value": sources[1].get("metrics", {}).get("reach"),
-                "secondary_text": (
-                    f"Impressions {_meta_format_number(sources[1].get('metrics', {}).get('impressions'))} · "
-                    f"Engagement {_meta_format_number(sources[1].get('metrics', {}).get('engagement'))} · "
-                    f"Followers {_meta_format_number(sources[1].get('metrics', {}).get('followers'))}"
-                ),
-                "metrics": sources[1].get("metrics"),
-                "account_name": sources[1].get("account_name"),
-                "provider": sources[1].get("provider"),
-                "source_type": sources[1].get("source_type"),
-                "summary": sources[1].get("raw_summary"),
-                "text": sources[1].get("raw_summary"),
-                "semantic_name": "key_metrics_overview",
+                "title": "Engagement",
+                "label": "Total Engagement",
+                "value": combined.get("total_engagement"),
+                "current_value": engagement_growth.get("current_value"),
+                "previous_value": engagement_growth.get("previous_value"),
+                "growth": engagement_growth,
+                "growth_percent": engagement_growth.get("growth_percent"),
+                "growth_label": engagement_growth.get("growth_label"),
+                "comparison_period": "previous_period",
+                "chart": {
+                    "label": f"Engagement - {period_label}",
+                    "metric": "engagement",
+                    "points": engagement_points,
+                    "data": engagement_points,
+                    "series": engagement_series,
+                    "timeframe": report_timeframe,
+                    "is_available": bool(engagement_points),
+                },
+                "points": engagement_points,
+                "metrics": {
+                    "main": engagement_growth,
+                    "engagement_rate": {
+                        "value": combined.get("average_engagement_rate"),
+                        "label": _multi_source_format_rate(combined.get("average_engagement_rate")),
+                    },
+                    "sources": [
+                        {
+                            "label": source.get("label"),
+                            "engagement": source.get("metrics", {}).get("engagement"),
+                            "engagement_rate": _multi_source_engagement_rate(source),
+                        }
+                        for source in sources
+                    ],
+                },
+                "text": f"Average engagement rate across the selected sources was {_multi_source_format_rate(combined.get('average_engagement_rate'))}.",
+                "semantic_name": "engagement",
             },
         ),
         _meta_report_block(
             "stat",
             5,
             {
-                "title": "Audience / Followers Comparison",
-                "label": "Audience / Followers Comparison",
-                "value": _multi_source_metric_sum(sources, "followers"),
-                "current_value": _multi_source_metric_sum(sources, "followers"),
-                "secondary_text": " · ".join(audience_breakdown) if audience_breakdown else "No follower data available.",
+                "title": "Page Visits",
+                "label": "Page/Profile Visits",
+                "value": page_visits_total,
+                "current_value": page_visits_growth.get("current_value"),
+                "previous_value": page_visits_growth.get("previous_value"),
+                "growth": page_visits_growth,
+                "growth_percent": page_visits_growth.get("growth_percent"),
+                "growth_label": page_visits_growth.get("growth_label"),
+                "comparison_period": "previous_period",
+                "chart": {
+                    "label": f"Page Visits - {period_label}",
+                    "metric": "page_visits",
+                    "points": page_visits_points,
+                    "data": page_visits_points,
+                    "series": page_visits_series,
+                    "timeframe": report_timeframe,
+                    "is_available": bool(page_visits_points),
+                },
+                "points": page_visits_points,
                 "metrics": {
-                    "total_followers": _multi_source_metric_sum(sources, "followers"),
+                    "main": page_visits_growth,
                     "sources": [
                         {
                             "label": source.get("label"),
-                            "followers": source.get("metrics", {}).get("followers"),
-                            "followers_growth_total": _multi_source_total(
-                                source.get("timeseries", {}).get("followers_growth") or []
-                            ),
+                            "value": source.get("metrics", {}).get("profile_visits"),
                         }
                         for source in sources
                     ],
                 },
+                "text": (
+                    "Daily page-visit history is available for comparison."
+                    if page_visits_points
+                    else "Page visits are available as a total, but daily visit history was not available."
+                ),
+                "semantic_name": "page_visits",
+            },
+        ),
+        _meta_report_block(
+            "stat",
+            6,
+            {
+                "title": "Audience Growth",
+                "label": "Followers / Audience",
+                "value": followers_total,
+                "current_value": followers_growth.get("current_value"),
+                "previous_value": followers_growth.get("previous_value"),
+                "growth": followers_growth,
+                "growth_percent": followers_growth.get("growth_percent"),
+                "growth_label": followers_growth.get("growth_label"),
+                "comparison_period": "previous_period",
+                "chart": {
+                    "label": f"Audience Trend - {period_label}",
+                    "metric": "followers",
+                    "points": followers_points,
+                    "data": followers_points,
+                    "series": followers_series,
+                    "timeframe": report_timeframe,
+                    "is_available": bool(followers_points),
+                },
+                "points": followers_points,
+                "metrics": {
+                    "main": followers_growth,
+                    "sources": [
+                        {
+                            "label": source.get("label"),
+                            "followers": source.get("metrics", {}).get("followers"),
+                            "net_follower_change": _multi_source_total(source.get("timeseries", {}).get("followers_growth") or []),
+                        }
+                        for source in sources
+                    ],
+                },
+                "text": "Audience movement reflects the combined follower base and any source-level follower growth signals available in the synced datasets.",
                 "semantic_name": "audience_growth",
             },
         ),
         _meta_report_block(
-            "chart",
-            6,
-            {
-                "title": "Reach & Impressions Comparison",
-                "label": f"Reach & Impressions Comparison — {period_label}",
-                "metric": "reach",
-                "points": reach_points,
-                "series": reach_series + impressions_series,
-                "comparison_metrics": {
-                    "reach": {source.get("label"): source.get("metrics", {}).get("reach") for source in sources},
-                    "impressions": {
-                        source.get("label"): source.get("metrics", {}).get("impressions") for source in sources
-                    },
-                },
-                "timeframe": report_timeframe,
-                "chart_data": {
-                    "reach_points": reach_points,
-                    "reach_series": reach_series,
-                    "impressions_points": impressions_points,
-                    "impressions_series": impressions_series,
-                },
-                "insight": (
-                    f"Combined reach totaled {_meta_format_number(combined.get('total_reach'))} while impressions "
-                    f"reached {_meta_format_number(combined.get('total_impressions'))} during {period_label}."
-                ),
-                "semantic_name": "reach_overview",
-            },
-        ),
-        _meta_report_block(
-            "chart",
+            "stat",
             7,
             {
-                "title": "Engagement Comparison",
-                "label": f"Engagement Comparison — {period_label}",
-                "metric": "engagement",
-                "points": engagement_points,
-                "series": engagement_series,
-                "timeframe": report_timeframe,
-                "chart_data": {
-                    "engagement_points": engagement_points,
-                    "engagement_series": engagement_series,
-                },
+                "title": "Content Activity",
+                "label": "Published Content",
+                "value": post_count,
+                "current_value": post_count,
+                "previous_value": None,
+                "growth": _growth_metadata_from_values(post_count, None),
+                "growth_percent": None,
+                "growth_label": "N/A",
+                "comparison_period": "previous_period",
+                "chart": content_chart,
+                "points": list(content_chart.get("points") or []),
                 "metrics": {
-                    source.get("label"): {
-                        "engagement": source.get("metrics", {}).get("engagement"),
-                        "engagement_rate": _multi_source_engagement_rate(source),
-                    }
-                    for source in sources
+                    "main": _growth_metadata_from_values(post_count, None),
+                    "average_reach_per_post": round((combined.get("total_reach") or 0) / post_count, 2) if post_count else None,
+                    "average_engagement_per_post": round((combined.get("total_engagement") or 0) / post_count, 2) if post_count else None,
                 },
-                "insight": (
-                    f"Average engagement rate across sources was "
-                    f"{_multi_source_format_rate(combined.get('average_engagement_rate'))}."
-                ),
                 "text": (
-                    f"Average engagement rate across sources was "
-                    f"{_multi_source_format_rate(combined.get('average_engagement_rate'))}."
+                    f"{post_count} tracked content pieces were available across the selected platforms."
+                    if post_count
+                    else "No post-level content was available, so publishing rhythm could not be evaluated."
                 ),
-                "semantic_name": "engagement_overview",
+                "semantic_name": "content_activity",
             },
         ),
         _meta_report_block(
@@ -10617,9 +11153,15 @@ def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any
             8,
             {
                 "title": "Top Performing Content",
-                "text": top_content_text,
-                "top_content": top_content,
-                "semantic_name": "top_performing_post",
+                "text": (
+                    f"{top_post.get('source')} led with \"{top_post.get('title')}\" and generated {_meta_format_number(top_post.get('engagement'))} engagement signals."
+                    if top_post
+                    else "No post-level content exists for the selected sources, so this slide is an empty state."
+                ),
+                "top_posts": top_posts,
+                "main_metric": top_post,
+                "empty_state": top_post is None,
+                "semantic_name": "top_performing_content",
             },
             ["text"],
         ),
@@ -10627,10 +11169,14 @@ def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any
             "text",
             9,
             {
-                "title": "Cross-platform AI Insights",
-                "text": _multi_source_block_text_lines(list(combined.get("key_insights") or [])),
-                "insights": list(combined.get("key_insights") or []),
-                "semantic_name": "insights",
+                "title": "Executive Insights",
+                "text": _multi_source_block_text_lines(executive_lines),
+                "insights": executive_lines,
+                "metrics": {
+                    "strongest_source": strongest_source,
+                    "weakest_source": weakest_source.get("label") if weakest_source else None,
+                },
+                "semantic_name": "executive_insights",
             },
             ["text"],
         ),
@@ -10639,18 +11185,8 @@ def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any
             10,
             {
                 "title": "Recommendations / Next Steps",
-                "text": _multi_source_block_text_lines(
-                    [
-                        "Replicate the creative and publishing patterns from the strongest source across the weaker source.",
-                        "Track the next reporting window with the same two-source configuration to validate cross-platform lift.",
-                        "Use the top-performing content theme as the baseline for the next campaign cycle.",
-                    ]
-                ),
-                "recommendations": [
-                    "Replicate the strongest source pattern.",
-                    "Measure the next period with the same source mix.",
-                    "Build the next content plan around the top-performing theme.",
-                ],
+                "text": _multi_source_block_text_lines(recommendations),
+                "recommendations": recommendations,
                 "semantic_name": "recommendations",
             },
             ["text"],
@@ -10797,7 +11333,11 @@ def _build_summary_metric_card(metric_key: str, payload: dict[str, Any]) -> dict
         "value": simple_value,
         "formatted_value": _format_metric_summary_value(simple_value),
         "is_available": is_available,
-        "description": _metric_summary_description(effective_metric_key) if is_available else METRIC_UNAVAILABLE_MESSAGE,
+        "description": (
+            _metric_summary_description(effective_metric_key)
+            if is_available
+            else str(payload.get("unavailable_message") or payload.get("unavailable_reason") or METRIC_UNAVAILABLE_MESSAGE)
+        ),
     }
 
 
@@ -10824,8 +11364,153 @@ def _facebook_metric_slide_unavailable_message(metric_key: str) -> str:
     messages = {
         "reach": "Meta did not return unique reach for the selected period.",
         "impressions": "Meta did not return impressions for the selected period.",
+        "page_views": "Meta did not return page views for the selected period.",
+        "engagement": "Meta did not return engagement for the selected period.",
+        "followers": "Meta did not return followers for the selected period.",
     }
     return messages.get(metric_key, "Meta did not return this metric for the selected period.")
+
+
+def _facebook_pages_metric_details(context: dict[str, Any], metric_key: str) -> dict[str, Any]:
+    report_inputs = _meta_report_inputs(context)
+    normalized_metrics = (
+        report_inputs.get("normalized_report_metrics")
+        if isinstance(report_inputs.get("normalized_report_metrics"), dict)
+        else {}
+    )
+    audit = (
+        report_inputs.get("facebook_metric_audit")
+        if isinstance(report_inputs.get("facebook_metric_audit"), dict)
+        else {}
+    )
+    audit_entry = audit.get(metric_key) if isinstance(audit.get(metric_key), dict) else {}
+
+    def _candidate_total(values: list[Any]) -> float | int | None:
+        for value in values:
+            normalized = normalizeMetricValue(value)
+            if normalized is not None:
+                return normalized
+        return None
+
+    if metric_key == "reach":
+        daily_candidates = [
+            report_inputs.get("reach_daily"),
+            normalized_metrics.get("daily_reach"),
+            normalized_metrics.get("viewers_daily"),
+            context.get("daily_reach"),
+        ]
+        total_candidates = [
+            report_inputs.get("reach_total"),
+            normalized_metrics.get("reach_total"),
+            normalized_metrics.get("viewers_total"),
+            context.get("reach_total"),
+            report_inputs.get("reach"),
+            context.get("reach"),
+        ]
+        source_metric = (
+            str((audit_entry.get("source_metric") if isinstance(audit_entry, dict) else None) or report_inputs.get("reach_source_metric") or "").strip()
+            or None
+        )
+    elif metric_key == "impressions":
+        daily_candidates = [
+            report_inputs.get("impressions_daily"),
+            normalized_metrics.get("daily_impressions"),
+            normalized_metrics.get("impressions_daily"),
+            context.get("daily_impressions"),
+        ]
+        total_candidates = [
+            report_inputs.get("impressions_total"),
+            normalized_metrics.get("impressions_total"),
+            context.get("impressions_total"),
+            report_inputs.get("impressions"),
+            context.get("impressions"),
+        ]
+        source_metric = (
+            str((audit_entry.get("source_metric") if isinstance(audit_entry, dict) else None) or report_inputs.get("impressions_source_metric") or "").strip()
+            or None
+        )
+    elif metric_key == "engagement":
+        daily_candidates = [
+            report_inputs.get("daily_engagement"),
+            report_inputs.get("engagement_daily"),
+            normalized_metrics.get("daily_engagement"),
+            normalized_metrics.get("interactions_daily"),
+            context.get("daily_engagement"),
+        ]
+        total_candidates = [
+            report_inputs.get("engagement_total"),
+            normalized_metrics.get("engagement_total"),
+            normalized_metrics.get("interactions_total"),
+            context.get("engagement_total"),
+            report_inputs.get("interactions_total"),
+            report_inputs.get("engagement"),
+            context.get("engagement"),
+            report_inputs.get("total_interactions"),
+            report_inputs.get("accounts_engaged"),
+            report_inputs.get("content_interactions"),
+        ]
+        source_metric = (
+            str((audit_entry.get("source_metric") if isinstance(audit_entry, dict) else None) or report_inputs.get("engagement_source_metric") or "").strip()
+            or None
+        )
+    elif metric_key == "page_views":
+        daily_candidates = [
+            report_inputs.get("page_views_daily"),
+            normalized_metrics.get("daily_page_views"),
+            normalized_metrics.get("page_visits_daily"),
+            normalized_metrics.get("views_daily"),
+            report_inputs.get("daily_page_views"),
+            report_inputs.get("page_visits_daily"),
+            context.get("daily_page_views"),
+        ]
+        total_candidates = [
+            report_inputs.get("page_views_total"),
+            normalized_metrics.get("page_views_total"),
+            normalized_metrics.get("views_total"),
+            context.get("page_views_total"),
+            report_inputs.get("views"),
+            report_inputs.get("profile_visits"),
+            context.get("views"),
+        ]
+        source_metric = (
+            str((audit_entry.get("source_metric") if isinstance(audit_entry, dict) else None) or report_inputs.get("page_views_source_metric") or "").strip()
+            or None
+        )
+    else:
+        daily_candidates = [report_inputs.get("followers_daily"), context.get("followers_daily")]
+        total_candidates = [
+            report_inputs.get("followers_total"),
+            normalized_metrics.get("followers_total"),
+            context.get("followers_total"),
+            report_inputs.get("followers"),
+            context.get("followers"),
+        ]
+        source_metric = (
+            str((audit_entry.get("source_metric") if isinstance(audit_entry, dict) else None) or "followers_count").strip()
+            or None
+        )
+
+    daily_series: list[dict[str, Any]] = []
+    for candidate in daily_candidates:
+        points = _extract_series_candidate(candidate)
+        if points:
+            daily_series = _normalize_daily_series_result(points)
+            if daily_series:
+                break
+
+    total = _candidate_total(total_candidates)
+    if total is None and daily_series and metric_key in {"reach", "impressions", "engagement", "page_views"}:
+        total = _meta_metric_total_for_series(metric_key, daily_series)
+
+    unavailable_reason = _facebook_metric_audit_reason(context, metric_key)
+    unavailable_message = _facebook_metric_slide_unavailable_message(metric_key) if total is None else None
+    return {
+        "total": total,
+        "daily_series": daily_series,
+        "source_metric": source_metric,
+        "unavailable_reason": unavailable_reason,
+        "unavailable_message": unavailable_message,
+    }
 
 
 def _log_facebook_pages_report_metric_payload(context: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -10865,43 +11550,54 @@ def _build_facebook_pages_metric_slide_payload(
     semantic_name: str,
 ) -> dict[str, Any]:
     payload = buildMetricSlidePayload(context, metric_key=metric_key, metric_label=title)
+    strict = _facebook_pages_metric_details(context, metric_key)
+    daily_series = strict["daily_series"] if isinstance(strict.get("daily_series"), list) else []
+    total = strict.get("total")
+    is_available = total is not None or bool(daily_series)
     customized = dict(payload)
     customized.update(
         {
+            "metric_key": metric_key,
+            "metric_label": title,
+            "metric_label_en": title,
+            "metric_label_es": METRIC_LABELS_ES.get(metric_key, title),
             "title": title,
             "label": label,
             "semantic_name": semantic_name,
             "primary_metric_label": label.upper(),
             "secondary_metric": None,
+            "value": total if total is not None else None,
+            "total": total if total is not None else None,
+            "formatted_total": _format_metric_summary_value(total if total is not None else None),
+            "is_available": is_available,
+            "metric_source": strict.get("source_metric") if is_available else "not_available",
+            "unavailable_reason": strict.get("unavailable_reason") if not is_available else None,
+            "unavailable_message": strict.get("unavailable_message") if not is_available else None,
+            "daily_series": daily_series,
+            "highest_day": getHighestDay(daily_series) if daily_series else None,
+            "lowest_day": getLowestDay(daily_series) if daily_series else None,
+            "daily_series_reason": "" if daily_series else "daily_series_unavailable_from_source",
         }
     )
-
     chart = customized.get("chart") if isinstance(customized.get("chart"), dict) else {}
+    timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
     customized["chart"] = {
         **chart,
         "label": label,
         "metric": metric_key,
-        "is_available": bool(customized.get("daily_series")),
+        "points": daily_series,
+        "data": daily_series,
+        "series": daily_series,
+        "timeframe": timeframe,
+        "is_available": bool(daily_series),
     }
-
-    if metric_key in {"reach", "impressions"}:
-        direct_total, metric_source = _metric_direct_total_only(context, metric_key)
-        unavailable_message = _facebook_metric_slide_unavailable_message(metric_key)
-        unavailable_reason = _facebook_metric_audit_reason(context, metric_key)
-        customized["value"] = direct_total
-        customized["total"] = direct_total
-        customized["formatted_total"] = _format_metric_summary_value(direct_total)
-        customized["metric_source"] = metric_source
-        customized["unavailable_reason"] = unavailable_reason if direct_total is None else None
-        customized["unavailable_message"] = unavailable_message if direct_total is None else None
-        customized["is_available"] = direct_total is not None or bool(customized.get("daily_series"))
-        if direct_total is None:
-            customized["insight_short"] = truncateInsight(unavailable_message, 260)
-            customized["insight"] = truncateInsight(unavailable_message, 420)
-            customized["insight_full"] = truncateInsight(unavailable_message, 420)
-        if not customized.get("daily_series"):
-            customized["highest_day"] = None
-            customized["lowest_day"] = None
+    insight_payload = build_metric_ai_insight(customized, context)
+    customized.update(insight_payload)
+    customized["insight_full"] = customized["insight"]
+    if not daily_series:
+        customized["current_value"] = normalizeMetricValue(total)
+    else:
+        customized["current_value"] = normalizeMetricValue(total)
     _log_facebook_pages_report_metric_payload(context, customized)
     return customized
 
@@ -12362,6 +13058,63 @@ def _meta_change_payload(
     }
 
 
+def _format_growth_label(growth_percent: float | None) -> str:
+    if growth_percent is None:
+        return "N/A"
+    rounded = round(float(growth_percent), 2)
+    if abs(rounded - int(rounded)) < 0.01:
+        return f"{int(rounded):+d}%"
+    return f"{rounded:+.2f}".rstrip("0").rstrip(".") + "%"
+
+
+def _growth_metadata_from_values(current_value, previous_value) -> dict[str, object]:
+    current_numeric = _meta_number(current_value)
+    previous_numeric = _meta_number(previous_value)
+    growth_percent: float | None = None
+    if previous_numeric is None:
+        growth_label = "N/A"
+    elif previous_numeric == 0:
+        growth_label = "New activity" if (current_numeric or 0) > 0 else "No change"
+    elif current_numeric is None:
+        growth_label = "N/A"
+    else:
+        growth_percent = round(((current_numeric - previous_numeric) / previous_numeric) * 100, 2)
+        growth_label = _format_growth_label(growth_percent)
+    return {
+        "current_value": current_numeric,
+        "previous_value": previous_numeric,
+        "growth_percent": growth_percent,
+        "growth_label": growth_label,
+        "comparison_period": "previous_period",
+    }
+
+
+def _comparison_growth_payload(
+    context: dict,
+    *,
+    metric: str,
+    current_value,
+    current_points: list[dict] | None = None,
+) -> dict[str, object]:
+    comparison = _meta_metric_comparison(
+        context,
+        metric=metric,
+        current_value=current_value,
+        current_points=current_points or _meta_metric_series(context, metric),
+    )
+    growth = _growth_metadata_from_values(
+        comparison.get("current_value"),
+        comparison.get("previous_value"),
+    )
+    return {
+        **comparison,
+        "growth": growth,
+        "growth_percent": growth.get("growth_percent"),
+        "growth_label": growth.get("growth_label"),
+        "comparison_period": "previous_period",
+    }
+
+
 def _meta_chart_payload(context: dict, metric: str, title: str | None = None) -> dict:
     report_timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
     period_label = str(report_timeframe.get("label") or "Selected period")
@@ -12451,6 +13204,8 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
         label_lower = label.lower()
         if "follower" in label_lower or "audience" in label_lower:
             semantic_name = "audience_growth"
+        elif "page visit" in label_lower or "profile visit" in label_lower:
+            semantic_name = "page_visits"
         elif "reach" in label_lower:
             semantic_name = "reach_overview"
         elif "page view" in label_lower or "page_view" in label_lower or "visitas" in label_lower:
@@ -12464,35 +13219,37 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
         else:
             semantic_name = "summary"
     metric = "reach"
-    if "impression" in semantic_name or "impression" in label.lower():
+    if semantic_name == "impressions" or "impression" in semantic_name or "impression" in label.lower():
         metric = "impressions"
-    elif "engagement" in semantic_name or "engagement" in label.lower():
+    elif semantic_name == "engagement" or "engagement" in semantic_name or "engagement" in label.lower():
         metric = "engagement"
-    elif "page_views" in semantic_name or "page view" in label.lower() or "visitas" in label.lower():
+    elif semantic_name == "page_visits" or "page_views" in semantic_name or "page view" in label.lower() or "page visit" in label.lower() or "visitas" in label.lower():
         metric = "page_views"
     elif "audience" in semantic_name or "follower" in semantic_name or "follower" in label.lower():
         metric = "followers"
+    elif semantic_name == "content_activity":
+        metric = "posts"
     elif "post" in semantic_name or "content" in semantic_name:
         metric = "engagement"
-    if semantic_name in {"reach_overview", "impressions_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
+    if semantic_name in {"reach", "impressions", "engagement", "page_visits", "reach_overview", "impressions_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
         report_timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
         period_label = str(report_timeframe.get("label") or "Selected period")
         reach_stats = _meta_series_stats(extractDailyMetricSeries(context, "reach"))
-        if semantic_name == "reach_overview":
+        if semantic_name in {"reach_overview", "reach"}:
             metric_payload = _build_facebook_pages_metric_slide_payload(
                 context,
                 metric_key="reach",
                 title="Reach",
                 label="Total Reach",
-                semantic_name="reach_overview",
+                semantic_name=semantic_name,
             )
-        elif semantic_name == "impressions_overview":
+        elif semantic_name in {"impressions_overview", "impressions"}:
             metric_payload = _build_facebook_pages_metric_slide_payload(
                 context,
                 metric_key="impressions",
                 title="Impressions",
                 label="Total Impressions",
-                semantic_name="impressions_overview",
+                semantic_name=semantic_name,
             )
         else:
             insight_source = (
@@ -12500,7 +13257,7 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
                 or _meta_trend_copy("Impressions", _meta_series_stats(extractDailyMetricSeries(context, "impressions")), period_label)
                 if semantic_name == "impressions_trend"
                 else _meta_engagement_text(context, period_label, reach_stats)
-                if semantic_name == "engagement_overview"
+                if semantic_name == "engagement_overview" or semantic_name == "engagement"
                 else ""
             )
             metric_payload = buildMetricSlidePayload(
@@ -12534,7 +13291,7 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             if not points
             else f"Daily {label.lower()} is available for this period."
         )
-    if semantic_name in {"reach_overview", "impressions_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
+    if semantic_name in {"reach", "impressions", "engagement", "page_visits", "reach_overview", "impressions_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
         insight_short_value = str(data.get("insight_short") or data.get("insight") or insight)
         insight_full_value = str(data.get("insight_full") or data.get("insight") or insight_short_value)
     else:
@@ -13484,19 +14241,21 @@ def build_5_blocks(dataset: dict) -> list[dict]:
         label="Total Engagement",
         semantic_name="engagement_overview",
     )
-    page_views_payload = buildMetricSlidePayload(
+    page_views_payload = _build_facebook_pages_metric_slide_payload(
         metric_context,
         metric_key="page_views",
-        metric_label="Page Views",
+        title="Page Views",
+        label="Total Page Views",
+        semantic_name="page_views_overview",
     )
-    _log_facebook_pages_report_metric_payload(metric_context, page_views_payload)
+    followers_details = _facebook_pages_metric_details(metric_context, "followers")
     _log_facebook_pages_report_metric_payload(
         metric_context,
         {
             "metric_key": "followers",
-            "metric_source": "followers_total",
-            "total": metric_context.get("followers"),
-            "formatted_total": _format_metric_summary_value(metric_context.get("followers")),
+            "metric_source": "followers_count",
+            "total": followers_details.get("total"),
+            "formatted_total": _format_metric_summary_value(followers_details.get("total")),
             "daily_series": [],
             "unavailable_reason": _facebook_metric_audit_reason(metric_context, "followers"),
         },
@@ -13621,108 +14380,277 @@ def build_5_blocks(dataset: dict) -> list[dict]:
 
 
 def build_10_blocks(dataset: dict) -> list[dict]:
-    # LEGACY / candidate for removal after frontend/backend contract is stable.
-    # Recommended source of truth for official social 5-slide reports is build_5_blocks().
     report_timeframe = dataset["report_timeframe"]
     period_label = str(report_timeframe.get("label") or "Selected period")
-    title = dataset["title"]
-    reach_chart_data = dataset.get("reach_chart_data") if isinstance(dataset.get("reach_chart_data"), dict) else {}
-    impressions_slide_payload = (
-        dataset.get("impressions_slide_payload")
-        if isinstance(dataset.get("impressions_slide_payload"), dict)
-        else {}
+    resolved_branding = resolve_report_branding(
+        None,
+        None,
+        str(dataset.get("plan") or ""),
+        preferred_branding=dataset.get("branding") if isinstance(dataset.get("branding"), dict) else None,
     )
-    reach_stats = _meta_series_stats(reach_chart_data.get("points"))
-    impressions_points = impressions_slide_payload.get("impressions_daily")
-    impressions_stats = _meta_series_stats(impressions_points)
-    impressions_chart = {
-        "label": f"Impressions Trend — {period_label}",
-        "metric": "impressions",
-        "points": impressions_points if isinstance(impressions_points, list) else [],
-        "is_available": bool(impressions_points),
+    metric_context = {**dataset, "branding": resolved_branding}
+    reach_payload = _build_facebook_pages_metric_slide_payload(
+        metric_context,
+        metric_key="reach",
+        title="Reach",
+        label="Total Reach",
+        semantic_name="reach",
+    )
+    impressions_payload = _build_facebook_pages_metric_slide_payload(
+        metric_context,
+        metric_key="impressions",
+        title="Impressions",
+        label="Total Impressions",
+        semantic_name="impressions",
+    )
+    reach_stats = _meta_series_stats(reach_payload.get("daily_series"))
+    impressions_stats = _meta_series_stats(impressions_payload.get("daily_series"))
+    engagement_payload = _meta_engagement_slide_payload(metric_context, period_label, reach_stats)
+    engagement_payload.update(
+        {
+            "title": "Engagement",
+            "label": "Total Engagement",
+            "semantic_name": "engagement",
+        }
+    )
+    reach_numeric = _meta_number(metric_context.get("reach"))
+    engagement_numeric = _meta_number(metric_context.get("engagement"))
+    if reach_numeric not in (None, 0) and engagement_numeric is not None:
+        engagement_payload["secondary_metric"] = {
+            "label": "Engagement Rate",
+            "value": round((engagement_numeric / reach_numeric) * 100, 2),
+            "formatted_value": _format_growth_label((engagement_numeric / reach_numeric) * 100).lstrip("+"),
+        }
+    page_visits_payload = buildMetricSlidePayload(
+        metric_context,
+        metric_key="page_views",
+        metric_label="Page Visits",
+    )
+    page_visits_payload.update(
+        {
+            "title": "Page Visits",
+            "label": "Page/Profile Visits",
+            "semantic_name": "page_visits",
+        }
+    )
+    followers_chart_points = _meta_metric_series(metric_context, "followers")
+    if not followers_chart_points:
+        followers_chart_points = _meta_series_points(
+            (_meta_report_inputs(metric_context).get("followers_growth_daily") or [])
+        )
+    followers_chart = {
+        "label": f"Audience Trend - {period_label}",
+        "metric": "followers",
+        "points": followers_chart_points,
+        "data": followers_chart_points,
+        "series": followers_chart_points,
         "timeframe": report_timeframe,
+        "is_available": bool(followers_chart_points),
     }
+    audience_growth_comparison = _comparison_growth_payload(
+        metric_context,
+        metric="followers",
+        current_value=metric_context.get("followers"),
+        current_points=followers_chart_points,
+    )
+    report_inputs = _meta_report_inputs(metric_context)
+    net_follower_change = _meta_number(report_inputs.get("followers_growth"))
+    if net_follower_change is None:
+        net_follower_change = _meta_metric_total_for_series(
+            "followers",
+            _meta_series_points(report_inputs.get("followers_growth_daily") or []),
+        )
+    posts = _meta_recent_posts(metric_context)
+    post_count = len(posts)
+    posts_chart = _posts_chart_payload(posts, timeframe=report_timeframe, title=f"Posting Rhythm - {period_label}")
+    content_activity_comparison = _comparison_growth_payload(
+        metric_context,
+        metric="posts",
+        current_value=post_count,
+        current_points=list(posts_chart.get("points") or []),
+    )
+    avg_reach_per_post = round((reach_numeric or 0) / post_count, 2) if post_count and reach_numeric is not None else None
+    avg_engagement_per_post = (
+        round((engagement_numeric or 0) / post_count, 2)
+        if post_count and engagement_numeric is not None
+        else None
+    )
+    top_posts = _top_content_items(posts)
+    top_post = top_posts[0] if top_posts else None
+    metric_summaries = [
+        {"name": "reach", "label": "Reach", "value": _meta_number(metric_context.get("reach")), "growth": reach_payload.get("growth")},
+        {"name": "impressions", "label": "Impressions", "value": _meta_number(metric_context.get("impressions")), "growth": impressions_payload.get("growth")},
+        {"name": "engagement", "label": "Engagement", "value": _meta_number(metric_context.get("engagement")), "growth": engagement_payload.get("growth")},
+        {"name": "page_visits", "label": "Page Visits", "value": _meta_number(page_visits_payload.get("total")), "growth": page_visits_payload.get("growth")},
+    ]
+    available_metric_summaries = [item for item in metric_summaries if item.get("value") is not None]
+    strongest_metric = max(available_metric_summaries, key=lambda item: item.get("value") or 0) if available_metric_summaries else None
+    weakest_metric = min(available_metric_summaries, key=lambda item: item.get("value") or 0) if available_metric_summaries else None
+    trend_candidates = [item for item in available_metric_summaries if isinstance((item.get("growth") or {}).get("growth_percent"), (int, float, float))]
+    trend_direction = (
+        "improving"
+        if trend_candidates and max((item.get("growth") or {}).get("growth_percent") or 0 for item in trend_candidates) > 0
+        else "declining"
+        if trend_candidates and max((item.get("growth") or {}).get("growth_percent") or 0 for item in trend_candidates) < 0
+        else "mixed"
+    )
+    recommendations = [
+        (
+            f"Repeat the content pattern behind \"{top_post.get('title')}\" and adapt it into the next publishing cycle."
+            if top_post
+            else "Improve post-level tracking so the next report can identify which content pattern is actually winning."
+        ),
+        (
+            "Protect a steady posting rhythm because content volume is supporting visibility."
+            if post_count >= 3
+            else "Increase publishing cadence during the next period so reach and engagement can build from a larger content base."
+        ),
+        (
+            f"Address the weakest metric first: {weakest_metric.get('label')} needs a more specific optimization plan in the next cycle."
+            if weakest_metric
+            else "Review data availability before setting performance targets for the next cycle."
+        ),
+    ]
+    if any((item.get("growth") or {}).get("growth_label") == "N/A" for item in metric_summaries):
+        recommendations.append("Improve previous-period tracking coverage so growth can be measured instead of inferred as unavailable.")
     blocks = [
         _meta_report_block(
             "title",
             1,
             {
-                "text": title,
+                "text": dataset["title"],
                 "subtitle": f"{dataset['page_name']} performance report · {period_label}",
                 "timeframe": report_timeframe,
                 "period_label": report_timeframe.get("label"),
                 "period_since": report_timeframe.get("since"),
                 "period_until": report_timeframe.get("until"),
-                "branding": dataset.get("branding") or {},
+                "branding": resolved_branding,
                 "semantic_name": "cover",
             },
             ["text", "subtitle"],
         ),
         _meta_report_block(
-            "text",
+            "stat",
             2,
-            _meta_executive_summary_payload(dataset, period_label),
-            ["text"],
+            {
+                **reach_payload,
+                **_comparison_growth_payload(
+                    metric_context,
+                    metric="reach",
+                    current_value=reach_payload.get("total"),
+                    current_points=reach_payload.get("daily_series"),
+                ),
+                "semantic_name": "reach",
+            },
         ),
         _meta_report_block(
             "stat",
             3,
             {
-                "label": "Key Metrics Overview",
-                "value": _meta_key_metrics_overview_value(dataset),
-                "secondary_text": _meta_key_metrics_secondary_text(dataset),
-                "metrics": {
-                    "reach": dataset.get("reach"),
-                    "engagement": dataset.get("engagement"),
-                    "impressions": dataset.get("impressions"),
-                    "followers": dataset.get("followers"),
-                },
-                "semantic_name": "key_metrics_overview",
+                **impressions_payload,
+                **_comparison_growth_payload(
+                    metric_context,
+                    metric="impressions",
+                    current_value=impressions_payload.get("total"),
+                    current_points=impressions_payload.get("daily_series"),
+                ),
+                "semantic_name": "impressions",
             },
         ),
         _meta_report_block(
-            "chart",
+            "stat",
             4,
             {
-                **reach_chart_data,
-                "label": f"Reach Trend — {period_label}",
-                "metric": reach_chart_data.get("metric") or "reach",
-                "timeframe": reach_chart_data.get("timeframe") or report_timeframe,
-                "semantic_name": "reach_overview",
+                **engagement_payload,
+                **_comparison_growth_payload(
+                    metric_context,
+                    metric="engagement",
+                    current_value=engagement_payload.get("total"),
+                    current_points=engagement_payload.get("daily_series"),
+                ),
+                "semantic_name": "engagement",
             },
         ),
         _meta_report_block(
-            "text",
+            "stat",
             5,
             {
-                **_meta_engagement_slide_payload(dataset, period_label, reach_stats),
-                "timeframe": report_timeframe,
-                "timeframe_label": period_label,
+                **page_visits_payload,
+                **_comparison_growth_payload(
+                    metric_context,
+                    metric="page_views",
+                    current_value=page_visits_payload.get("total"),
+                    current_points=page_visits_payload.get("daily_series"),
+                ),
+                "semantic_name": "page_visits",
             },
-            ["text"],
         ),
         _meta_report_block(
-            "chart",
+            "stat",
             6,
-            {**impressions_chart, "semantic_name": "impressions_trend"},
+            {
+                "title": "Audience Growth",
+                "label": "Followers / Audience",
+                "value": metric_context.get("followers"),
+                "current_value": audience_growth_comparison.get("current_value"),
+                "previous_value": audience_growth_comparison.get("previous_value"),
+                "growth": audience_growth_comparison.get("growth"),
+                "growth_percent": audience_growth_comparison.get("growth_percent"),
+                "growth_label": audience_growth_comparison.get("growth_label"),
+                "comparison_period": "previous_period",
+                "chart": followers_chart,
+                "points": followers_chart_points,
+                "metrics": {
+                    "main": audience_growth_comparison.get("growth"),
+                    "net_follower_change": net_follower_change,
+                    "new_followers": net_follower_change if net_follower_change and net_follower_change > 0 else None,
+                },
+                "text": _meta_audience_growth_text(metric_context, period_label),
+                "semantic_name": "audience_growth",
+            },
         ),
         _meta_report_block(
-            "text",
+            "stat",
             7,
             {
-                "title": "Top Performing Post",
-                "text": _meta_top_post_text(dataset, period_label),
-                "semantic_name": "top_performing_post",
+                "title": "Content Activity",
+                "label": "Published Content",
+                "value": post_count,
+                "current_value": content_activity_comparison.get("current_value"),
+                "previous_value": content_activity_comparison.get("previous_value"),
+                "growth": content_activity_comparison.get("growth"),
+                "growth_percent": content_activity_comparison.get("growth_percent"),
+                "growth_label": content_activity_comparison.get("growth_label"),
+                "comparison_period": "previous_period",
+                "chart": posts_chart,
+                "points": list(posts_chart.get("points") or []),
+                "metrics": {
+                    "main": content_activity_comparison.get("growth"),
+                    "average_reach_per_post": avg_reach_per_post,
+                    "average_engagement_per_post": avg_engagement_per_post,
+                },
+                "text": (
+                    f"{post_count} content pieces were published in the selected period."
+                    if post_count
+                    else "No post-level content was available for the selected period."
+                ),
+                "semantic_name": "content_activity",
             },
-            ["text"],
         ),
         _meta_report_block(
             "text",
             8,
             {
-                "title": "Audience Growth",
-                "text": _meta_audience_growth_text(dataset, period_label),
-                "semantic_name": "audience_growth",
+                "title": "Top Performing Content",
+                "text": (
+                    f"\"{top_post.get('title')}\" generated the strongest available performance pattern in {period_label}."
+                    if top_post
+                    else "No post-level content exists for this period, so this slide is an empty state."
+                ),
+                "top_posts": top_posts,
+                "main_metric": top_post,
+                "empty_state": top_post is None,
+                "semantic_name": "top_performing_content",
             },
             ["text"],
         ),
@@ -13730,9 +14658,29 @@ def build_10_blocks(dataset: dict) -> list[dict]:
             "text",
             9,
             {
-                "title": "Insights",
-                "text": _meta_insights_text(dataset, period_label, reach_stats, impressions_stats),
-                "semantic_name": "insights",
+                "title": "Executive Insights",
+                "text": _multi_source_block_text_lines(
+                    [
+                        (
+                            f"Strongest metric: {strongest_metric.get('label')} at {_meta_format_number(strongest_metric.get('value'))}."
+                            if strongest_metric
+                            else "Strongest metric could not be identified from the available data."
+                        ),
+                        (
+                            f"Weakest metric: {weakest_metric.get('label')} at {_meta_format_number(weakest_metric.get('value'))}."
+                            if weakest_metric
+                            else "Weakest metric could not be identified from the available data."
+                        ),
+                        f"Trend direction: {trend_direction}.",
+                        f"Business interpretation: {dataset['page_name']} generated visibility through reach and impressions while content response should be judged primarily through engagement and visit behavior.",
+                    ]
+                ),
+                "metrics": {
+                    "strongest_metric": strongest_metric,
+                    "weakest_metric": weakest_metric,
+                    "trend_direction": trend_direction,
+                },
+                "semantic_name": "executive_insights",
             },
             ["text"],
         ),
@@ -13740,14 +14688,15 @@ def build_10_blocks(dataset: dict) -> list[dict]:
             "text",
             10,
             {
-                "title": "Recommendations",
-                "text": _meta_recommendations_text(dataset, period_label, reach_stats),
+                "title": "Recommendations / Next Steps",
+                "text": _multi_source_block_text_lines(recommendations[:5]),
+                "recommendations": recommendations[:5],
                 "semantic_name": "recommendations",
             },
             ["text"],
         ),
     ]
-    blocks = _meta_enrich_data_blocks(dataset, _renumber_blocks(blocks))
+    blocks = _meta_enrich_data_blocks(metric_context, _renumber_blocks(blocks))
     logger.info(
         "[ReportBlocks][build.10.start]",
         extra={
@@ -15484,8 +16433,10 @@ def _create_meta_dataset_report(
             "audience_growth": "followers",
             "engagement": "engagement",
             "engagement_overview": "engagement",
+            "page_visits": "page_views",
             "page_views": "page_views",
             "page_views_overview": "page_views",
+            "content_activity": "posts",
             "key_metrics_overview": "reach",
         }.get(str(semantic_name or "").strip())
         if semantic_name == "overview" and isinstance(block_data.get("metrics"), list):
@@ -21138,8 +22089,26 @@ def _run_meta_pages_sync(
                 )
 
             try:
-                page_info = fetch_page_info(access_token, resolved_page_id, fields="id,name")
+                page_info = fetch_page_info_with_metadata(access_token, resolved_page_id, fields="id,name")
                 page_name = str(page_info.get("name") or page_name)
+                logger.info(
+                    "FACEBOOK_GRAPH_PAGE_FIELDS_RESPONSE",
+                    extra={
+                        "page_id": resolved_page_id,
+                        "page_name": page_name,
+                        "since": timeframe_config["since"],
+                        "until": timeframe_config["until"],
+                        "period": "day",
+                        "metric_requested": "id,name",
+                        "metric_returned": "id,name",
+                        "raw_values": [page_info.get("id"), page_info.get("name")],
+                        "raw_sum": None,
+                        "points_count": 0,
+                        "normalized_field": "page_fields",
+                        "unavailable_reason": None,
+                        "raw_body": page_info.get("_meta_raw_body"),
+                    },
+                )
             except HTTPException as exc:
                 if not _is_meta_api_error(exc):
                     raise
@@ -21160,10 +22129,28 @@ def _run_meta_pages_sync(
             )
 
             try:
-                page_counts = fetch_page_info(
+                page_counts = fetch_page_info_with_metadata(
                     access_token,
                     resolved_page_id,
                     fields="fan_count,followers_count",
+                )
+                logger.info(
+                    "FACEBOOK_GRAPH_PAGE_FIELDS_RESPONSE",
+                    extra={
+                        "page_id": resolved_page_id,
+                        "page_name": page_name,
+                        "since": timeframe_config["since"],
+                        "until": timeframe_config["until"],
+                        "period": "day",
+                        "metric_requested": "fan_count,followers_count",
+                        "metric_returned": "fan_count,followers_count",
+                        "raw_values": [page_counts.get("fan_count"), page_counts.get("followers_count")],
+                        "raw_sum": None,
+                        "points_count": 0,
+                        "normalized_field": "followers_total",
+                        "unavailable_reason": None,
+                        "raw_body": page_counts.get("_meta_raw_body"),
+                    },
                 )
             except HTTPException as exc:
                 if not _is_meta_api_error(exc):
@@ -21192,6 +22179,7 @@ def _run_meta_pages_sync(
             reach_payload = _fetch_meta_pages_reach_payload(
                 access_token,
                 resolved_page_id,
+                page_name,
                 timeframe_config,
                 integration.id,
             )
@@ -21253,6 +22241,7 @@ def _run_meta_pages_sync(
             impressions_payload = _fetch_meta_pages_impressions_payload(
                 access_token,
                 resolved_page_id,
+                page_name,
                 timeframe_config,
                 integration.id,
             )
@@ -21316,6 +22305,7 @@ def _run_meta_pages_sync(
             views_payload = _fetch_meta_pages_metric_payload(
                 access_token,
                 resolved_page_id,
+                page_name,
                 timeframe_config,
                 integration.id,
                 metric_name="page_views_total",
@@ -21362,6 +22352,7 @@ def _run_meta_pages_sync(
             interactions_payload = _fetch_meta_pages_metric_payload(
                 access_token,
                 resolved_page_id,
+                page_name,
                 timeframe_config,
                 integration.id,
                 metric_name="page_post_engagements",
@@ -21411,6 +22402,7 @@ def _run_meta_pages_sync(
             link_clicks_payload = _fetch_meta_pages_metric_payload(
                 access_token,
                 resolved_page_id,
+                page_name,
                 timeframe_config,
                 integration.id,
                 metric_name="page_consumptions",
@@ -21442,6 +22434,7 @@ def _run_meta_pages_sync(
             page_visits_payload = _fetch_meta_pages_metric_payload(
                 access_token,
                 resolved_page_id,
+                page_name,
                 timeframe_config,
                 integration.id,
                 metric_name="page_profile_views",
@@ -21473,6 +22466,7 @@ def _run_meta_pages_sync(
             followers_growth_payload = _fetch_meta_pages_metric_payload(
                 access_token,
                 resolved_page_id,
+                page_name,
                 timeframe_config,
                 integration.id,
                 metric_name="page_fan_adds",
