@@ -7828,6 +7828,15 @@ def _log_facebook_pages_metric_event(
     )
 
 
+def _log_json_event(event_name: str, payload: dict[str, Any]) -> None:
+    logger.info(
+        "%s %s",
+        event_name,
+        json.dumps(payload, ensure_ascii=False, default=str),
+        extra=payload,
+    )
+
+
 def _log_facebook_graph_request(
     *,
     page_id: str,
@@ -7836,24 +7845,27 @@ def _log_facebook_graph_request(
     until: str | None,
     period: str,
     metric_requested: str,
+    endpoint: str | None = None,
 ) -> None:
-    logger.info(
-        "FACEBOOK_GRAPH_PAGE_INSIGHTS_REQUEST",
-        extra={
-            "page_id": page_id,
-            "page_name": page_name,
-            "since": since,
-            "until": until,
-            "period": period,
-            "metric_requested": metric_requested,
-            "metric_returned": None,
-            "raw_values": [],
-            "raw_sum": None,
-            "points_count": 0,
-            "normalized_field": None,
-            "unavailable_reason": None,
-        },
-    )
+    payload = {
+        "page_id": page_id,
+        "page_name": page_name,
+        "since": since,
+        "until": until,
+        "period": period,
+        "metric_requested": metric_requested,
+        "endpoint": endpoint,
+        "metric_returned": None,
+        "status_code": None,
+        "raw_response": None,
+        "raw_values": [],
+        "raw_sum": None,
+        "points_count": 0,
+        "normalized_field": None,
+        "normalized_value": None,
+        "unavailable_reason": None,
+    }
+    _log_json_event("FACEBOOK_GRAPH_PAGE_INSIGHTS_REQUEST", payload)
 
 
 def _log_facebook_graph_raw_response(
@@ -7865,31 +7877,35 @@ def _log_facebook_graph_raw_response(
     period: str,
     metric_requested: str,
     metric_returned: str | None,
+    endpoint: str | None,
+    status_code: int | None,
     raw_body: Any,
     raw_values: list[Any],
     raw_sum: Any,
     points_count: int,
     normalized_field: str,
+    normalized_value: Any,
     unavailable_reason: str | None,
 ) -> None:
-    logger.info(
-        "FACEBOOK_GRAPH_PAGE_INSIGHTS_RAW_RESPONSE",
-        extra={
-            "page_id": page_id,
-            "page_name": page_name,
-            "since": since,
-            "until": until,
-            "period": period,
-            "metric_requested": metric_requested,
-            "metric_returned": metric_returned,
-            "raw_values": raw_values,
-            "raw_sum": raw_sum,
-            "points_count": points_count,
-            "normalized_field": normalized_field,
-            "unavailable_reason": unavailable_reason,
-            "raw_body": raw_body,
-        },
-    )
+    payload = {
+        "page_id": page_id,
+        "page_name": page_name,
+        "since": since,
+        "until": until,
+        "period": period,
+        "metric_requested": metric_requested,
+        "metric_returned": metric_returned,
+        "endpoint": endpoint,
+        "status_code": status_code,
+        "raw_response": raw_body,
+        "raw_values": raw_values,
+        "raw_sum": raw_sum,
+        "points_count": points_count,
+        "normalized_field": normalized_field,
+        "normalized_value": normalized_value,
+        "unavailable_reason": unavailable_reason,
+    }
+    _log_json_event("FACEBOOK_GRAPH_PAGE_INSIGHTS_RAW_RESPONSE", payload)
 
 
 def _log_facebook_metric_raw_values(
@@ -7901,29 +7917,34 @@ def _log_facebook_metric_raw_values(
     period: str,
     metric_requested: str,
     metric_returned: str | None,
+    endpoint: str | None,
+    status_code: int | None,
     raw_values: list[Any],
     raw_sum: Any,
     points_count: int,
     normalized_field: str,
+    normalized_value: Any,
     unavailable_reason: str | None,
 ) -> None:
-    logger.info(
-        "FACEBOOK_METRIC_RAW_VALUES",
-        extra={
-            "page_id": page_id,
-            "page_name": page_name,
-            "since": since,
-            "until": until,
-            "period": period,
-            "metric_requested": metric_requested,
-            "metric_returned": metric_returned,
-            "raw_values": raw_values,
-            "raw_sum": raw_sum,
-            "points_count": points_count,
-            "normalized_field": normalized_field,
-            "unavailable_reason": unavailable_reason,
-        },
-    )
+    payload = {
+        "page_id": page_id,
+        "page_name": page_name,
+        "since": since,
+        "until": until,
+        "period": period,
+        "metric_requested": metric_requested,
+        "metric_returned": metric_returned,
+        "endpoint": endpoint,
+        "status_code": status_code,
+        "raw_response": None,
+        "raw_values": raw_values,
+        "raw_sum": raw_sum,
+        "points_count": points_count,
+        "normalized_field": normalized_field,
+        "normalized_value": normalized_value,
+        "unavailable_reason": unavailable_reason,
+    }
+    _log_json_event("FACEBOOK_METRIC_RAW_VALUES", payload)
 
 
 def _log_facebook_metric_normalized(
@@ -7935,29 +7956,34 @@ def _log_facebook_metric_normalized(
     period: str,
     metric_requested: str,
     metric_returned: str | None,
+    endpoint: str | None,
+    status_code: int | None,
     raw_values: list[Any],
     raw_sum: Any,
     points_count: int,
     normalized_field: str,
+    normalized_value: Any,
     unavailable_reason: str | None,
 ) -> None:
-    logger.info(
-        "FACEBOOK_METRIC_NORMALIZED",
-        extra={
-            "page_id": page_id,
-            "page_name": page_name,
-            "since": since,
-            "until": until,
-            "period": period,
-            "metric_requested": metric_requested,
-            "metric_returned": metric_returned,
-            "raw_values": raw_values,
-            "raw_sum": raw_sum,
-            "points_count": points_count,
-            "normalized_field": normalized_field,
-            "unavailable_reason": unavailable_reason,
-        },
-    )
+    payload = {
+        "page_id": page_id,
+        "page_name": page_name,
+        "since": since,
+        "until": until,
+        "period": period,
+        "metric_requested": metric_requested,
+        "metric_returned": metric_returned,
+        "endpoint": endpoint,
+        "status_code": status_code,
+        "raw_response": None,
+        "raw_values": raw_values,
+        "raw_sum": raw_sum,
+        "points_count": points_count,
+        "normalized_field": normalized_field,
+        "normalized_value": normalized_value,
+        "unavailable_reason": unavailable_reason,
+    }
+    _log_json_event("FACEBOOK_METRIC_NORMALIZED", payload)
 
 
 def _meta_daily_series_bounds(points: list[dict] | None) -> tuple[str | None, str | None]:
@@ -8427,6 +8453,7 @@ def _fetch_meta_pages_reach_payload(
     timeframe_config: dict[str, str],
     integration_id: int,
 ) -> dict[str, object | None]:
+    endpoint = f"/{page_id}/insights"
     for metric_name in META_PAGES_REACH_METRIC_CANDIDATES:
         _log_facebook_graph_request(
             page_id=page_id,
@@ -8435,6 +8462,7 @@ def _fetch_meta_pages_reach_payload(
             until=timeframe_config["until"],
             period="day",
             metric_requested=metric_name,
+            endpoint=endpoint,
         )
         try:
             metric_insight = fetch_page_insights(
@@ -8470,11 +8498,14 @@ def _fetch_meta_pages_reach_payload(
                 period="day",
                 metric_requested=metric_name,
                 metric_returned=metric_name,
+                endpoint=endpoint,
+                status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
                 raw_body=metric_insight.get("_meta_raw_body"),
                 raw_values=[],
                 raw_sum=None,
                 points_count=0,
                 normalized_field="reach_total",
+                normalized_value=None,
                 unavailable_reason=unavailable_reason,
             )
             _log_facebook_metric_normalized(
@@ -8485,10 +8516,13 @@ def _fetch_meta_pages_reach_payload(
                 period="day",
                 metric_requested=metric_name,
                 metric_returned=metric_name,
+                endpoint=endpoint,
+                status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
                 raw_values=[],
                 raw_sum=None,
                 points_count=0,
                 normalized_field="reach_total",
+                normalized_value=None,
                 unavailable_reason=unavailable_reason,
             )
             logger.info(
@@ -8535,11 +8569,14 @@ def _fetch_meta_pages_reach_payload(
             period="day",
             metric_requested=metric_name,
             metric_returned=metric_name,
+            endpoint=endpoint,
+            status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
             raw_body=metric_insight.get("_meta_raw_body"),
             raw_values=raw_values,
             raw_sum=raw_sum,
             points_count=len(reach_daily),
             normalized_field="reach_total",
+            normalized_value=metric_value,
             unavailable_reason=None,
         )
         _log_facebook_metric_raw_values(
@@ -8550,10 +8587,13 @@ def _fetch_meta_pages_reach_payload(
             period="day",
             metric_requested=metric_name,
             metric_returned=metric_name,
+            endpoint=endpoint,
+            status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
             raw_values=raw_values,
             raw_sum=raw_sum,
             points_count=len(reach_daily),
             normalized_field="reach_total",
+            normalized_value=metric_value,
             unavailable_reason=None,
         )
         _log_facebook_metric_normalized(
@@ -8564,10 +8604,13 @@ def _fetch_meta_pages_reach_payload(
             period="day",
             metric_requested=metric_name,
             metric_returned=metric_name,
+            endpoint=endpoint,
+            status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
             raw_values=[metric_value],
             raw_sum=metric_value,
             points_count=len(reach_daily),
             normalized_field="reach_total",
+            normalized_value=metric_value,
             unavailable_reason=None,
         )
         logger.info(
@@ -8603,6 +8646,7 @@ def _fetch_meta_pages_impressions_payload(
     timeframe_config: dict[str, str],
     integration_id: int,
 ) -> dict[str, object | None]:
+    endpoint = f"/{page_id}/insights"
     for metric_name in META_PAGES_IMPRESSIONS_METRIC_CANDIDATES:
         _log_facebook_graph_request(
             page_id=page_id,
@@ -8611,6 +8655,7 @@ def _fetch_meta_pages_impressions_payload(
             until=timeframe_config["until"],
             period="day",
             metric_requested=metric_name,
+            endpoint=endpoint,
         )
         try:
             metric_insight = fetch_page_insights(
@@ -8646,11 +8691,14 @@ def _fetch_meta_pages_impressions_payload(
                 period="day",
                 metric_requested=metric_name,
                 metric_returned=metric_name,
+                endpoint=endpoint,
+                status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
                 raw_body=metric_insight.get("_meta_raw_body"),
                 raw_values=[],
                 raw_sum=None,
                 points_count=0,
                 normalized_field="impressions_total",
+                normalized_value=None,
                 unavailable_reason=unavailable_reason,
             )
             _log_facebook_metric_normalized(
@@ -8661,10 +8709,13 @@ def _fetch_meta_pages_impressions_payload(
                 period="day",
                 metric_requested=metric_name,
                 metric_returned=metric_name,
+                endpoint=endpoint,
+                status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
                 raw_values=[],
                 raw_sum=None,
                 points_count=0,
                 normalized_field="impressions_total",
+                normalized_value=None,
                 unavailable_reason=unavailable_reason,
             )
             logger.info(
@@ -8711,11 +8762,14 @@ def _fetch_meta_pages_impressions_payload(
             period="day",
             metric_requested=metric_name,
             metric_returned=metric_name,
+            endpoint=endpoint,
+            status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
             raw_body=metric_insight.get("_meta_raw_body"),
             raw_values=raw_values,
             raw_sum=raw_sum,
             points_count=len(impressions_daily),
             normalized_field="impressions_total",
+            normalized_value=metric_value,
             unavailable_reason=None,
         )
         _log_facebook_metric_raw_values(
@@ -8726,10 +8780,13 @@ def _fetch_meta_pages_impressions_payload(
             period="day",
             metric_requested=metric_name,
             metric_returned=metric_name,
+            endpoint=endpoint,
+            status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
             raw_values=raw_values,
             raw_sum=raw_sum,
             points_count=len(impressions_daily),
             normalized_field="impressions_total",
+            normalized_value=metric_value,
             unavailable_reason=None,
         )
         _log_facebook_metric_normalized(
@@ -8740,10 +8797,13 @@ def _fetch_meta_pages_impressions_payload(
             period="day",
             metric_requested=metric_name,
             metric_returned=metric_name,
+            endpoint=endpoint,
+            status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
             raw_values=[metric_value],
             raw_sum=metric_value,
             points_count=len(impressions_daily),
             normalized_field="impressions_total",
+            normalized_value=metric_value,
             unavailable_reason=None,
         )
         logger.info(
@@ -8783,6 +8843,7 @@ def _fetch_meta_pages_metric_payload(
     label: str,
     daily_key: str = "daily_series",
 ) -> dict[str, object | None]:
+    endpoint = f"/{page_id}/insights"
     _log_facebook_graph_request(
         page_id=page_id,
         page_name=page_name,
@@ -8790,6 +8851,7 @@ def _fetch_meta_pages_metric_payload(
         until=timeframe_config["until"],
         period="day",
         metric_requested=metric_name,
+        endpoint=endpoint,
     )
     try:
         metric_insight = fetch_page_insights(
@@ -8855,11 +8917,14 @@ def _fetch_meta_pages_metric_payload(
         period="day",
         metric_requested=metric_name,
         metric_returned=metric_name,
+        endpoint=endpoint,
+        status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
         raw_body=metric_insight.get("_meta_raw_body"),
         raw_values=raw_values,
         raw_sum=raw_sum,
         points_count=len(daily_series),
         normalized_field=daily_key,
+        normalized_value=metric_value,
         unavailable_reason=None,
     )
     _log_facebook_metric_raw_values(
@@ -8870,10 +8935,13 @@ def _fetch_meta_pages_metric_payload(
         period="day",
         metric_requested=metric_name,
         metric_returned=metric_name,
+        endpoint=endpoint,
+        status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
         raw_values=raw_values,
         raw_sum=raw_sum,
         points_count=len(daily_series),
         normalized_field=daily_key,
+        normalized_value=metric_value,
         unavailable_reason=None,
     )
     _log_facebook_metric_normalized(
@@ -8884,10 +8952,13 @@ def _fetch_meta_pages_metric_payload(
         period="day",
         metric_requested=metric_name,
         metric_returned=metric_name,
+        endpoint=endpoint,
+        status_code=metric_insight.get("_meta_http_status_code") if isinstance(metric_insight.get("_meta_http_status_code"), int) else None,
         raw_values=[metric_value],
         raw_sum=metric_value,
         points_count=len(daily_series),
         normalized_field=daily_key,
+        normalized_value=metric_value,
         unavailable_reason=None,
     )
     logger.info(
@@ -12584,9 +12655,9 @@ def _build_five_slide_summary_payload(
         "followers": followers_card,
     }
     metrics_summary.update(_facebook_pages_post_summary_cards(context))
-    logger.info(
+    _log_json_event(
         "FACEBOOK_SUMMARY_METRICS_BUILT",
-        extra={
+        {
             "report_id": context.get("report_id"),
             "dataset_id": context.get("dataset_id"),
             "page_name": context.get("page_name"),
@@ -12596,6 +12667,7 @@ def _build_five_slide_summary_payload(
             "formatted_total": str(len(metrics_summary)),
             "points_count": len(metrics_summary),
             "unavailable_reason": None,
+            "metrics_summary": metrics_summary,
         },
     )
     return {
@@ -14361,9 +14433,9 @@ def build_5_blocks(dataset: dict) -> list[dict]:
         ),
     ]
     final_blocks = _meta_enrich_data_blocks(metric_context, _renumber_blocks(blocks[:5]))
-    logger.info(
+    _log_json_event(
         "FACEBOOK_REPORT_BLOCKS_CREATED",
-        extra={
+        {
             "report_id": metric_context.get("report_id"),
             "dataset_id": metric_context.get("dataset_id"),
             "page_id": metric_context.get("page_id"),
@@ -14374,6 +14446,16 @@ def build_5_blocks(dataset: dict) -> list[dict]:
             "sum_value": len(final_blocks),
             "points_count": len(final_blocks),
             "unavailable_reason": None,
+            "block_mapping": [
+                {
+                    "order": block.get("order"),
+                    "type": block.get("type"),
+                    "semantic_name": (json.loads(block.get("data_json")) if isinstance(block.get("data_json"), str) else {}).get("semantic_name")
+                    if block.get("data_json")
+                    else None,
+                }
+                for block in final_blocks
+            ],
         },
     )
     return final_blocks
@@ -22091,22 +22173,25 @@ def _run_meta_pages_sync(
             try:
                 page_info = fetch_page_info_with_metadata(access_token, resolved_page_id, fields="id,name")
                 page_name = str(page_info.get("name") or page_name)
-                logger.info(
+                _log_json_event(
                     "FACEBOOK_GRAPH_PAGE_FIELDS_RESPONSE",
-                    extra={
+                    {
                         "page_id": resolved_page_id,
                         "page_name": page_name,
                         "since": timeframe_config["since"],
                         "until": timeframe_config["until"],
                         "period": "day",
                         "metric_requested": "id,name",
+                        "endpoint": f"/{resolved_page_id}",
+                        "status_code": page_info.get("_meta_http_status_code"),
                         "metric_returned": "id,name",
+                        "raw_response": page_info.get("_meta_raw_body"),
                         "raw_values": [page_info.get("id"), page_info.get("name")],
                         "raw_sum": None,
                         "points_count": 0,
                         "normalized_field": "page_fields",
+                        "normalized_value": {"id": page_info.get("id"), "name": page_info.get("name")},
                         "unavailable_reason": None,
-                        "raw_body": page_info.get("_meta_raw_body"),
                     },
                 )
             except HTTPException as exc:
@@ -22134,22 +22219,25 @@ def _run_meta_pages_sync(
                     resolved_page_id,
                     fields="fan_count,followers_count",
                 )
-                logger.info(
+                _log_json_event(
                     "FACEBOOK_GRAPH_PAGE_FIELDS_RESPONSE",
-                    extra={
+                    {
                         "page_id": resolved_page_id,
                         "page_name": page_name,
                         "since": timeframe_config["since"],
                         "until": timeframe_config["until"],
                         "period": "day",
                         "metric_requested": "fan_count,followers_count",
+                        "endpoint": f"/{resolved_page_id}",
+                        "status_code": page_counts.get("_meta_http_status_code"),
                         "metric_returned": "fan_count,followers_count",
+                        "raw_response": page_counts.get("_meta_raw_body"),
                         "raw_values": [page_counts.get("fan_count"), page_counts.get("followers_count")],
                         "raw_sum": None,
                         "points_count": 0,
                         "normalized_field": "followers_total",
+                        "normalized_value": page_counts.get("followers_count"),
                         "unavailable_reason": None,
-                        "raw_body": page_counts.get("_meta_raw_body"),
                     },
                 )
             except HTTPException as exc:

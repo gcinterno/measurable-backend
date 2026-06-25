@@ -81,6 +81,10 @@ def main() -> None:
         output = {
             "report_id": report.id,
             "dataset_id": dataset.id if dataset else None,
+            "report_version": {
+                "id": version.id if version else None,
+                "version": version.version if version else None,
+            },
             "page_name": dataset_data.get("page_name"),
             "period": timeframe.get("label"),
             "metrics": {

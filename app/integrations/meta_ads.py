@@ -496,8 +496,12 @@ def fetch_page_insights(
     if until is not None:
         params["until"] = until
     resp = requests.get(url, params=params, timeout=30)
+    try:
+        response_payload = resp.json()
+    except ValueError:
+        response_payload = resp.text
     _raise_meta_api_error(resp)
-    data = resp.json().get("data", [])
+    data = response_payload.get("data", []) if isinstance(response_payload, dict) else []
 
     metrics_payload: dict[str, Any] = {}
     snapshot_metrics = {"page_fans"}
@@ -515,6 +519,8 @@ def fetch_page_insights(
         else:
             metrics_payload[name] = latest_value.get("value")
         metrics_payload[f"{name}_end_time"] = latest_value.get("end_time")
+    metrics_payload["_meta_http_status_code"] = resp.status_code
+    metrics_payload["_meta_raw_body"] = _truncate_meta_log_value(_redact_meta_tokens(response_payload))
     return metrics_payload
 
 
