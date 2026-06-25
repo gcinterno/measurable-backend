@@ -2657,6 +2657,23 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         "page_visits_daily": page_visits_daily,
         "followers_growth_daily": followers_growth_daily,
         "recent_posts": recent_posts,
+        "posts_analyzed_count": _to_int(row.get("posts_analyzed_count"))
+        if _to_int(row.get("posts_analyzed_count")) is not None
+        else _to_int(normalized_metrics.get("posts_analyzed_count")),
+        "reactions_total": _to_int(row.get("reactions_total"))
+        if _to_int(row.get("reactions_total")) is not None
+        else _to_int(normalized_metrics.get("reactions_total")),
+        "comments_total": _to_int(row.get("comments_total"))
+        if _to_int(row.get("comments_total")) is not None
+        else _to_int(normalized_metrics.get("comments_total")),
+        "shares_total": _to_int(row.get("shares_total"))
+        if _to_int(row.get("shares_total")) is not None
+        else _to_int(normalized_metrics.get("shares_total")),
+        "top_post_by_engagement": row.get("top_post_by_engagement")
+        if isinstance(row.get("top_post_by_engagement"), dict)
+        else normalized_metrics.get("top_post_by_engagement")
+        if isinstance(normalized_metrics.get("top_post_by_engagement"), dict)
+        else None,
         "unavailable_metrics": unavailable_metrics if isinstance(unavailable_metrics, dict) else {},
         "facebook_metric_audit": row.get("facebook_metric_audit")
         if isinstance(row.get("facebook_metric_audit"), dict)
