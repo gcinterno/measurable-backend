@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -72,6 +73,22 @@ def client():
 
 def _auth_headers(user_id: int) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(str(user_id))}"}
+
+
+def _semantic_name_from_payload_block(block: dict) -> str | None:
+    if block.get("semantic_name"):
+        return str(block["semantic_name"])
+    data = block.get("data_json")
+    if isinstance(data, str):
+        try:
+            decoded = json.loads(data)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(decoded, dict):
+            return decoded.get("semantic_name")
+    if isinstance(data, dict):
+        return data.get("semantic_name")
+    return None
 
 
 def _seed_sources() -> dict[str, int]:
@@ -277,9 +294,22 @@ def test_create_multi_source_report_creates_ten_visual_blocks_for_two_sources(cl
             .order_by(ReportBlock.order.asc())
             .all()
         )
+        semantic_order = [json.loads(block.data_json).get("semantic_name") for block in blocks]
         assert len(blocks) == 10
         assert blocks[0].type == "title"
         assert blocks[-1].type == "text"
+        assert semantic_order == [
+            "cover",
+            "reach",
+            "impressions",
+            "engagement",
+            "page_visits",
+            "audience_growth",
+            "content_activity",
+            "top_performing_content",
+            "executive_insights",
+            "recommendations",
+        ]
         stored_sources = (
             db.query(ReportSource)
             .filter(ReportSource.report_id == report.id)
@@ -321,7 +351,19 @@ def test_create_multi_source_report_creates_ten_visual_blocks_for_two_sources(cl
     assert len(version_payload["blocks"]) == 10
     assert [block["order"] for block in version_payload["blocks"]] == list(range(1, 11))
     assert version_payload["blocks"][0]["type"] == "title"
-    assert version_payload["blocks"][1]["type"] == "text"
+    assert version_payload["blocks"][1]["type"] == "stat"
+    assert [_semantic_name_from_payload_block(block) for block in version_payload["blocks"]] == [
+        "cover",
+        "reach",
+        "impressions",
+        "engagement",
+        "page_visits",
+        "audience_growth",
+        "content_activity",
+        "top_performing_content",
+        "executive_insights",
+        "recommendations",
+    ]
 
 
 def test_create_multi_source_report_rejects_two_sources_with_non_ten_slide_request(client):

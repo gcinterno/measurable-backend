@@ -12,14 +12,26 @@ from ..config import settings
 from ..errors import http_error
 
 logger = logging.getLogger(__name__)
-META_ADS_OAUTH_SCOPE = "ads_read,business_management"
-META_PAGES_OAUTH_SCOPE = (
-    "pages_show_list,pages_read_engagement,read_insights,"
-    "instagram_basic,instagram_manage_insights,business_management"
-)
+META_OAUTH_SCOPES = [
+    "public_profile",
+    "pages_show_list",
+    "pages_read_engagement",
+    "read_insights",
+    "pages_read_user_content",
+    "instagram_business_basic",
+    "instagram_business_manage_insights",
+    "ads_read",
+]
+META_OAUTH_SCOPE = ",".join(META_OAUTH_SCOPES)
+META_ADS_OAUTH_SCOPE = META_OAUTH_SCOPE
+META_PAGES_OAUTH_SCOPE = META_OAUTH_SCOPE
 META_PAGES_CALLBACK_PATH = "/integrations/meta/callback-pages"
 META_ADS_CALLBACK_PATH = "/integrations/meta-ads/callback"
 META_OAUTH_STATE_PURPOSE = "meta_pages_oauth"
+
+
+def _meta_oauth_log_message(event: str, payload: dict[str, Any]) -> str:
+    return f"{event} {json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True)}"
 
 
 def _truncate_meta_log_value(value: Any, limit: int = 4000) -> str | None:
@@ -195,16 +207,37 @@ def oauth_connect_url(
     *,
     scope: str | None = None,
     redirect_uri: str | None = None,
+    auth_type: str | None = None,
 ) -> str:
     _require_meta_config()
     base = f"https://www.facebook.com/{settings.meta_api_version}/dialog/oauth"
+    final_scope = scope or META_ADS_OAUTH_SCOPE
+    final_redirect_uri = redirect_uri or settings.meta_redirect_uri
     params = {
         "client_id": settings.meta_app_id,
-        "redirect_uri": redirect_uri or settings.meta_redirect_uri,
+        "redirect_uri": final_redirect_uri,
         "state": state,
-        "scope": scope or META_ADS_OAUTH_SCOPE,
+        "scope": final_scope,
         "response_type": "code",
     }
+    if auth_type:
+        params["auth_type"] = auth_type
+    logger.info(
+        _meta_oauth_log_message(
+            "META_OAUTH_AUTH_URL_CREATED",
+            {
+                "provider": "meta_ads",
+                "client_id_loaded": bool(settings.meta_app_id),
+                "redirect_uri": final_redirect_uri,
+                "response_type": "code",
+                "auth_type": auth_type,
+                "scope": final_scope,
+                "scopes_requested": META_OAUTH_SCOPES,
+                "state_present": bool(state),
+                "oauth_dialog_url": base,
+            },
+        )
+    )
     return f"{base}?" + "&".join(f"{k}={requests.utils.quote(str(v))}" for k, v in params.items())
 
 
@@ -240,12 +273,21 @@ def oauth_connect_pages_url(
     }
     if auth_type:
         params["auth_type"] = auth_type
-    logger.warning(
-        "Meta Pages OAuth URL params scope=%s redirect_uri=%s client_id_loaded=%s auth_type=%s",
-        META_PAGES_OAUTH_SCOPE,
-        final_redirect_uri,
-        bool(settings.meta_pages_app_id),
-        auth_type,
+    logger.info(
+        _meta_oauth_log_message(
+            "META_OAUTH_AUTH_URL_CREATED",
+            {
+                "provider": "meta_pages",
+                "client_id_loaded": bool(settings.meta_pages_app_id),
+                "redirect_uri": final_redirect_uri,
+                "response_type": "code",
+                "auth_type": auth_type,
+                "scope": META_PAGES_OAUTH_SCOPE,
+                "scopes_requested": META_OAUTH_SCOPES,
+                "state_present": bool(state),
+                "oauth_dialog_url": base,
+            },
+        )
     )
     return f"{base}?" + "&".join(f"{k}={requests.utils.quote(str(v))}" for k, v in params.items())
 

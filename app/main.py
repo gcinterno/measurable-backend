@@ -46,6 +46,7 @@ from .crypto import decrypt_secret, encrypt_secret
 from .db import SessionLocal, engine
 from .integrations.meta_ads import (
     META_ADS_OAUTH_SCOPE,
+    META_OAUTH_SCOPES,
     META_PAGES_OAUTH_SCOPE,
     debug_ads_permissions,
     debug_token,
@@ -2697,12 +2698,10 @@ def _parse_cors_origins(raw: str | None) -> list[str]:
 CORS_ALLOWED_ORIGINS = _parse_cors_origins(settings.cors_origins)
 CORS_ALLOW_CREDENTIALS = True
 EXPECTED_BACKEND_PORT = 8001
-META_PAGES_REACH_METRIC_CANDIDATES = [
-    "page_impressions_unique",
+META_PAGES_ORGANIC_IMPRESSIONS_METRIC_CANDIDATES = [
+    "page_posts_impressions_organic",
 ]
-META_PAGES_IMPRESSIONS_METRIC_CANDIDATES = [
-    "page_impressions",
-]
+META_PAGES_IMPRESSIONS_METRIC_CANDIDATES = META_PAGES_ORGANIC_IMPRESSIONS_METRIC_CANDIDATES
 
 app = FastAPI()
 
@@ -7111,7 +7110,10 @@ def _extract_meta_debug_token_target_ids(debug_token_payload: dict[str, Any]) ->
     target_scope_names = {
         "pages_show_list",
         "pages_read_engagement",
-        "instagram_basic",
+        "pages_read_user_content",
+        "instagram_business_basic",
+        "instagram_business_manage_insights",
+        "ads_read",
     }
     target_ids: list[str] = []
     seen_target_ids: set[str] = set()
@@ -7754,15 +7756,18 @@ def _expand_meta_daily_series(
     return expanded
 
 
-def _sum_meta_daily_series(points: list[dict] | None) -> int | None:
-    numeric_values = [
-        int(point.get("value"))
-        for point in points or []
-        if isinstance(point, dict) and isinstance(point.get("value"), (int, float))
-    ]
+def _sum_meta_daily_series(points: list[dict] | None) -> int | float | None:
+    numeric_values: list[float] = []
+    for point in points or []:
+        if not isinstance(point, dict):
+            continue
+        numeric = _sum_nested_numeric_values(point.get("value"))
+        if numeric is not None:
+            numeric_values.append(float(numeric))
     if not numeric_values:
         return None
-    return sum(numeric_values)
+    total = sum(numeric_values)
+    return int(total) if total.is_integer() else total
 
 
 def _facebook_metric_unavailable_reason(
@@ -9283,6 +9288,10 @@ def _extract_debug_token_summary(debug_token_payload: dict[str, Any]) -> dict[st
     }
 
 
+def _meta_oauth_log(event: str, **payload: Any) -> None:
+    logger.info("%s %s", event, json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True))
+
+
 def _run_meta_pages_oauth_callback(
     *,
     code: str,
@@ -9338,17 +9347,18 @@ def _run_meta_pages_oauth_callback(
     integration_id: int | None = None
     integration: Integration | None = None
     try:
-        logger.warning(
-            "Meta Pages callback received code_received=%s workspace_id=%s user_id=%s state_integration_id=%s redirect_uri_param=%s selected_integration_type=%s reconnect_requested=%s state_callback_route=%s state=%s",
-            bool(code),
-            workspace_id,
-            effective_user_id,
-            state_integration_id,
-            redirect_uri,
-            selected_integration_type,
-            reconnect_requested,
-            state_callback_route,
-            payload,
+        _meta_oauth_log(
+            "META_OAUTH_CALLBACK_RECEIVED",
+            provider="meta_pages",
+            code_received=bool(code),
+            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            state_integration_id=state_integration_id,
+            redirect_uri_param=redirect_uri,
+            selected_integration_type=selected_integration_type,
+            reconnect_requested=reconnect_requested,
+            state_callback_route=state_callback_route,
+            state_payload=payload,
         )
         _require_workspace_access(db, effective_user_id, workspace_id)
 
@@ -9482,17 +9492,35 @@ def _run_meta_pages_oauth_callback(
         )
         debug_token_payload = debug_token(access_token)
         debug_token_summary = _extract_debug_token_summary(debug_token_payload)
-        logger.warning(
-            "Meta Pages callback token debug integration_id=%s workspace_id=%s user_id=%s token_account_id=%s debug_token_is_valid=%s debug_token_scopes=%s debug_token_granular_target_ids=%s reconnect_requested=%s",
-            integration.id,
-            workspace_id,
-            effective_user_id,
-            token_account.id,
-            debug_token_summary["is_valid"],
-            debug_token_summary["scopes"],
-            debug_token_summary["granular_target_ids"],
-            reconnect_requested,
+        received_scopes = [
+            str(scope).strip()
+            for scope in debug_token_summary["scopes"]
+            if str(scope).strip()
+        ]
+        _meta_oauth_log(
+            "META_OAUTH_TOKEN_SCOPES_RECEIVED",
+            provider="meta_pages",
+            integration_id=integration.id,
+            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            token_account_id=token_account.id,
+            token_valid=debug_token_summary["is_valid"],
+            scopes_received=received_scopes,
+            requested_scopes=META_OAUTH_SCOPES,
+            granular_target_ids=debug_token_summary["granular_target_ids"],
+            reconnect_requested=reconnect_requested,
         )
+        missing_scopes = [scope for scope in META_OAUTH_SCOPES if scope not in received_scopes]
+        if missing_scopes:
+            _meta_oauth_log(
+                "META_PERMISSION_MISSING",
+                provider="meta_pages",
+                integration_id=integration.id,
+                workspace_id=workspace_id,
+                user_id=effective_user_id,
+                missing_scopes=missing_scopes,
+                scopes_received=received_scopes,
+            )
         if debug_token_summary["is_valid"] is not True:
             if not reconnect_requested:
                 _set_meta_integration_status(db, integration, status="disconnected")
@@ -9540,6 +9568,46 @@ def _run_meta_pages_oauth_callback(
             record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
         )
         page_payloads = [_meta_page_out_from_cache(page) for page in facebook_pages]
+        connected_assets = [
+            {
+                "record_type": page.record_type,
+                "page_id": page.page_id,
+                "name": page.name,
+                "instagram_username": page.instagram_username,
+            }
+            for page in cached_pages
+        ]
+        _meta_oauth_log(
+            "META_CONNECTED_ASSETS_DISCOVERED",
+            provider="meta_pages",
+            integration_id=integration.id,
+            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            selected_integration_type=selected_integration_type,
+            assets_count=len(connected_assets),
+            facebook_pages_count=len(page_payloads),
+            instagram_accounts_count=len(instagram_accounts),
+            assets=connected_assets,
+        )
+        if not connected_assets:
+            if not reconnect_requested:
+                _set_meta_integration_status(db, integration, status="disconnected")
+            return (
+                _meta_oauth_popup_response(
+                    status="error",
+                    source=state_source,
+                    integration_id=integration.id,
+                    error="no_authorized_assets",
+                    message="Meta connected, but no authorized Facebook Pages or Instagram assets were returned.",
+                )
+                if redirect_to_frontend
+                else _safe_meta_callback_payload(
+                    success=False,
+                    pages=[],
+                    error="no_authorized_assets",
+                    integration_id=integration.id,
+                )
+            )
         graph_page_names = [item.get("page_name") for item in diagnostics if item.get("page_name")]
         logger.warning(
             "Meta Pages callback account sync integration_id=%s workspace_id=%s user_id=%s state_integration_id=%s resolved_integration_id=%s token_id=%s pages_returned_from_graph=%s page_names_returned_from_graph=%s pages_deleted_as_stale=%s pages_saved_final=%s instagram_accounts_saved_final=%s selected_integration_type=%s",
@@ -10223,6 +10291,12 @@ def _meta_point_label(value) -> str | None:
 
 
 METRIC_ALIASES: dict[str, list[str]] = {
+    "organic_impressions": [
+        "organic_impressions",
+        "organic_impressions_total",
+        "page_posts_impressions_organic",
+        "daily_organic_impressions",
+    ],
     "reach": [
         "reach",
         "page_impressions_unique",
@@ -10278,22 +10352,38 @@ METRIC_ALIASES: dict[str, list[str]] = {
         "fan_count",
         "page_fans",
     ],
+    "fans": [
+        "fans",
+        "fans_total",
+        "fan_count",
+    ],
+    "reactions": [
+        "reactions",
+        "reactions_total",
+        "page_actions_post_reactions_total",
+    ],
 }
 
 METRIC_LABELS: dict[str, str] = {
+    "organic_impressions": "Organic Impressions",
     "reach": "Reach",
     "impressions": "Impressions",
     "engagement": "Engagement",
     "page_views": "Page Views",
     "followers": "Followers",
+    "fans": "Fans",
+    "reactions": "Reactions",
 }
 
 METRIC_LABELS_ES: dict[str, str] = {
+    "organic_impressions": "Impresiones orgánicas",
     "reach": "Alcance",
     "impressions": "Impresiones",
     "engagement": "Engagement",
     "page_views": "Visitas a la página",
     "followers": "Seguidores",
+    "fans": "Fans",
+    "reactions": "Reacciones",
 }
 
 METRIC_UNAVAILABLE_MESSAGE = "Meta did not return this metric for the selected period."
@@ -10307,6 +10397,36 @@ def normalizeMetricValue(value) -> float | int | None:
     if float(numeric).is_integer():
         return int(numeric)
     return float(numeric)
+
+
+def _sum_nested_numeric_values(value: Any) -> float | int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value) if float(value).is_integer() else float(value)
+    if isinstance(value, dict):
+        total = 0.0
+        found = False
+        for item in value.values():
+            numeric = _sum_nested_numeric_values(item)
+            if numeric is not None:
+                total += float(numeric)
+                found = True
+        if not found:
+            return None
+        return int(total) if total.is_integer() else total
+    if isinstance(value, list):
+        total = 0.0
+        found = False
+        for item in value:
+            numeric = _sum_nested_numeric_values(item)
+            if numeric is not None:
+                total += float(numeric)
+                found = True
+        if not found:
+            return None
+        return int(total) if total.is_integer() else total
+    return None
 
 
 def _meta_full_date_label(value: Any) -> str | None:
@@ -11332,10 +11452,16 @@ def _meta_unavailable_metrics(context: dict) -> dict[str, str]:
 def _meta_metric_unavailable_reason(context: dict, metric: str) -> str | None:
     unavailable = _meta_unavailable_metrics(context)
     candidate_keys = [metric]
-    if metric == "engagement":
+    if metric == "organic_impressions":
+        candidate_keys.extend(["organic_impressions_total", "page_posts_impressions_organic"])
+    elif metric == "engagement":
         candidate_keys.extend(["total_interactions", "content_interactions", "accounts_engaged"])
     elif metric == "followers":
         candidate_keys.extend(["followers_count", "followers"])
+    elif metric == "fans":
+        candidate_keys.extend(["fan_count", "fans_total"])
+    elif metric == "reactions":
+        candidate_keys.extend(["reactions_total", "page_actions_post_reactions_total"])
     elif metric == "page_views":
         candidate_keys.extend(["page_views", "page_visits", "profile_views", "views"])
     elif metric == "profile_visits":
@@ -11370,10 +11496,13 @@ def _metric_aliases(metric_key: str) -> list[str]:
 
 def _metric_summary_description(metric_key: str) -> str:
     descriptions = {
+        "organic_impressions": "Organic post impressions",
         "reach": "Total reach",
         "impressions": "Total impressions",
         "engagement": "Total engagement",
         "followers": "Current audience size",
+        "fans": "Current page fans",
+        "reactions": "Total reactions",
         "page_views": "Total page views",
     }
     return descriptions.get(str(metric_key or "").strip().lower(), "Total metric value")
@@ -11433,11 +11562,14 @@ def _facebook_metric_audit_reason(context: dict[str, Any], metric_key: str) -> s
 
 def _facebook_metric_slide_unavailable_message(metric_key: str) -> str:
     messages = {
+        "organic_impressions": "Meta did not return organic post impressions for the selected period.",
         "reach": "Meta did not return unique reach for the selected period.",
         "impressions": "Meta did not return impressions for the selected period.",
         "page_views": "Meta did not return page views for the selected period.",
         "engagement": "Meta did not return engagement for the selected period.",
         "followers": "Meta did not return followers for the selected period.",
+        "fans": "Meta did not return fans for the selected period.",
+        "reactions": "Meta did not return reactions for the selected period.",
     }
     return messages.get(metric_key, "Meta did not return this metric for the selected period.")
 
@@ -11463,7 +11595,30 @@ def _facebook_pages_metric_details(context: dict[str, Any], metric_key: str) -> 
                 return normalized
         return None
 
-    if metric_key == "reach":
+    if metric_key == "organic_impressions":
+        daily_candidates = [
+            report_inputs.get("daily_organic_impressions"),
+            report_inputs.get("organic_impressions_daily"),
+            normalized_metrics.get("daily_organic_impressions"),
+            normalized_metrics.get("organic_impressions_daily"),
+            context.get("daily_organic_impressions"),
+        ]
+        total_candidates = [
+            report_inputs.get("organic_impressions_total"),
+            normalized_metrics.get("organic_impressions_total"),
+            context.get("organic_impressions_total"),
+            report_inputs.get("organic_impressions"),
+            context.get("organic_impressions"),
+        ]
+        source_metric = (
+            str(
+                (audit_entry.get("source_metric") if isinstance(audit_entry, dict) else None)
+                or report_inputs.get("organic_impressions_source_metric")
+                or ""
+            ).strip()
+            or None
+        )
+    elif metric_key == "reach":
         daily_candidates = [
             report_inputs.get("reach_daily"),
             normalized_metrics.get("daily_reach"),
@@ -11547,6 +11702,40 @@ def _facebook_pages_metric_details(context: dict[str, Any], metric_key: str) -> 
             str((audit_entry.get("source_metric") if isinstance(audit_entry, dict) else None) or report_inputs.get("page_views_source_metric") or "").strip()
             or None
         )
+    elif metric_key == "fans":
+        daily_candidates = []
+        total_candidates = [
+            report_inputs.get("fans_total"),
+            normalized_metrics.get("fans_total"),
+            context.get("fans_total"),
+            report_inputs.get("fans"),
+            report_inputs.get("fan_count"),
+            context.get("fans"),
+        ]
+        source_metric = (
+            str((audit_entry.get("source_metric") if isinstance(audit_entry, dict) else None) or "fan_count").strip()
+            or None
+        )
+    elif metric_key == "reactions":
+        daily_candidates = [
+            report_inputs.get("daily_reactions"),
+            normalized_metrics.get("daily_reactions"),
+            context.get("daily_reactions"),
+        ]
+        total_candidates = [
+            report_inputs.get("reactions_total"),
+            normalized_metrics.get("reactions_total"),
+            context.get("reactions_total"),
+            report_inputs.get("reactions"),
+            context.get("reactions"),
+        ]
+        source_metric = (
+            str(
+                (audit_entry.get("source_metric") if isinstance(audit_entry, dict) else None)
+                or "page_actions_post_reactions_total"
+            ).strip()
+            or None
+        )
     else:
         daily_candidates = [report_inputs.get("followers_daily"), context.get("followers_daily")]
         total_candidates = [
@@ -11570,7 +11759,9 @@ def _facebook_pages_metric_details(context: dict[str, Any], metric_key: str) -> 
                 break
 
     total = _candidate_total(total_candidates)
-    if total is None and daily_series and metric_key in {"reach", "impressions", "engagement", "page_views"}:
+    if total is None and metric_key == "reactions":
+        total = _sum_meta_daily_series(daily_series)
+    if total is None and daily_series and metric_key in {"organic_impressions", "reach", "impressions", "engagement", "page_views"}:
         total = _meta_metric_total_for_series(metric_key, daily_series)
 
     unavailable_reason = _facebook_metric_audit_reason(context, metric_key)
@@ -11589,11 +11780,14 @@ def _log_facebook_pages_report_metric_payload(context: dict[str, Any], payload: 
         return
     metric_key = str(payload.get("metric_key") or "").strip().lower()
     event_map = {
+        "organic_impressions": "FACEBOOK_METRIC_RESOLVED_ORGANIC_IMPRESSIONS",
         "reach": "FACEBOOK_METRIC_RESOLVED_REACH",
         "impressions": "FACEBOOK_METRIC_RESOLVED_IMPRESSIONS",
         "engagement": "FACEBOOK_METRIC_RESOLVED_ENGAGEMENT",
         "page_views": "FACEBOOK_METRIC_RESOLVED_PAGE_VIEWS",
         "followers": "FACEBOOK_METRIC_RESOLVED_FOLLOWERS",
+        "fans": "FACEBOOK_METRIC_RESOLVED_FANS",
+        "reactions": "FACEBOOK_METRIC_RESOLVED_REACTIONS",
     }
     event_name = event_map.get(metric_key)
     if not event_name:
@@ -12281,7 +12475,13 @@ def build_metric_ai_insight(metric_slide: dict[str, Any], context: dict[str, Any
     peak = f" El pico más alto aparece en {highest_label}." if highest_label else ""
     low = f" El punto más bajo fue {lowest_label}." if lowest_label and lowest_label != highest_label else ""
 
-    if metric_key == "reach":
+    if metric_key == "organic_impressions":
+        full = (
+            f"Las impresiones orgánicas de publicaciones llegaron a {total}.{peak}{low} "
+            f"{trend or 'Meta devolvió esta métrica como señal de visibilidad orgánica de posts durante el periodo.'} "
+            "Léela como visibilidad orgánica de contenido, no como unique reach."
+        )
+    elif metric_key == "reach":
         full = (
             f"El alcance acumuló {total} personas durante el periodo.{peak} "
             f"{trend or 'La distribución diaria ayuda a identificar qué piezas empujaron más visibilidad.'} "
@@ -12312,6 +12512,17 @@ def build_metric_ai_insight(metric_slide: dict[str, Any], context: dict[str, Any
         full = (
             f"La comunidad cerró el periodo con {total} seguidores. "
             "Este dato funciona como referencia del tamaño actual de audiencia para leer el resto de métricas disponibles."
+        )
+    elif metric_key == "fans":
+        full = (
+            f"La página cerró el periodo con {total} fans. "
+            "Este dato se presenta como snapshot actual del tamaño de la base de fans devuelta por Meta."
+        )
+    elif metric_key == "reactions":
+        full = (
+            f"Las reacciones totalizaron {total}.{peak}{low} "
+            f"{trend or 'La serie disponible ayuda a identificar los días con mayor respuesta emocional al contenido.'} "
+            "Úsalo como señal complementaria al engagement total."
         )
     else:
         full = (
@@ -12411,28 +12622,28 @@ def build_final_ai_summary(slides: dict[str, dict[str, Any]], context: dict[str,
         for key, payload in slides.items()
         if isinstance(payload, dict) and not payload.get("is_available")
     ]
-    reach = slides.get("reach", {})
-    impressions = slides.get("impressions", {})
+    organic_impressions = slides.get("organic_impressions", {})
     engagement = slides.get("engagement", {})
     followers = slides.get("followers", {})
+    fans = slides.get("fans", {})
+    reactions = slides.get("reactions", {})
     page_views = slides.get("page_views", {})
     posts = _meta_recent_posts(context)
 
     if available:
         parts = []
-        if reach.get("total") is not None:
-            if str(reach.get("metric_key") or "").strip().lower() == "impressions":
-                parts.append(f"Impressions registró {reach.get('formatted_total')}")
-            else:
-                parts.append(f"Reach cerró en {reach.get('formatted_total')}")
-        elif reach.get("is_available") or _facebook_metric_audit_reason(context, "reach"):
+        if organic_impressions.get("total") is not None:
+            parts.append(f"Organic Impressions registró {organic_impressions.get('formatted_total')}")
+        if _facebook_metric_audit_reason(context, "reach"):
             parts.append("Meta did not return unique reach for the selected period")
-        if impressions.get("total") is not None:
-            parts.append(f"Impressions registró {impressions.get('formatted_total')}")
         if engagement.get("is_available"):
             parts.append(f"Engagement registró {engagement.get('formatted_total')}")
         if followers.get("is_available"):
             parts.append(f"Followers cerró en {followers.get('formatted_total')}")
+        if fans.get("is_available"):
+            parts.append(f"Fans cerró en {fans.get('formatted_total')}")
+        if reactions.get("is_available"):
+            parts.append(f"Reactions registró {reactions.get('formatted_total')}")
         if page_views.get("total") is not None:
             parts.append(f"Page Views alcanzó {page_views.get('formatted_total')}")
         if posts:
@@ -12450,7 +12661,7 @@ def build_final_ai_summary(slides: dict[str, dict[str, Any]], context: dict[str,
         summary += f" Métricas no disponibles por ahora: {', '.join(unavailable)}."
 
     best_metric = None
-    for payload in (engagement, impressions, page_views, reach):
+    for payload in (engagement, organic_impressions, page_views, reactions):
         if payload.get("is_available"):
             best_metric = payload
             break
@@ -12619,8 +12830,7 @@ def _build_five_slide_summary_payload(
     context: dict,
     *,
     period_label: str,
-    reach_payload: dict[str, Any],
-    impressions_payload: dict[str, Any],
+    organic_impressions_payload: dict[str, Any],
     engagement_payload: dict[str, Any],
     page_views_payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -12629,10 +12839,19 @@ def _build_five_slide_summary_payload(
         metric_key="followers",
         metric_label="Followers",
     )
+    fans_card = _build_context_metric_summary_card(
+        context,
+        metric_key="fans",
+        metric_label="Fans",
+    )
+    reactions_card = _build_context_metric_summary_card(
+        context,
+        metric_key="reactions",
+        metric_label="Reactions",
+    )
     final_insights = build_final_ai_summary(
         {
-            "reach": reach_payload,
-            "impressions": impressions_payload,
+            "organic_impressions": organic_impressions_payload,
             "engagement": engagement_payload,
             "followers": {
                 "metric_label_en": followers_card["label"],
@@ -12641,6 +12860,20 @@ def _build_five_slide_summary_payload(
                 "total": followers_card["value"],
                 "is_available": followers_card["is_available"],
             },
+            "fans": {
+                "metric_label_en": fans_card["label"],
+                "metric_label": fans_card["label"],
+                "formatted_total": fans_card["formatted_value"],
+                "total": fans_card["value"],
+                "is_available": fans_card["is_available"],
+            },
+            "reactions": {
+                "metric_label_en": reactions_card["label"],
+                "metric_label": reactions_card["label"],
+                "formatted_total": reactions_card["formatted_value"],
+                "total": reactions_card["value"],
+                "is_available": reactions_card["is_available"],
+            },
             "page_views": page_views_payload,
         },
         context,
@@ -12648,13 +12881,13 @@ def _build_five_slide_summary_payload(
     ai_summary = final_insights["ai_summary"]
     recommendation = final_insights["recommendation"]
     metrics_summary = {
-        "reach": _build_summary_metric_card("reach", reach_payload),
-        "impressions": _build_summary_metric_card("impressions", impressions_payload),
+        "organic_impressions": _build_summary_metric_card("organic_impressions", organic_impressions_payload),
         "engagement": _build_summary_metric_card("engagement", engagement_payload),
         "page_views": _build_summary_metric_card("page_views", page_views_payload),
         "followers": followers_card,
+        "fans": fans_card,
+        "reactions": reactions_card,
     }
-    metrics_summary.update(_facebook_pages_post_summary_cards(context))
     _log_json_event(
         "FACEBOOK_SUMMARY_METRICS_BUILT",
         {
@@ -13278,6 +13511,8 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             semantic_name = "audience_growth"
         elif "page visit" in label_lower or "profile visit" in label_lower:
             semantic_name = "page_visits"
+        elif "organic impression" in label_lower or "organic_impression" in label_lower:
+            semantic_name = "organic_impressions_overview"
         elif "reach" in label_lower:
             semantic_name = "reach_overview"
         elif "page view" in label_lower or "page_view" in label_lower or "visitas" in label_lower:
@@ -13291,7 +13526,9 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
         else:
             semantic_name = "summary"
     metric = "reach"
-    if semantic_name == "impressions" or "impression" in semantic_name or "impression" in label.lower():
+    if semantic_name == "organic_impressions_overview" or "organic impression" in label.lower():
+        metric = "organic_impressions"
+    elif semantic_name == "impressions" or "impression" in semantic_name or "impression" in label.lower():
         metric = "impressions"
     elif semantic_name == "engagement" or "engagement" in semantic_name or "engagement" in label.lower():
         metric = "engagement"
@@ -13303,11 +13540,19 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
         metric = "posts"
     elif "post" in semantic_name or "content" in semantic_name:
         metric = "engagement"
-    if semantic_name in {"reach", "impressions", "engagement", "page_visits", "reach_overview", "impressions_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
+    if semantic_name in {"reach", "impressions", "engagement", "page_visits", "reach_overview", "organic_impressions_overview", "impressions_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
         report_timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
         period_label = str(report_timeframe.get("label") or "Selected period")
         reach_stats = _meta_series_stats(extractDailyMetricSeries(context, "reach"))
-        if semantic_name in {"reach_overview", "reach"}:
+        if semantic_name in {"organic_impressions_overview"}:
+            metric_payload = _build_facebook_pages_metric_slide_payload(
+                context,
+                metric_key="organic_impressions",
+                title="ORGANIC IMPRESSIONS",
+                label="TOTAL ORGANIC IMPRESSIONS",
+                semantic_name=semantic_name,
+            )
+        elif semantic_name in {"reach_overview", "reach"}:
             metric_payload = _build_facebook_pages_metric_slide_payload(
                 context,
                 metric_key="reach",
@@ -13363,7 +13608,7 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             if not points
             else f"Daily {label.lower()} is available for this period."
         )
-    if semantic_name in {"reach", "impressions", "engagement", "page_visits", "reach_overview", "impressions_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
+    if semantic_name in {"reach", "impressions", "engagement", "page_visits", "reach_overview", "organic_impressions_overview", "impressions_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
         insight_short_value = str(data.get("insight_short") or data.get("insight") or insight)
         insight_full_value = str(data.get("insight_full") or data.get("insight") or insight_short_value)
     else:
@@ -14282,7 +14527,7 @@ def _renumber_blocks(blocks: list[dict]) -> list[dict]:
 
 def build_5_blocks(dataset: dict) -> list[dict]:
     # Source of truth for official social 5-slide report structure:
-    # cover, reach, impressions, engagement, summary.
+    # cover, organic impressions, engagement, page views, summary.
     report_timeframe = dataset["report_timeframe"]
     period_label = str(report_timeframe.get("label") or "Selected period")
     resolved_branding = resolve_report_branding(
@@ -14292,32 +14537,25 @@ def build_5_blocks(dataset: dict) -> list[dict]:
         preferred_branding=dataset.get("branding") if isinstance(dataset.get("branding"), dict) else None,
     )
     metric_context = {**dataset, "branding": resolved_branding}
-    reach_payload = _build_facebook_pages_metric_slide_payload(
+    organic_impressions_payload = _build_facebook_pages_metric_slide_payload(
         metric_context,
-        metric_key="reach",
-        title="Reach",
-        label="Total Reach",
-        semantic_name="reach_overview",
-    )
-    impressions_payload = _build_facebook_pages_metric_slide_payload(
-        metric_context,
-        metric_key="impressions",
-        title="Impressions",
-        label="Total Impressions",
-        semantic_name="impressions_overview",
+        metric_key="organic_impressions",
+        title="ORGANIC IMPRESSIONS",
+        label="TOTAL ORGANIC IMPRESSIONS",
+        semantic_name="organic_impressions_overview",
     )
     engagement_payload = _build_facebook_pages_metric_slide_payload(
         metric_context,
         metric_key="engagement",
-        title="Engagement",
-        label="Total Engagement",
+        title="ENGAGEMENT",
+        label="TOTAL ENGAGEMENT",
         semantic_name="engagement_overview",
     )
     page_views_payload = _build_facebook_pages_metric_slide_payload(
         metric_context,
         metric_key="page_views",
-        title="Page Views",
-        label="Total Page Views",
+        title="PAGE VIEWS",
+        label="TOTAL PAGE VIEWS",
         semantic_name="page_views_overview",
     )
     followers_details = _facebook_pages_metric_details(metric_context, "followers")
@@ -14355,8 +14593,8 @@ def build_5_blocks(dataset: dict) -> list[dict]:
                 "chart_data_keys": sorted(str(key) for key in (metric_context.get("chart_data") or {}).keys())
                 if isinstance(metric_context.get("chart_data"), dict)
                 else [],
-                "reach_daily_source_path": reach_payload.get("daily_series_source_path"),
-                "reach_daily_source_metric_key": reach_payload.get("daily_series_source_metric_key"),
+                "organic_impressions_daily_source_path": organic_impressions_payload.get("daily_series_source_path"),
+                "organic_impressions_daily_source_metric_key": organic_impressions_payload.get("daily_series_source_metric_key"),
                 "engagement_daily_source_path": engagement_payload.get("daily_series_source_path"),
                 "engagement_daily_source_metric_key": engagement_payload.get("daily_series_source_metric_key"),
                 "page_views_daily_source_path": page_views_payload.get("daily_series_source_path"),
@@ -14397,7 +14635,7 @@ def build_5_blocks(dataset: dict) -> list[dict]:
             {
                 "slide_number": 2,
                 "slide_type": "metric",
-                **reach_payload,
+                **organic_impressions_payload,
             },
         ),
         _meta_report_block(
@@ -14406,7 +14644,7 @@ def build_5_blocks(dataset: dict) -> list[dict]:
             {
                 "slide_number": 3,
                 "slide_type": "metric",
-                **impressions_payload,
+                **engagement_payload,
             },
         ),
         _meta_report_block(
@@ -14415,7 +14653,7 @@ def build_5_blocks(dataset: dict) -> list[dict]:
             {
                 "slide_number": 4,
                 "slide_type": "metric",
-                **engagement_payload,
+                **page_views_payload,
             },
         ),
         _meta_report_block(
@@ -14424,8 +14662,7 @@ def build_5_blocks(dataset: dict) -> list[dict]:
             _build_five_slide_summary_payload(
                 metric_context,
                 period_label=period_label,
-                reach_payload=reach_payload,
-                impressions_payload=impressions_payload,
+                organic_impressions_payload=organic_impressions_payload,
                 engagement_payload=engagement_payload,
                 page_views_payload=page_views_payload,
             ),
@@ -15257,7 +15494,7 @@ def create_report(
             else:
                 block_data = {}
             semantic_name = str(block_data.get("semantic_name") or "").strip()
-            if semantic_name in {"reach_overview", "impressions_overview", "engagement_overview"}:
+            if semantic_name in {"organic_impressions_overview", "engagement_overview", "page_views_overview"}:
                 metric_payloads[semantic_name] = block_data
             elif semantic_name == "executive_summary":
                 ai_summary_length = len(str(block_data.get("ai_summary") or block_data.get("text") or ""))
@@ -15269,21 +15506,21 @@ def create_report(
                 "template": "executive_5_slide",
                 "slide_count": int(slide_limits["requested_slides"]),
                 "dataset_keys_available": sorted(report_row.keys()),
-                "slide_2_metric_key": metric_payloads.get("reach_overview", {}).get("metric_key"),
-                "slide_2_total": metric_payloads.get("reach_overview", {}).get("total"),
-                "slide_2_daily_series_length": len(metric_payloads.get("reach_overview", {}).get("daily_series") or []),
-                "slide_2_daily_series_source_path": metric_payloads.get("reach_overview", {}).get("daily_series_source_path"),
-                "slide_2_daily_series_source_metric_key": metric_payloads.get("reach_overview", {}).get("daily_series_source_metric_key"),
-                "slide_3_metric_key": metric_payloads.get("impressions_overview", {}).get("metric_key"),
-                "slide_3_total": metric_payloads.get("impressions_overview", {}).get("total"),
-                "slide_3_daily_series_length": len(metric_payloads.get("impressions_overview", {}).get("daily_series") or []),
-                "slide_3_daily_series_source_path": metric_payloads.get("impressions_overview", {}).get("daily_series_source_path"),
-                "slide_3_daily_series_source_metric_key": metric_payloads.get("impressions_overview", {}).get("daily_series_source_metric_key"),
-                "slide_4_metric_key": metric_payloads.get("engagement_overview", {}).get("metric_key"),
-                "slide_4_total": metric_payloads.get("engagement_overview", {}).get("total"),
-                "slide_4_daily_series_length": len(metric_payloads.get("engagement_overview", {}).get("daily_series") or []),
-                "slide_4_daily_series_source_path": metric_payloads.get("engagement_overview", {}).get("daily_series_source_path"),
-                "slide_4_daily_series_source_metric_key": metric_payloads.get("engagement_overview", {}).get("daily_series_source_metric_key"),
+                "slide_2_metric_key": metric_payloads.get("organic_impressions_overview", {}).get("metric_key"),
+                "slide_2_total": metric_payloads.get("organic_impressions_overview", {}).get("total"),
+                "slide_2_daily_series_length": len(metric_payloads.get("organic_impressions_overview", {}).get("daily_series") or []),
+                "slide_2_daily_series_source_path": metric_payloads.get("organic_impressions_overview", {}).get("daily_series_source_path"),
+                "slide_2_daily_series_source_metric_key": metric_payloads.get("organic_impressions_overview", {}).get("daily_series_source_metric_key"),
+                "slide_3_metric_key": metric_payloads.get("engagement_overview", {}).get("metric_key"),
+                "slide_3_total": metric_payloads.get("engagement_overview", {}).get("total"),
+                "slide_3_daily_series_length": len(metric_payloads.get("engagement_overview", {}).get("daily_series") or []),
+                "slide_3_daily_series_source_path": metric_payloads.get("engagement_overview", {}).get("daily_series_source_path"),
+                "slide_3_daily_series_source_metric_key": metric_payloads.get("engagement_overview", {}).get("daily_series_source_metric_key"),
+                "slide_4_metric_key": metric_payloads.get("page_views_overview", {}).get("metric_key"),
+                "slide_4_total": metric_payloads.get("page_views_overview", {}).get("total"),
+                "slide_4_daily_series_length": len(metric_payloads.get("page_views_overview", {}).get("daily_series") or []),
+                "slide_4_daily_series_source_path": metric_payloads.get("page_views_overview", {}).get("daily_series_source_path"),
+                "slide_4_daily_series_source_metric_key": metric_payloads.get("page_views_overview", {}).get("daily_series_source_metric_key"),
                 "slide_5_ai_summary_length": ai_summary_length,
             },
         )
@@ -16506,6 +16743,7 @@ def _create_meta_dataset_report(
                 },
             )
         metric_from_semantic = {
+            "organic_impressions_overview": "organic_impressions",
             "reach": "reach",
             "reach_overview": "reach",
             "impressions": "impressions",
@@ -16591,7 +16829,7 @@ def _create_meta_dataset_report(
                     "reason_if_null": comparison.get("reason_if_null"),
                 },
             )
-        if semantic_name in {"impressions_overview", "engagement_overview", "page_views_overview"}:
+        if semantic_name in {"organic_impressions_overview", "engagement_overview", "page_views_overview"}:
             chart = block_data.get("chart") if isinstance(block_data.get("chart"), dict) else {}
             chart_points = chart.get("points") if isinstance(chart.get("points"), list) else []
             first_chart_point = chart_points[0] if chart_points else None
@@ -16626,7 +16864,7 @@ def _create_meta_dataset_report(
                     "reason_if_null": comparison.get("reason_if_null"),
                 },
             )
-        if semantic_name in {"reach_overview", "engagement_overview", "page_views_overview"}:
+        if semantic_name in {"organic_impressions_overview", "engagement_overview", "page_views_overview"}:
             logger.info(
                 "[MetricSlidePayload][resolved]",
                 extra={
@@ -18679,11 +18917,24 @@ def meta_ads_connect(
             "reconnect": reconnect,
         }
     )
+    _meta_oauth_log(
+        "META_OAUTH_SCOPES_REQUESTED",
+        provider="meta_ads",
+        workspace_id=resolved_workspace_id,
+        user_id=current_user.id,
+        integration_id=integration.id,
+        reconnect_requested=reconnect,
+        callback_route="/integrations/meta-ads/callback",
+        redirect_uri=get_meta_ads_redirect_uri(),
+        scopes_requested=META_OAUTH_SCOPES,
+        scope=META_ADS_OAUTH_SCOPE,
+    )
     return MetaAdsConnectOut(
         auth_url=oauth_connect_url(
             state,
             scope=META_ADS_OAUTH_SCOPE,
             redirect_uri=get_meta_ads_redirect_uri(),
+            auth_type="rerequest",
         ),
         integration_id=integration.id,
         scope=META_ADS_OAUTH_SCOPE,
@@ -18701,6 +18952,15 @@ def meta_ads_callback(
     db: Session = Depends(get_db),
 ) -> Response:
     if error:
+        _meta_oauth_log(
+            "META_OAUTH_CALLBACK_RECEIVED",
+            provider="meta_ads",
+            callback_route="/integrations/meta-ads/callback",
+            code_received=bool(code),
+            state_received=bool(state),
+            error=str(error or "").strip() or None,
+            error_reason=str(error_reason or "").strip() or None,
+        )
         return _meta_oauth_popup_response(
             status="error",
             error=str(error_reason or error).strip() or "oauth_error",
@@ -18709,6 +18969,14 @@ def meta_ads_callback(
             provider="meta_ads",
         )
     if not code or not state:
+        _meta_oauth_log(
+            "META_OAUTH_CALLBACK_RECEIVED",
+            provider="meta_ads",
+            callback_route="/integrations/meta-ads/callback",
+            code_received=bool(code),
+            state_received=bool(state),
+            error="missing_required_query_params",
+        )
         return _meta_oauth_popup_response(
             status="error",
             error="invalid_state",
@@ -18720,6 +18988,14 @@ def meta_ads_callback(
     try:
         state_payload = decode_state(state)
     except ValueError:
+        _meta_oauth_log(
+            "META_OAUTH_CALLBACK_RECEIVED",
+            provider="meta_ads",
+            callback_route="/integrations/meta-ads/callback",
+            code_received=bool(code),
+            state_received=bool(state),
+            error="invalid_state",
+        )
         return _meta_oauth_popup_response(
             status="error",
             error="invalid_state",
@@ -18764,6 +19040,33 @@ def meta_ads_callback(
             provider="meta_ads",
         )
 
+    debug_token_summary = _extract_debug_token_summary(debug_token(access_token))
+    received_scopes = [
+        str(scope).strip()
+        for scope in debug_token_summary["scopes"]
+        if str(scope).strip()
+    ]
+    _meta_oauth_log(
+        "META_OAUTH_TOKEN_SCOPES_RECEIVED",
+        provider="meta_ads",
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+        scopes_received=received_scopes,
+        granular_target_ids=debug_token_summary["granular_target_ids"],
+        requested_scopes=META_OAUTH_SCOPES,
+        token_valid=debug_token_summary["is_valid"],
+    )
+    missing_scopes = [scope for scope in META_OAUTH_SCOPES if scope not in received_scopes]
+    if missing_scopes:
+        _meta_oauth_log(
+            "META_PERMISSION_MISSING",
+            provider="meta_ads",
+            integration_id=integration.id,
+            workspace_id=integration.workspace_id,
+            missing_scopes=missing_scopes,
+            scopes_received=received_scopes,
+        )
+
     token_account = _ensure_meta_ads_token_account(db, integration)
     _replace_integration_token(
         db,
@@ -18771,6 +19074,46 @@ def meta_ads_callback(
         workspace_id=integration.workspace_id,
         access_token=access_token,
     )
+    accounts_discovered: list[dict[str, Any]] = []
+    try:
+        for account in list_ad_accounts(access_token):
+            account_id = str(account.get("account_id") or account.get("id") or "").strip()
+            if not account_id:
+                continue
+            accounts_discovered.append(
+                {
+                    "account_id": account_id,
+                    "name": str(account.get("name") or "").strip() or None,
+                }
+            )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        _meta_oauth_log(
+            "META_PERMISSION_MISSING",
+            provider="meta_ads",
+            integration_id=integration.id,
+            workspace_id=integration.workspace_id,
+            missing_scopes=missing_scopes,
+            asset_discovery_error=str(detail.get("message") or exc.detail or "").strip() or None,
+        )
+    _meta_oauth_log(
+        "META_CONNECTED_ASSETS_DISCOVERED",
+        provider="meta_ads",
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+        assets_count=len(accounts_discovered),
+        assets=accounts_discovered,
+    )
+    if not accounts_discovered:
+        _set_meta_integration_status(db, integration, status="disconnected")
+        return _meta_oauth_popup_response(
+            status="error",
+            error="no_authorized_assets",
+            message="Meta Ads connected, but no authorized ad accounts were returned.",
+            integration_id=integration.id,
+            callback_path="/integrations/meta-ads/callback",
+            provider="meta_ads",
+        )
     _set_meta_integration_status(db, integration, status="connected")
     return _meta_oauth_popup_response(
         status="connected",
@@ -20173,20 +20516,23 @@ def meta_connect_pages(
         }
     )
     redirect_uri = _meta_pages_redirect_uri()
-    logger.warning(
-        "Meta Pages OAuth connect workspace_id=%s user_id=%s integration_id=%s auth_redirect_uri=%s scope=%s selected_integration_type=%s reconnect_requested=%s",
-        resolved_workspace_id,
-        current_user.id,
-        integration.id,
-        redirect_uri,
-        META_PAGES_OAUTH_SCOPE,
-        selected_integration_type,
-        reconnect,
+    _meta_oauth_log(
+        "META_OAUTH_SCOPES_REQUESTED",
+        provider="meta_pages",
+        workspace_id=resolved_workspace_id,
+        user_id=current_user.id,
+        integration_id=integration.id,
+        selected_integration_type=selected_integration_type,
+        reconnect_requested=reconnect,
+        callback_route="/integrations/meta/callback-pages",
+        redirect_uri=redirect_uri,
+        scopes_requested=META_OAUTH_SCOPES,
+        scope=META_PAGES_OAUTH_SCOPE,
     )
     url = oauth_connect_pages_url(
         state,
         redirect_uri=redirect_uri,
-        auth_type="rerequest" if reconnect else None,
+        auth_type="rerequest",
     )
     return {
         "auth_url": url,
@@ -22135,23 +22481,22 @@ def _run_meta_pages_sync(
         insights: dict = {}
         posts: list[dict] = []
         reach_daily: list[dict] = []
-        impressions_daily: list[dict] = []
+        organic_impressions_daily: list[dict] = []
         views_daily: list[dict] = []
         interactions_daily: list[dict] = []
-        link_clicks_daily: list[dict] = []
-        page_visits_daily: list[dict] = []
-        followers_growth_daily: list[dict] = []
+        reactions_daily: list[dict] = []
         reach_metric_name: str | None = None
-        impressions_metric_name: str | None = None
+        organic_impressions_metric_name: str | None = None
         views_metric_name: str | None = None
         interactions_metric_name: str | None = None
-        link_clicks_metric_name: str | None = None
-        page_visits_metric_name: str | None = None
-        followers_growth_metric_name: str | None = None
+        reactions_metric_name: str | None = None
         reach_unavailable_reason: str | None = "Meta did not return this metric for the selected period."
-        impressions_unavailable_reason: str | None = "Meta did not return this metric for the selected period."
+        organic_impressions_unavailable_reason: str | None = "Meta did not return organic post impressions for the selected period."
         engagement_unavailable_reason: str | None = "Meta did not return this metric for the selected period."
         views_unavailable_reason: str | None = "Meta did not return this metric for the selected period."
+        followers_unavailable_reason: str | None = "Meta did not return followers for the selected period."
+        fans_unavailable_reason: str | None = "Meta did not return fans for the selected period."
+        reactions_unavailable_reason: str | None = "Meta did not return reactions for the selected period."
 
         if access_token:
             try:
@@ -22264,30 +22609,27 @@ def _run_meta_pages_sync(
                     "unavailable_reason": None,
                 },
             )
-            reach_payload = _fetch_meta_pages_reach_payload(
+            reach_unavailable_reason = "Meta did not return unique reach for the selected period."
+            organic_impressions_payload = _fetch_meta_pages_metric_payload(
                 access_token,
                 resolved_page_id,
                 page_name,
                 timeframe_config,
                 integration.id,
+                metric_name="page_posts_impressions_organic",
+                label="Organic post impressions",
+                daily_key="organic_impressions_daily",
             )
-            reach_metric_name = (
-                str(reach_payload["metric_name"]) if reach_payload.get("metric_name") else None
-            )
-            reach_daily = (
-                list(reach_payload["reach_daily"])
-                if isinstance(reach_payload.get("reach_daily"), list)
-                else []
-            )
-            reach_daily = _expand_meta_daily_series(
-                reach_daily,
+            organic_impressions_metric_name = str(organic_impressions_payload.get("metric_name") or "") or None
+            organic_impressions_daily = _expand_meta_daily_series(
+                list(organic_impressions_payload.get("organic_impressions_daily") or []),
                 since=timeframe_config["since"],
                 until=timeframe_config["until"],
             )
             _log_meta_history_audit(
                 page_id=resolved_page_id,
                 page_name=page_name,
-                metric_name=reach_metric_name or "page_reach",
+                metric_name=organic_impressions_metric_name or "page_posts_impressions_organic",
                 selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
                 since=str(timeframe_config.get("requested_since") or timeframe_config["since"]),
                 until=str(timeframe_config.get("requested_until") or timeframe_config["until"]),
@@ -22295,100 +22637,27 @@ def _run_meta_pages_sync(
                 current_until=str(timeframe_config.get("current_until") or timeframe_config["until"]),
                 previous_since=str(timeframe_config.get("previous_since") or ""),
                 previous_until=str(timeframe_config.get("previous_until") or ""),
-                points=reach_daily,
+                points=organic_impressions_daily,
             )
-            if reach_metric_name:
-                accepted_metrics.append(reach_metric_name)
-                insights["page_reach"] = reach_payload.get("value")
-                insights["page_reach_end_time"] = reach_payload.get("end_time")
-            else:
-                logger.warning(
-                    "Meta Pages reach unavailable after trying all candidates",
-                    extra={
-                        "integration_id": integration.id,
-                        "page_id": resolved_page_id,
-                        "timeframe": timeframe_config["preset"],
-                        "metric_candidates": META_PAGES_REACH_METRIC_CANDIDATES,
-                    },
-                )
-            reach_unavailable_reason = _facebook_metric_unavailable_reason(
-                value=reach_payload.get("value"),
-                points=reach_daily,
-                source_metric=reach_metric_name,
+            insights["report_organic_impressions_total"] = _first_non_none(
+                _sum_meta_daily_series(organic_impressions_daily),
+                organic_impressions_payload.get("value"),
+            )
+            insights["report_organic_impressions_end_time"] = organic_impressions_payload.get("end_time")
+            organic_impressions_unavailable_reason = _facebook_metric_unavailable_reason(
+                value=organic_impressions_payload.get("value"),
+                points=organic_impressions_daily,
+                source_metric=organic_impressions_metric_name,
             )
             _log_facebook_pages_metric_event(
-                "FACEBOOK_METRIC_RESOLVED_REACH",
+                "FACEBOOK_METRIC_RESOLVED_ORGANIC_IMPRESSIONS",
                 page_id=resolved_page_id,
                 page_name=page_name,
-                metric_name="reach",
-                source_metric=reach_metric_name,
-                raw_value=reach_payload.get("value"),
-                points=reach_daily,
-                unavailable_reason=reach_unavailable_reason,
-            )
-            impressions_payload = _fetch_meta_pages_impressions_payload(
-                access_token,
-                resolved_page_id,
-                page_name,
-                timeframe_config,
-                integration.id,
-            )
-            impressions_metric_name = (
-                str(impressions_payload["metric_name"])
-                if impressions_payload.get("metric_name")
-                else None
-            )
-            impressions_daily = (
-                list(impressions_payload["impressions_daily"])
-                if isinstance(impressions_payload.get("impressions_daily"), list)
-                else []
-            )
-            impressions_daily = _expand_meta_daily_series(
-                impressions_daily,
-                since=timeframe_config["since"],
-                until=timeframe_config["until"],
-            )
-            _log_meta_history_audit(
-                page_id=resolved_page_id,
-                page_name=page_name,
-                metric_name=impressions_metric_name or "page_impressions",
-                selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
-                since=str(timeframe_config.get("requested_since") or timeframe_config["since"]),
-                until=str(timeframe_config.get("requested_until") or timeframe_config["until"]),
-                current_since=str(timeframe_config.get("current_since") or timeframe_config["since"]),
-                current_until=str(timeframe_config.get("current_until") or timeframe_config["until"]),
-                previous_since=str(timeframe_config.get("previous_since") or ""),
-                previous_until=str(timeframe_config.get("previous_until") or ""),
-                points=impressions_daily,
-            )
-            if impressions_metric_name:
-                accepted_metrics.append(impressions_metric_name)
-                insights["page_impressions"] = impressions_payload.get("value")
-                insights["page_impressions_end_time"] = impressions_payload.get("end_time")
-            else:
-                logger.warning(
-                    "Meta Pages impressions unavailable after trying all candidates",
-                    extra={
-                        "integration_id": integration.id,
-                        "page_id": resolved_page_id,
-                        "timeframe": timeframe_config["preset"],
-                        "metric_candidates": META_PAGES_IMPRESSIONS_METRIC_CANDIDATES,
-                    },
-                )
-            impressions_unavailable_reason = _facebook_metric_unavailable_reason(
-                value=impressions_payload.get("value"),
-                points=impressions_daily,
-                source_metric=impressions_metric_name,
-            )
-            _log_facebook_pages_metric_event(
-                "FACEBOOK_METRIC_RESOLVED_IMPRESSIONS",
-                page_id=resolved_page_id,
-                page_name=page_name,
-                metric_name="impressions",
-                source_metric=impressions_metric_name,
-                raw_value=impressions_payload.get("value"),
-                points=impressions_daily,
-                unavailable_reason=impressions_unavailable_reason,
+                metric_name="organic_impressions",
+                source_metric=organic_impressions_metric_name,
+                raw_value=organic_impressions_payload.get("value"),
+                points=organic_impressions_daily,
+                unavailable_reason=organic_impressions_unavailable_reason,
             )
             views_payload = _fetch_meta_pages_metric_payload(
                 access_token,
@@ -22486,133 +22755,53 @@ def _run_meta_pages_sync(
                 points=interactions_daily,
                 unavailable_reason=engagement_unavailable_reason,
             )
-
-            link_clicks_payload = _fetch_meta_pages_metric_payload(
+            reactions_payload = _fetch_meta_pages_metric_payload(
                 access_token,
                 resolved_page_id,
                 page_name,
                 timeframe_config,
                 integration.id,
-                metric_name="page_consumptions",
-                label="Clics en el enlace",
-                daily_key="link_clicks_daily",
+                metric_name="page_actions_post_reactions_total",
+                label="Reactions",
+                daily_key="reactions_daily",
             )
-            link_clicks_metric_name = str(link_clicks_payload.get("metric_name") or "") or None
-            link_clicks_daily = _expand_meta_daily_series(
-                list(link_clicks_payload.get("link_clicks_daily") or []),
+            reactions_metric_name = str(reactions_payload.get("metric_name") or "") or None
+            reactions_daily = _expand_meta_daily_series(
+                list(reactions_payload.get("reactions_daily") or []),
                 since=timeframe_config["since"],
                 until=timeframe_config["until"],
             )
-            _log_meta_history_audit(
+            insights["report_reactions_total"] = _first_non_none(
+                _sum_meta_daily_series(reactions_daily),
+                _sum_nested_numeric_values(reactions_payload.get("value")),
+            )
+            reactions_unavailable_reason = _facebook_metric_unavailable_reason(
+                value=_sum_nested_numeric_values(reactions_payload.get("value")),
+                points=reactions_daily,
+                source_metric=reactions_metric_name,
+            )
+            _log_facebook_pages_metric_event(
+                "FACEBOOK_METRIC_RESOLVED_REACTIONS",
                 page_id=resolved_page_id,
                 page_name=page_name,
-                metric_name=link_clicks_metric_name or "page_consumptions",
-                selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
-                since=str(timeframe_config.get("requested_since") or timeframe_config["since"]),
-                until=str(timeframe_config.get("requested_until") or timeframe_config["until"]),
-                current_since=str(timeframe_config.get("current_since") or timeframe_config["since"]),
-                current_until=str(timeframe_config.get("current_until") or timeframe_config["until"]),
-                previous_since=str(timeframe_config.get("previous_since") or ""),
-                previous_until=str(timeframe_config.get("previous_until") or ""),
-                points=link_clicks_daily,
+                metric_name="reactions",
+                source_metric=reactions_metric_name,
+                raw_value=reactions_payload.get("value"),
+                points=reactions_daily,
+                unavailable_reason=reactions_unavailable_reason,
             )
-            insights["report_link_clicks_total"] = _sum_meta_daily_series(link_clicks_daily)
-            insights["report_link_clicks_end_time"] = link_clicks_payload.get("end_time")
-
-            page_visits_payload = _fetch_meta_pages_metric_payload(
-                access_token,
-                resolved_page_id,
-                page_name,
-                timeframe_config,
-                integration.id,
-                metric_name="page_profile_views",
-                label="Visitas",
-                daily_key="page_visits_daily",
+            accepted_metrics.extend(
+                [
+                    metric_name
+                    for metric_name in [
+                        organic_impressions_metric_name,
+                        views_metric_name,
+                        interactions_metric_name,
+                        reactions_metric_name,
+                    ]
+                    if metric_name
+                ]
             )
-            page_visits_metric_name = str(page_visits_payload.get("metric_name") or "") or None
-            page_visits_daily = _expand_meta_daily_series(
-                list(page_visits_payload.get("page_visits_daily") or []),
-                since=timeframe_config["since"],
-                until=timeframe_config["until"],
-            )
-            _log_meta_history_audit(
-                page_id=resolved_page_id,
-                page_name=page_name,
-                metric_name=page_visits_metric_name or "page_profile_views",
-                selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
-                since=str(timeframe_config.get("requested_since") or timeframe_config["since"]),
-                until=str(timeframe_config.get("requested_until") or timeframe_config["until"]),
-                current_since=str(timeframe_config.get("current_since") or timeframe_config["since"]),
-                current_until=str(timeframe_config.get("current_until") or timeframe_config["until"]),
-                previous_since=str(timeframe_config.get("previous_since") or ""),
-                previous_until=str(timeframe_config.get("previous_until") or ""),
-                points=page_visits_daily,
-            )
-            insights["report_page_visits_total"] = _sum_meta_daily_series(page_visits_daily)
-            insights["report_page_visits_end_time"] = page_visits_payload.get("end_time")
-
-            followers_growth_payload = _fetch_meta_pages_metric_payload(
-                access_token,
-                resolved_page_id,
-                page_name,
-                timeframe_config,
-                integration.id,
-                metric_name="page_fan_adds",
-                label="Seguidores",
-                daily_key="followers_growth_daily",
-            )
-            followers_growth_metric_name = str(followers_growth_payload.get("metric_name") or "") or None
-            followers_growth_daily = _expand_meta_daily_series(
-                list(followers_growth_payload.get("followers_growth_daily") or []),
-                since=timeframe_config["since"],
-                until=timeframe_config["until"],
-            )
-            _log_meta_history_audit(
-                page_id=resolved_page_id,
-                page_name=page_name,
-                metric_name=followers_growth_metric_name or "page_fan_adds",
-                selected_timeframe=str(timeframe_config.get("selected_timeframe") or timeframe_config.get("key") or ""),
-                since=str(timeframe_config.get("requested_since") or timeframe_config["since"]),
-                until=str(timeframe_config.get("requested_until") or timeframe_config["until"]),
-                current_since=str(timeframe_config.get("current_since") or timeframe_config["since"]),
-                current_until=str(timeframe_config.get("current_until") or timeframe_config["until"]),
-                previous_since=str(timeframe_config.get("previous_since") or ""),
-                previous_until=str(timeframe_config.get("previous_until") or ""),
-                points=followers_growth_daily,
-            )
-            insights["report_followers_growth_total"] = _sum_meta_daily_series(followers_growth_daily)
-            insights["report_followers_growth_end_time"] = followers_growth_payload.get("end_time")
-            for metric_name in [
-                "page_engaged_users",
-                "page_profile_views",
-                "page_post_engagements",
-                "page_fan_adds",
-                "page_fans",
-                "page_consumptions",
-                "page_consumptions_unique",
-            ]:
-                try:
-                    metric_insight = fetch_page_insights(
-                        access_token,
-                        resolved_page_id,
-                        metrics=[metric_name],
-                        since=timeframe_config["since"],
-                        until=timeframe_config["until"],
-                    )
-                except HTTPException as exc:
-                    if not _is_meta_api_error(exc):
-                        raise
-                    rejected_metrics.append(metric_name)
-                    continue
-
-                if metric_name in metric_insight:
-                    accepted_metrics.append(metric_name)
-                    insights[metric_name] = metric_insight.get(metric_name)
-                    insights[f"{metric_name}_end_time"] = metric_insight.get(
-                        f"{metric_name}_end_time"
-                    )
-                else:
-                    rejected_metrics.append(metric_name)
 
             logger.info(
                 "Meta Pages insights fetch completed",
@@ -22623,8 +22812,8 @@ def _run_meta_pages_sync(
                     "rejected_metrics": rejected_metrics,
                     "reach_source_metric": reach_metric_name,
                     "reach_daily_points": len(reach_daily),
-                    "impressions_source_metric": impressions_metric_name,
-                    "impressions_daily_points": len(impressions_daily),
+                    "organic_impressions_source_metric": organic_impressions_metric_name,
+                    "organic_impressions_daily_points": len(organic_impressions_daily),
                     "views_source_metric": views_metric_name,
                     "views_daily_points": len(views_daily),
                     "timeframe_days": (
@@ -22726,32 +22915,25 @@ def _run_meta_pages_sync(
         writer.writeheader()
         normalized_posts = normalize_meta_recent_posts(posts)
         posts_analyzed_count = len(normalized_posts)
-        reactions_total = sum(int(_meta_number(post.get("reactions")) or 0) for post in normalized_posts)
+        reactions_total = _first_non_none(
+            insights.get("report_reactions_total"),
+            sum(int(_meta_number(post.get("reactions")) or 0) for post in normalized_posts),
+        )
         comments_total = sum(int(_meta_number(post.get("comments")) or 0) for post in normalized_posts)
         shares_total = sum(int(_meta_number(post.get("shares")) or 0) for post in normalized_posts)
         top_post_by_engagement = max(normalized_posts, key=_meta_post_score) if normalized_posts else None
         followers = page_counts.get("followers_count")
-        followers_unavailable_reason = (
-            None if isinstance(followers, (int, float)) else "Meta did not return this metric for the selected period."
-        )
-        impressions = insights.get("page_impressions")
-        reach = insights.get("page_reach")
-        engagement = insights.get("page_post_engagements")
+        fans_total = page_counts.get("fan_count")
+        followers_unavailable_reason = None if isinstance(followers, (int, float)) else "Meta did not return followers for the selected period."
+        fans_unavailable_reason = None if isinstance(fans_total, (int, float)) else "Meta did not return fans for the selected period."
+        organic_impressions = insights.get("report_organic_impressions_total")
+        reach = None
+        engagement = insights.get("report_interactions_total")
         page_views_total = _first_non_none(insights.get("report_views_total"), insights.get("page_views_total"))
-        profile_visits = _first_non_none(
-            insights.get("page_profile_views"),
-            insights.get("page_engaged_users"),
-        )
-        content_interactions = _first_non_none(
-            insights.get("page_engaged_users"),
-            insights.get("page_post_engagements"),
-        )
-        link_clicks = _first_non_none(
-            insights.get("page_consumptions"),
-            insights.get("page_consumptions_unique"),
-            insights.get("page_engaged_users"),
-        )
-        followers_growth = insights.get("page_fan_adds")
+        profile_visits = None
+        content_interactions = engagement
+        link_clicks = None
+        followers_growth = None
         _log_facebook_pages_metric_event(
             "FACEBOOK_METRIC_RESOLVED_FOLLOWERS",
             page_id=resolved_page_id,
@@ -22762,13 +22944,25 @@ def _run_meta_pages_sync(
             points=[],
             unavailable_reason=followers_unavailable_reason,
         )
+        _log_facebook_pages_metric_event(
+            "FACEBOOK_METRIC_RESOLVED_FANS",
+            page_id=resolved_page_id,
+            page_name=page_name,
+            metric_name="fans",
+            source_metric="fan_count",
+            raw_value=fans_total,
+            points=[],
+            unavailable_reason=fans_unavailable_reason,
+        )
         missing_metrics = [
             metric_name
             for metric_name, metric_value in {
-                "impressions": impressions,
-                "link_clicks": link_clicks,
-                "profile_visits": profile_visits,
-                "followers_growth": followers_growth,
+                "organic_impressions": organic_impressions,
+                "engagement": engagement,
+                "page_views": page_views_total,
+                "followers": followers,
+                "fans": fans_total,
+                "reactions": reactions_total,
             }.items()
             if metric_value is None
         ]
@@ -22784,14 +22978,14 @@ def _run_meta_pages_sync(
             {
                 "page_id": resolved_page_id,
                 "page_name": page_name,
-                "fans": _first_non_none(page_counts.get("fan_count"), insights.get("page_fans")),
+                "fans": fans_total,
                 "followers": followers,
-                "impressions": impressions,
-                "impressions_date": insights.get("page_impressions_end_time"),
+                "impressions": organic_impressions,
+                "impressions_date": insights.get("report_organic_impressions_end_time"),
                 "reach": reach,
-                "reach_date": insights.get("page_reach_end_time"),
+                "reach_date": None,
                 "engagement": engagement,
-                "engagement_date": insights.get("page_post_engagements_end_time"),
+                "engagement_date": insights.get("report_interactions_end_time"),
                 "profile_visits": profile_visits,
                 "content_interactions": content_interactions,
                 "link_clicks": link_clicks,
@@ -22800,8 +22994,8 @@ def _run_meta_pages_sync(
                 "timeframe_since": timeframe_config["since"],
                 "timeframe_until": timeframe_config["until"],
                 "reach_source_metric": reach_metric_name,
-                "impressions_source_metric": impressions_metric_name,
-                "impressions_daily": json.dumps(impressions_daily),
+                "impressions_source_metric": organic_impressions_metric_name,
+                "impressions_daily": json.dumps(organic_impressions_daily),
                 "reach_daily": json.dumps(reach_daily),
                 "recent_posts": json.dumps(normalized_posts),
             }
@@ -22813,19 +23007,24 @@ def _run_meta_pages_sync(
             "page_name": page_name,
             "followers": followers,
             "followers_total": followers,
+            "fans": fans_total,
+            "fans_total": fans_total,
             "reach": reach,
             "reach_total": reach,
             "engagement": engagement,
             "engagement_total": insights.get("report_interactions_total"),
-            "impressions": impressions,
-            "impressions_total": impressions,
+            "organic_impressions": organic_impressions,
+            "organic_impressions_total": organic_impressions,
+            "impressions": None,
+            "impressions_total": None,
             "page_views_total": page_views_total,
             "profile_visits": profile_visits,
             "content_interactions": content_interactions,
             "link_clicks": link_clicks,
             "followers_growth": followers_growth,
             "daily_reach": reach_daily,
-            "daily_impressions": impressions_daily,
+            "daily_organic_impressions": organic_impressions_daily,
+            "daily_impressions": [],
             "daily_engagement": interactions_daily,
             "daily_page_views": views_daily,
             "posts_analyzed_count": posts_analyzed_count,
@@ -22848,10 +23047,12 @@ def _run_meta_pages_sync(
                 "selected_timeframe": timeframe_config.get("selected_timeframe"),
             },
             "reach_source_metric": reach_metric_name,
-            "impressions_source_metric": impressions_metric_name,
+            "organic_impressions_source_metric": organic_impressions_metric_name,
+            "impressions_source_metric": None,
             "page_views_source_metric": views_metric_name,
             "engagement_source_metric": interactions_metric_name,
-            "impressions_daily": impressions_daily,
+            "organic_impressions_daily": organic_impressions_daily,
+            "impressions_daily": [],
             "reach_daily": reach_daily,
             "facebook_metric_audit": {
                 "reach": _facebook_metric_audit_entry(
@@ -22860,11 +23061,17 @@ def _run_meta_pages_sync(
                     points=reach_daily,
                     unavailable_reason=reach_unavailable_reason,
                 ),
+                "organic_impressions": _facebook_metric_audit_entry(
+                    source_metric=organic_impressions_metric_name,
+                    raw_value=organic_impressions,
+                    points=organic_impressions_daily,
+                    unavailable_reason=organic_impressions_unavailable_reason,
+                ),
                 "impressions": _facebook_metric_audit_entry(
-                    source_metric=impressions_metric_name,
-                    raw_value=impressions,
-                    points=impressions_daily,
-                    unavailable_reason=impressions_unavailable_reason,
+                    source_metric=None,
+                    raw_value=None,
+                    points=[],
+                    unavailable_reason="Meta did not return general page impressions for the selected period.",
                 ),
                 "engagement": _facebook_metric_audit_entry(
                     source_metric=interactions_metric_name,
@@ -22878,21 +23085,44 @@ def _run_meta_pages_sync(
                     points=[],
                     unavailable_reason=followers_unavailable_reason,
                 ),
+                "fans": _facebook_metric_audit_entry(
+                    source_metric="fan_count",
+                    raw_value=fans_total,
+                    points=[],
+                    unavailable_reason=fans_unavailable_reason,
+                ),
                 "page_views": _facebook_metric_audit_entry(
                     source_metric=views_metric_name,
                     raw_value=page_views_total,
                     points=views_daily,
                     unavailable_reason=views_unavailable_reason,
                 ),
+                "reactions": _facebook_metric_audit_entry(
+                    source_metric=reactions_metric_name,
+                    raw_value=reactions_total,
+                    points=reactions_daily,
+                    unavailable_reason=reactions_unavailable_reason,
+                ),
             },
             "unavailable_metrics": {
                 "reach": reach_unavailable_reason,
-                "impressions": impressions_unavailable_reason,
+                "organic_impressions": organic_impressions_unavailable_reason,
+                "impressions": "Meta did not return general page impressions for the selected period.",
                 "engagement": engagement_unavailable_reason,
                 "page_views": views_unavailable_reason,
                 "followers": followers_unavailable_reason,
+                "fans": fans_unavailable_reason,
+                "reactions": reactions_unavailable_reason,
             },
             "report_metric_mapping": {
+                "organic_impressions": _build_meta_report_metric_entry(
+                    facebook_ui_target_label="Organic Impressions",
+                    source_metric_name=organic_impressions_metric_name,
+                    total=organic_impressions,
+                    daily_series=organic_impressions_daily,
+                    timeframe_since=timeframe_config["since"],
+                    timeframe_until=timeframe_config["until"],
+                ),
                 "views": _build_meta_report_metric_entry(
                     facebook_ui_target_label="Visualizaciones",
                     source_metric_name=views_metric_name,
@@ -22917,42 +23147,30 @@ def _run_meta_pages_sync(
                     timeframe_since=timeframe_config["since"],
                     timeframe_until=timeframe_config["until"],
                 ),
-                "link_clicks": _build_meta_report_metric_entry(
-                    facebook_ui_target_label="Clics en el enlace",
-                    source_metric_name=link_clicks_metric_name,
-                    total=insights.get("report_link_clicks_total"),
-                    daily_series=link_clicks_daily,
-                    timeframe_since=timeframe_config["since"],
-                    timeframe_until=timeframe_config["until"],
-                ),
-                "page_visits": _build_meta_report_metric_entry(
-                    facebook_ui_target_label="Visitas",
-                    source_metric_name=page_visits_metric_name,
-                    total=insights.get("report_page_visits_total"),
-                    daily_series=page_visits_daily,
-                    timeframe_since=timeframe_config["since"],
-                    timeframe_until=timeframe_config["until"],
-                ),
-                "followers_growth": _build_meta_report_metric_entry(
-                    facebook_ui_target_label="Seguidores",
-                    source_metric_name=followers_growth_metric_name,
-                    total=insights.get("report_followers_growth_total"),
-                    daily_series=followers_growth_daily,
+                "reactions": _build_meta_report_metric_entry(
+                    facebook_ui_target_label="Reactions",
+                    source_metric_name=reactions_metric_name,
+                    total=reactions_total,
+                    daily_series=reactions_daily,
                     timeframe_since=timeframe_config["since"],
                     timeframe_until=timeframe_config["until"],
                 ),
             },
             "normalized_report_metrics": {
+                "organic_impressions_total": organic_impressions,
+                "daily_organic_impressions": organic_impressions_daily,
+                "organic_impressions_daily": organic_impressions_daily,
                 "reach_total": reach,
                 "daily_reach": reach_daily,
-                "impressions_total": impressions,
-                "impressions_daily": impressions_daily,
-                "daily_impressions": impressions_daily,
+                "impressions_total": None,
+                "impressions_daily": [],
+                "daily_impressions": [],
                 "page_views_total": page_views_total,
                 "daily_page_views": views_daily,
                 "engagement_total": insights.get("report_interactions_total"),
                 "daily_engagement": interactions_daily,
                 "followers_total": followers,
+                "fans_total": fans_total,
                 "posts_analyzed_count": posts_analyzed_count,
                 "reactions_total": reactions_total,
                 "comments_total": comments_total,
@@ -22964,12 +23182,7 @@ def _run_meta_pages_sync(
                 "viewers_daily": reach_daily,
                 "interactions_total": insights.get("report_interactions_total"),
                 "interactions_daily": interactions_daily,
-                "link_clicks_total": insights.get("report_link_clicks_total"),
-                "link_clicks_daily": link_clicks_daily,
-                "page_visits_total": insights.get("report_page_visits_total"),
-                "page_visits_daily": page_visits_daily,
-                "followers_growth_total": insights.get("report_followers_growth_total"),
-                "followers_growth_daily": followers_growth_daily,
+                "daily_reactions": reactions_daily,
                 "requested_since": timeframe_config.get("requested_since"),
                 "requested_until": timeframe_config.get("requested_until"),
                 "timeframe_since": timeframe_config["since"],
@@ -22982,27 +23195,25 @@ def _run_meta_pages_sync(
             "recent_posts": normalized_posts,
         }
         reach_first_date, reach_last_date = _meta_daily_series_bounds(reach_daily)
-        impressions_first_date, impressions_last_date = _meta_daily_series_bounds(impressions_daily)
+        organic_impressions_first_date, organic_impressions_last_date = _meta_daily_series_bounds(organic_impressions_daily)
         logger.info(
             "[MetaTimeframeBackend][sync.dataset.before_save]",
             extra={
                 "reach_daily_points": len(reach_daily),
-                "impressions_daily_points": len(impressions_daily),
+                "organic_impressions_daily_points": len(organic_impressions_daily),
                 "reach_first_date": reach_first_date,
                 "reach_last_date": reach_last_date,
-                "impressions_first_date": impressions_first_date,
-                "impressions_last_date": impressions_last_date,
+                "organic_impressions_first_date": organic_impressions_first_date,
+                "organic_impressions_last_date": organic_impressions_last_date,
                 "dataset_timeframe_to_save": dataset_data["timeframe"],
             },
         )
         for metric_name, metric_points in {
             "dataset.reach_daily": reach_daily,
-            "dataset.impressions_daily": impressions_daily,
+            "dataset.organic_impressions_daily": organic_impressions_daily,
             "dataset.views_daily": views_daily,
             "dataset.interactions_daily": interactions_daily,
-            "dataset.link_clicks_daily": link_clicks_daily,
-            "dataset.page_visits_daily": page_visits_daily,
-            "dataset.followers_growth_daily": followers_growth_daily,
+            "dataset.reactions_daily": reactions_daily,
         }.items():
             _log_meta_history_audit(
                 page_id=resolved_page_id,
@@ -23040,13 +23251,13 @@ def _run_meta_pages_sync(
                     for point in reach_daily
                     if isinstance(point, dict) and isinstance(point.get("value"), (int, float))
                 ),
-                "impressions_source_metric": impressions_metric_name,
-                "impressions_daily_points": len(impressions_daily),
-                "impressions_daily_first_date": impressions_first_date,
-                "impressions_daily_last_date": impressions_last_date,
-                "impressions_daily_total": sum(
+                "organic_impressions_source_metric": organic_impressions_metric_name,
+                "organic_impressions_daily_points": len(organic_impressions_daily),
+                "organic_impressions_daily_first_date": organic_impressions_first_date,
+                "organic_impressions_daily_last_date": organic_impressions_last_date,
+                "organic_impressions_daily_total": sum(
                     int(point.get("value"))
-                    for point in impressions_daily
+                    for point in organic_impressions_daily
                     if isinstance(point, dict) and isinstance(point.get("value"), (int, float))
                 ),
             },
@@ -23090,9 +23301,9 @@ def _run_meta_pages_sync(
             if isinstance(saved_dataset_data.get("reach_daily"), list)
             else []
         )
-        saved_impressions_daily = (
-            saved_dataset_data.get("impressions_daily")
-            if isinstance(saved_dataset_data.get("impressions_daily"), list)
+        saved_organic_impressions_daily = (
+            saved_dataset_data.get("daily_organic_impressions")
+            if isinstance(saved_dataset_data.get("daily_organic_impressions"), list)
             else []
         )
         logger.info(
@@ -23103,7 +23314,7 @@ def _run_meta_pages_sync(
                 "dataset_timeframe_since": saved_dataset_timeframe.get("since"),
                 "dataset_timeframe_until": saved_dataset_timeframe.get("until"),
                 "reach_daily_length": len(saved_reach_daily),
-                "impressions_daily_length": len(saved_impressions_daily),
+                "organic_impressions_daily_length": len(saved_organic_impressions_daily),
             },
         )
         logger.info(
@@ -23122,9 +23333,9 @@ def _run_meta_pages_sync(
                 "reach_daily_points_saved": len(reach_daily),
                 "reach_daily_first_date_saved": reach_first_date,
                 "reach_daily_last_date_saved": reach_last_date,
-                "impressions_daily_points_saved": len(impressions_daily),
-                "impressions_daily_first_date_saved": impressions_first_date,
-                "impressions_daily_last_date_saved": impressions_last_date,
+                "organic_impressions_daily_points_saved": len(organic_impressions_daily),
+                "organic_impressions_first_date_saved": organic_impressions_first_date,
+                "organic_impressions_last_date_saved": organic_impressions_last_date,
             },
         )
 
@@ -23193,7 +23404,7 @@ def _run_meta_pages_sync(
                 "dataset_timeframe_key": dataset_data["timeframe"].get("key"),
                 "dataset_timeframe_saved": dataset_data["timeframe"],
                 "reach_daily_points_saved": len(reach_daily),
-                "impressions_daily_points_saved": len(impressions_daily),
+                "organic_impressions_daily_points_saved": len(organic_impressions_daily),
             },
         )
 

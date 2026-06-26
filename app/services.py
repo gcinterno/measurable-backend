@@ -2632,6 +2632,26 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         else _to_int(normalized_metrics.get("followers_total"))
         if _to_int(normalized_metrics.get("followers_total")) is not None
         else followers,
+        "fans": _to_int(row.get("fans_total"))
+        if _to_int(row.get("fans_total")) is not None
+        else _to_int(row.get("fans"))
+        if _to_int(row.get("fans")) is not None
+        else _to_int(normalized_metrics.get("fans_total")),
+        "fans_total": _to_int(row.get("fans_total"))
+        if _to_int(row.get("fans_total")) is not None
+        else _to_int(normalized_metrics.get("fans_total"))
+        if _to_int(normalized_metrics.get("fans_total")) is not None
+        else _to_int(row.get("fans")),
+        "organic_impressions": _to_int(row.get("organic_impressions_total"))
+        if _to_int(row.get("organic_impressions_total")) is not None
+        else _to_int(normalized_metrics.get("organic_impressions_total"))
+        if _to_int(normalized_metrics.get("organic_impressions_total")) is not None
+        else _to_int(row.get("organic_impressions")),
+        "organic_impressions_total": _to_int(row.get("organic_impressions_total"))
+        if _to_int(row.get("organic_impressions_total")) is not None
+        else _to_int(normalized_metrics.get("organic_impressions_total"))
+        if _to_int(normalized_metrics.get("organic_impressions_total")) is not None
+        else _to_int(row.get("organic_impressions")),
         "reach": reach,
         "reach_total": _to_int(row.get("reach_total"))
         if _to_int(row.get("reach_total")) is not None
@@ -2672,6 +2692,11 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         "impressions_source_metric": str(row.get("impressions_source_metric") or "") or None,
         "page_views_source_metric": str(row.get("page_views_source_metric") or "") or None,
         "impressions_daily": impressions_daily,
+        "daily_organic_impressions": normalize_meta_timeseries(
+            row.get("daily_organic_impressions")
+            if isinstance(row.get("daily_organic_impressions"), list)
+            else normalized_metrics.get("daily_organic_impressions")
+        ),
         "reach_daily": reach_daily,
         "interactions_daily": interactions_daily,
         "engagement_daily": interactions_daily,

@@ -1,0 +1,2498 @@
+{
+  "summary": {
+    "report": {
+      "id": 392,
+      "name": "Botanero NL Overview",
+      "description": "{\"source\": \"meta_pages_v2\", \"locale\": \"en\", \"timeframe\": {\"key\": \"last_7_days\", \"label\": \"Last 7 Days\", \"preset\": \"last_7_days\", \"since\": \"2026-06-19\", \"until\": \"2026-06-25\"}, \"claude_payload\": {\"page_name\": \"Botanero NL\", \"followers\": 5374, \"reach\": null, \"engagement\": 233, \"impressions\": null, \"profile_visits\": null, \"content_interactions\": 233, \"link_clicks\": null, \"followers_growth\": null, \"timeframe\": {\"key\": \"last_7_days\", \"label\": \"Last 7 Days\", \"preset\": \"last_7_days\", \"since\": \"2026-06-19\", \"until\": \"2026-06-25\"}, \"impressions_daily\": [{\"date\": \"2026-06-19\", \"value\": null}, {\"date\": \"2026-06-20\", \"value\": null}, {\"date\": \"2026-06-21\", \"value\": null}, {\"date\": \"2026-06-22\", \"value\": null}, {\"date\": \"2026-06-23\", \"value\": null}, {\"date\": \"2026-06-24\", \"value\": null}, {\"date\": \"2026-06-25\", \"value\": null}], \"reach_daily\": [{\"date\": \"2026-06-19\", \"value\": null}, {\"date\": \"2026-06-20\", \"value\": null}, {\"date\": \"2026-06-21\", \"value\": null}, {\"date\": \"2026-06-22\", \"value\": null}, {\"date\": \"2026-06-23\", \"value\": null}, {\"date\": \"2026-06-24\", \"value\": null}, {\"date\": \"2026-06-25\", \"value\": null}], \"recent_posts\": []}, \"branding\": {\"name\": \"ATRIA Marketing\", \"display_name\": \"ATRIA Marketing\", \"brand_name\": \"ATRIA Marketing\", \"logo_url\": \"http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png\", \"brand_logo_url\": \"http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png\", \"fallback_logo_url\": \"http://localhost:3000/brand/measurable-logo.svg\", \"resolved_logo_url\": \"http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png\", \"resolved_brand_name\": \"ATRIA Marketing\", \"source\": \"user\", \"watermark_enabled\": false, \"watermark_label\": null, \"watermark_logo_light_url\": null, \"watermark_logo_dark_url\": null, \"has_custom_branding\": true}, \"requested_slides\": 5, \"effective_slide_limit\": 5, \"plan_at_generation\": \"advanced\", \"generation_mode\": \"meta_pages\", \"plan_capabilities\": {\"max_slides\": 30, \"allow_pdf_export\": true, \"allow_pptx_export\": true, \"allow_ai_agents\": true, \"allow_custom_branding\": true}, \"ai_mode\": \"standard\", \"ai_agents_enabled\": true, \"ai_agents_used\": false, \"ai_provider\": \"mock\", \"ai_agent_version\": \"v1-mock\", \"ai_agent_fallback_used\": false, \"ai_agent_errors\": [], \"ai_structure_summary\": null, \"thumbnail_s3_key\": \"report-thumbnails/392/cover-20260625185634.png\", \"thumbnail_generated_at\": \"2026-06-25T18:56:35.196069+00:00\"}",
+      "workspace_id": 1,
+      "dataset_id": 223,
+      "created_at": "2026-06-25T18:56:25.760255+00:00",
+      "updated_at": "2026-06-25T18:56:30.784981+00:00"
+    },
+    "report_version": {
+      "id": 379,
+      "version": 1,
+      "created_at": "2026-06-25T18:56:30.771419+00:00",
+      "updated_at": "2026-06-25T18:56:30.771419+00:00"
+    },
+    "dataset": {
+      "id": 223,
+      "name": "meta_page_595932073598543_insights.csv",
+      "created_at": "2026-06-25T18:56:01.543108+00:00",
+      "updated_at": "2026-06-25T18:56:01.543108+00:00"
+    },
+    "dataset_metrics": {
+      "page_name": "Botanero NL",
+      "timeframe": {
+        "key": "last_7_days",
+        "label": "Last 7 Days",
+        "since": "2026-06-19",
+        "until": "2026-06-25",
+        "preset": "last_7_days",
+        "current_since": "2026-06-19",
+        "current_until": "2026-06-25",
+        "previous_since": "2026-06-12",
+        "previous_until": "2026-06-18",
+        "requested_since": "2026-06-12",
+        "requested_until": "2026-06-25",
+        "selected_timeframe": "last_7_days"
+      },
+      "reach_total": null,
+      "impressions_total": null,
+      "page_views_total": 546,
+      "engagement_total": 338,
+      "followers_total": 5374,
+      "daily_reach": [
+        {
+          "date": "2026-06-19",
+          "value": null
+        },
+        {
+          "date": "2026-06-20",
+          "value": null
+        },
+        {
+          "date": "2026-06-21",
+          "value": null
+        },
+        {
+          "date": "2026-06-22",
+          "value": null
+        },
+        {
+          "date": "2026-06-23",
+          "value": null
+        },
+        {
+          "date": "2026-06-24",
+          "value": null
+        },
+        {
+          "date": "2026-06-25",
+          "value": null
+        }
+      ],
+      "daily_impressions": [
+        {
+          "date": "2026-06-19",
+          "value": null
+        },
+        {
+          "date": "2026-06-20",
+          "value": null
+        },
+        {
+          "date": "2026-06-21",
+          "value": null
+        },
+        {
+          "date": "2026-06-22",
+          "value": null
+        },
+        {
+          "date": "2026-06-23",
+          "value": null
+        },
+        {
+          "date": "2026-06-24",
+          "value": null
+        },
+        {
+          "date": "2026-06-25",
+          "value": null
+        }
+      ],
+      "daily_page_views": [
+        {
+          "date": "2026-06-19",
+          "value": 178
+        },
+        {
+          "date": "2026-06-20",
+          "value": 42
+        },
+        {
+          "date": "2026-06-21",
+          "value": 91
+        },
+        {
+          "date": "2026-06-22",
+          "value": 59
+        },
+        {
+          "date": "2026-06-23",
+          "value": 38
+        },
+        {
+          "date": "2026-06-24",
+          "value": 62
+        },
+        {
+          "date": "2026-06-25",
+          "value": 76
+        }
+      ],
+      "daily_engagement": [
+        {
+          "date": "2026-06-19",
+          "value": 105
+        },
+        {
+          "date": "2026-06-20",
+          "value": 34
+        },
+        {
+          "date": "2026-06-21",
+          "value": 38
+        },
+        {
+          "date": "2026-06-22",
+          "value": 42
+        },
+        {
+          "date": "2026-06-23",
+          "value": 45
+        },
+        {
+          "date": "2026-06-24",
+          "value": 50
+        },
+        {
+          "date": "2026-06-25",
+          "value": 24
+        }
+      ],
+      "facebook_metric_audit": {
+        "reach": {
+          "raw_value": null,
+          "sum_value": null,
+          "points_count": 0,
+          "source_metric": null,
+          "unavailable_reason": "Meta did not return this metric for the selected period."
+        },
+        "followers": {
+          "raw_value": 5374,
+          "sum_value": null,
+          "points_count": 0,
+          "source_metric": "followers_count",
+          "unavailable_reason": null
+        },
+        "engagement": {
+          "raw_value": 338,
+          "sum_value": 338,
+          "points_count": 7,
+          "source_metric": "page_post_engagements",
+          "unavailable_reason": null
+        },
+        "page_views": {
+          "raw_value": 546,
+          "sum_value": 546,
+          "points_count": 7,
+          "source_metric": "page_views_total",
+          "unavailable_reason": null
+        },
+        "impressions": {
+          "raw_value": null,
+          "sum_value": null,
+          "points_count": 0,
+          "source_metric": null,
+          "unavailable_reason": "Meta did not return this metric for the selected period."
+        }
+      },
+      "metrics_summary": {
+        "reach": {
+          "label": "Reach",
+          "value": null,
+          "formatted_value": "N/A",
+          "is_available": false,
+          "description": "Meta did not return this metric for the selected period."
+        },
+        "impressions": {
+          "label": "Impressions",
+          "value": 546,
+          "formatted_value": "546",
+          "is_available": true,
+          "description": "Total impressions"
+        },
+        "engagement": {
+          "label": "Engagement",
+          "value": 233,
+          "formatted_value": "233",
+          "is_available": true,
+          "description": "Total engagement"
+        },
+        "page_views": {
+          "label": "Page Views",
+          "value": 546,
+          "formatted_value": "546",
+          "is_available": true,
+          "description": "Total page views"
+        },
+        "followers": {
+          "label": "Followers",
+          "value": 5374,
+          "formatted_value": "5,374",
+          "is_available": true,
+          "description": "Current audience size"
+        }
+      },
+      "report_inputs": {
+        "reach_total": null,
+        "impressions_total": null,
+        "page_views_total": 546,
+        "engagement_total": 338,
+        "followers_total": 5374,
+        "daily_reach": [
+          {
+            "date": "2026-06-19",
+            "value": null
+          },
+          {
+            "date": "2026-06-20",
+            "value": null
+          },
+          {
+            "date": "2026-06-21",
+            "value": null
+          },
+          {
+            "date": "2026-06-22",
+            "value": null
+          },
+          {
+            "date": "2026-06-23",
+            "value": null
+          },
+          {
+            "date": "2026-06-24",
+            "value": null
+          },
+          {
+            "date": "2026-06-25",
+            "value": null
+          }
+        ],
+        "daily_impressions": [
+          {
+            "date": "2026-06-19",
+            "value": null
+          },
+          {
+            "date": "2026-06-20",
+            "value": null
+          },
+          {
+            "date": "2026-06-21",
+            "value": null
+          },
+          {
+            "date": "2026-06-22",
+            "value": null
+          },
+          {
+            "date": "2026-06-23",
+            "value": null
+          },
+          {
+            "date": "2026-06-24",
+            "value": null
+          },
+          {
+            "date": "2026-06-25",
+            "value": null
+          }
+        ],
+        "daily_page_views": [
+          {
+            "date": "2026-06-19",
+            "value": 178
+          },
+          {
+            "date": "2026-06-20",
+            "value": 42
+          },
+          {
+            "date": "2026-06-21",
+            "value": 91
+          },
+          {
+            "date": "2026-06-22",
+            "value": 59
+          },
+          {
+            "date": "2026-06-23",
+            "value": 38
+          },
+          {
+            "date": "2026-06-24",
+            "value": 62
+          },
+          {
+            "date": "2026-06-25",
+            "value": 76
+          }
+        ],
+        "daily_engagement": [
+          {
+            "date": "2026-06-19",
+            "value": 105
+          },
+          {
+            "date": "2026-06-20",
+            "value": 34
+          },
+          {
+            "date": "2026-06-21",
+            "value": 38
+          },
+          {
+            "date": "2026-06-22",
+            "value": 42
+          },
+          {
+            "date": "2026-06-23",
+            "value": 45
+          },
+          {
+            "date": "2026-06-24",
+            "value": 50
+          },
+          {
+            "date": "2026-06-25",
+            "value": 24
+          }
+        ],
+        "unavailable_metrics": {
+          "reach": "Meta did not return this metric for the selected period.",
+          "followers": null,
+          "engagement": null,
+          "page_views": null,
+          "impressions": "Meta did not return this metric for the selected period."
+        },
+        "report_metric_mapping": {
+          "views": {
+            "total": 546,
+            "timeframe": {
+              "since": "2026-06-19",
+              "until": "2026-06-25"
+            },
+            "daily_series": [
+              {
+                "date": "2026-06-19",
+                "value": 178
+              },
+              {
+                "date": "2026-06-20",
+                "value": 42
+              },
+              {
+                "date": "2026-06-21",
+                "value": 91
+              },
+              {
+                "date": "2026-06-22",
+                "value": 59
+              },
+              {
+                "date": "2026-06-23",
+                "value": 38
+              },
+              {
+                "date": "2026-06-24",
+                "value": 62
+              },
+              {
+                "date": "2026-06-25",
+                "value": 76
+              }
+            ],
+            "api_metric_used": "page_views_total",
+            "timeframe_since": "2026-06-19",
+            "timeframe_until": "2026-06-25",
+            "ui_label_facebook": "Visualizaciones",
+            "daily_points_count": 7,
+            "source_metric_name": "page_views_total",
+            "facebook_ui_target_label": "Visualizaciones"
+          },
+          "viewers": {
+            "total": null,
+            "timeframe": {
+              "since": "2026-06-19",
+              "until": "2026-06-25"
+            },
+            "daily_series": [
+              {
+                "date": "2026-06-19",
+                "value": null
+              },
+              {
+                "date": "2026-06-20",
+                "value": null
+              },
+              {
+                "date": "2026-06-21",
+                "value": null
+              },
+              {
+                "date": "2026-06-22",
+                "value": null
+              },
+              {
+                "date": "2026-06-23",
+                "value": null
+              },
+              {
+                "date": "2026-06-24",
+                "value": null
+              },
+              {
+                "date": "2026-06-25",
+                "value": null
+              }
+            ],
+            "api_metric_used": null,
+            "timeframe_since": "2026-06-19",
+            "timeframe_until": "2026-06-25",
+            "ui_label_facebook": "Espectadores",
+            "daily_points_count": 7,
+            "source_metric_name": null,
+            "facebook_ui_target_label": "Espectadores"
+          },
+          "link_clicks": {
+            "total": null,
+            "timeframe": {
+              "since": "2026-06-19",
+              "until": "2026-06-25"
+            },
+            "daily_series": [
+              {
+                "date": "2026-06-19",
+                "value": null
+              },
+              {
+                "date": "2026-06-20",
+                "value": null
+              },
+              {
+                "date": "2026-06-21",
+                "value": null
+              },
+              {
+                "date": "2026-06-22",
+                "value": null
+              },
+              {
+                "date": "2026-06-23",
+                "value": null
+              },
+              {
+                "date": "2026-06-24",
+                "value": null
+              },
+              {
+                "date": "2026-06-25",
+                "value": null
+              }
+            ],
+            "api_metric_used": "page_consumptions",
+            "timeframe_since": "2026-06-19",
+            "timeframe_until": "2026-06-25",
+            "ui_label_facebook": "Clics en el enlace",
+            "daily_points_count": 7,
+            "source_metric_name": "page_consumptions",
+            "facebook_ui_target_label": "Clics en el enlace"
+          },
+          "page_visits": {
+            "total": null,
+            "timeframe": {
+              "since": "2026-06-19",
+              "until": "2026-06-25"
+            },
+            "daily_series": [
+              {
+                "date": "2026-06-19",
+                "value": null
+              },
+              {
+                "date": "2026-06-20",
+                "value": null
+              },
+              {
+                "date": "2026-06-21",
+                "value": null
+              },
+              {
+                "date": "2026-06-22",
+                "value": null
+              },
+              {
+                "date": "2026-06-23",
+                "value": null
+              },
+              {
+                "date": "2026-06-24",
+                "value": null
+              },
+              {
+                "date": "2026-06-25",
+                "value": null
+              }
+            ],
+            "api_metric_used": "page_profile_views",
+            "timeframe_since": "2026-06-19",
+            "timeframe_until": "2026-06-25",
+            "ui_label_facebook": "Visitas",
+            "daily_points_count": 7,
+            "source_metric_name": "page_profile_views",
+            "facebook_ui_target_label": "Visitas"
+          },
+          "interactions": {
+            "total": 338,
+            "timeframe": {
+              "since": "2026-06-19",
+              "until": "2026-06-25"
+            },
+            "daily_series": [
+              {
+                "date": "2026-06-19",
+                "value": 105
+              },
+              {
+                "date": "2026-06-20",
+                "value": 34
+              },
+              {
+                "date": "2026-06-21",
+                "value": 38
+              },
+              {
+                "date": "2026-06-22",
+                "value": 42
+              },
+              {
+                "date": "2026-06-23",
+                "value": 45
+              },
+              {
+                "date": "2026-06-24",
+                "value": 50
+              },
+              {
+                "date": "2026-06-25",
+                "value": 24
+              }
+            ],
+            "api_metric_used": "page_post_engagements",
+            "timeframe_since": "2026-06-19",
+            "timeframe_until": "2026-06-25",
+            "ui_label_facebook": "Interacciones con el contenido",
+            "daily_points_count": 7,
+            "source_metric_name": "page_post_engagements",
+            "facebook_ui_target_label": "Interacciones con el contenido"
+          },
+          "followers_growth": {
+            "total": null,
+            "timeframe": {
+              "since": "2026-06-19",
+              "until": "2026-06-25"
+            },
+            "daily_series": [
+              {
+                "date": "2026-06-19",
+                "value": null
+              },
+              {
+                "date": "2026-06-20",
+                "value": null
+              },
+              {
+                "date": "2026-06-21",
+                "value": null
+              },
+              {
+                "date": "2026-06-22",
+                "value": null
+              },
+              {
+                "date": "2026-06-23",
+                "value": null
+              },
+              {
+                "date": "2026-06-24",
+                "value": null
+              },
+              {
+                "date": "2026-06-25",
+                "value": null
+              }
+            ],
+            "api_metric_used": "page_fan_adds",
+            "timeframe_since": "2026-06-19",
+            "timeframe_until": "2026-06-25",
+            "ui_label_facebook": "Seguidores",
+            "daily_points_count": 7,
+            "source_metric_name": "page_fan_adds",
+            "facebook_ui_target_label": "Seguidores"
+          }
+        }
+      }
+    },
+    "collisions": {
+      "impressions_total_eq_page_views_total": false,
+      "normalized_impressions_total_eq_page_views_total": false,
+      "daily_impressions_eq_daily_page_views": false,
+      "normalized_daily_impressions_eq_daily_page_views": false,
+      "impressions_source_metric": null,
+      "page_views_source_metric": "page_views_total",
+      "engagement_source_metric": "page_post_engagements",
+      "reach_source_metric": null
+    },
+    "block_mapping": {
+      "slide_02": {
+        "semantic_name": "reach_overview",
+        "title": "Reach",
+        "metric_key": "reach"
+      },
+      "slide_03": {
+        "semantic_name": "impressions_overview",
+        "title": "Impressions",
+        "metric_key": "impressions"
+      },
+      "slide_04": {
+        "semantic_name": "engagement_overview",
+        "title": "Engagement",
+        "metric_key": "engagement"
+      },
+      "slide_05": {
+        "semantic_name": "executive_summary",
+        "title": "Resumen final",
+        "metric_key": null
+      }
+    }
+  },
+  "dataset_data_full": {
+    "reach": null,
+    "followers": 5374,
+    "page_name": "Botanero NL",
+    "timeframe": {
+      "key": "last_7_days",
+      "label": "Last 7 Days",
+      "since": "2026-06-19",
+      "until": "2026-06-25",
+      "preset": "last_7_days",
+      "current_since": "2026-06-19",
+      "current_until": "2026-06-25",
+      "previous_since": "2026-06-12",
+      "previous_until": "2026-06-18",
+      "requested_since": "2026-06-12",
+      "requested_until": "2026-06-25",
+      "selected_timeframe": "last_7_days"
+    },
+    "engagement": 233,
+    "daily_reach": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "impressions": null,
+    "link_clicks": null,
+    "reach_daily": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "reach_total": null,
+    "recent_posts": [],
+    "shares_total": 0,
+    "comments_total": 0,
+    "profile_visits": null,
+    "followers_total": 5374,
+    "reactions_total": 0,
+    "daily_engagement": [
+      {
+        "date": "2026-06-19",
+        "value": 105
+      },
+      {
+        "date": "2026-06-20",
+        "value": 34
+      },
+      {
+        "date": "2026-06-21",
+        "value": 38
+      },
+      {
+        "date": "2026-06-22",
+        "value": 42
+      },
+      {
+        "date": "2026-06-23",
+        "value": 45
+      },
+      {
+        "date": "2026-06-24",
+        "value": 50
+      },
+      {
+        "date": "2026-06-25",
+        "value": 24
+      }
+    ],
+    "daily_page_views": [
+      {
+        "date": "2026-06-19",
+        "value": 178
+      },
+      {
+        "date": "2026-06-20",
+        "value": 42
+      },
+      {
+        "date": "2026-06-21",
+        "value": 91
+      },
+      {
+        "date": "2026-06-22",
+        "value": 59
+      },
+      {
+        "date": "2026-06-23",
+        "value": 38
+      },
+      {
+        "date": "2026-06-24",
+        "value": 62
+      },
+      {
+        "date": "2026-06-25",
+        "value": 76
+      }
+    ],
+    "engagement_total": 338,
+    "followers_growth": null,
+    "page_views_total": 546,
+    "daily_impressions": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "impressions_daily": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "impressions_total": null,
+    "reach_source_metric": null,
+    "unavailable_metrics": {
+      "reach": "Meta did not return this metric for the selected period.",
+      "followers": null,
+      "engagement": null,
+      "page_views": null,
+      "impressions": "Meta did not return this metric for the selected period."
+    },
+    "content_interactions": 233,
+    "posts_analyzed_count": 0,
+    "facebook_metric_audit": {
+      "reach": {
+        "raw_value": null,
+        "sum_value": null,
+        "points_count": 0,
+        "source_metric": null,
+        "unavailable_reason": "Meta did not return this metric for the selected period."
+      },
+      "followers": {
+        "raw_value": 5374,
+        "sum_value": null,
+        "points_count": 0,
+        "source_metric": "followers_count",
+        "unavailable_reason": null
+      },
+      "engagement": {
+        "raw_value": 338,
+        "sum_value": 338,
+        "points_count": 7,
+        "source_metric": "page_post_engagements",
+        "unavailable_reason": null
+      },
+      "page_views": {
+        "raw_value": 546,
+        "sum_value": 546,
+        "points_count": 7,
+        "source_metric": "page_views_total",
+        "unavailable_reason": null
+      },
+      "impressions": {
+        "raw_value": null,
+        "sum_value": null,
+        "points_count": 0,
+        "source_metric": null,
+        "unavailable_reason": "Meta did not return this metric for the selected period."
+      }
+    },
+    "report_metric_mapping": {
+      "views": {
+        "total": 546,
+        "timeframe": {
+          "since": "2026-06-19",
+          "until": "2026-06-25"
+        },
+        "daily_series": [
+          {
+            "date": "2026-06-19",
+            "value": 178
+          },
+          {
+            "date": "2026-06-20",
+            "value": 42
+          },
+          {
+            "date": "2026-06-21",
+            "value": 91
+          },
+          {
+            "date": "2026-06-22",
+            "value": 59
+          },
+          {
+            "date": "2026-06-23",
+            "value": 38
+          },
+          {
+            "date": "2026-06-24",
+            "value": 62
+          },
+          {
+            "date": "2026-06-25",
+            "value": 76
+          }
+        ],
+        "api_metric_used": "page_views_total",
+        "timeframe_since": "2026-06-19",
+        "timeframe_until": "2026-06-25",
+        "ui_label_facebook": "Visualizaciones",
+        "daily_points_count": 7,
+        "source_metric_name": "page_views_total",
+        "facebook_ui_target_label": "Visualizaciones"
+      },
+      "viewers": {
+        "total": null,
+        "timeframe": {
+          "since": "2026-06-19",
+          "until": "2026-06-25"
+        },
+        "daily_series": [
+          {
+            "date": "2026-06-19",
+            "value": null
+          },
+          {
+            "date": "2026-06-20",
+            "value": null
+          },
+          {
+            "date": "2026-06-21",
+            "value": null
+          },
+          {
+            "date": "2026-06-22",
+            "value": null
+          },
+          {
+            "date": "2026-06-23",
+            "value": null
+          },
+          {
+            "date": "2026-06-24",
+            "value": null
+          },
+          {
+            "date": "2026-06-25",
+            "value": null
+          }
+        ],
+        "api_metric_used": null,
+        "timeframe_since": "2026-06-19",
+        "timeframe_until": "2026-06-25",
+        "ui_label_facebook": "Espectadores",
+        "daily_points_count": 7,
+        "source_metric_name": null,
+        "facebook_ui_target_label": "Espectadores"
+      },
+      "link_clicks": {
+        "total": null,
+        "timeframe": {
+          "since": "2026-06-19",
+          "until": "2026-06-25"
+        },
+        "daily_series": [
+          {
+            "date": "2026-06-19",
+            "value": null
+          },
+          {
+            "date": "2026-06-20",
+            "value": null
+          },
+          {
+            "date": "2026-06-21",
+            "value": null
+          },
+          {
+            "date": "2026-06-22",
+            "value": null
+          },
+          {
+            "date": "2026-06-23",
+            "value": null
+          },
+          {
+            "date": "2026-06-24",
+            "value": null
+          },
+          {
+            "date": "2026-06-25",
+            "value": null
+          }
+        ],
+        "api_metric_used": "page_consumptions",
+        "timeframe_since": "2026-06-19",
+        "timeframe_until": "2026-06-25",
+        "ui_label_facebook": "Clics en el enlace",
+        "daily_points_count": 7,
+        "source_metric_name": "page_consumptions",
+        "facebook_ui_target_label": "Clics en el enlace"
+      },
+      "page_visits": {
+        "total": null,
+        "timeframe": {
+          "since": "2026-06-19",
+          "until": "2026-06-25"
+        },
+        "daily_series": [
+          {
+            "date": "2026-06-19",
+            "value": null
+          },
+          {
+            "date": "2026-06-20",
+            "value": null
+          },
+          {
+            "date": "2026-06-21",
+            "value": null
+          },
+          {
+            "date": "2026-06-22",
+            "value": null
+          },
+          {
+            "date": "2026-06-23",
+            "value": null
+          },
+          {
+            "date": "2026-06-24",
+            "value": null
+          },
+          {
+            "date": "2026-06-25",
+            "value": null
+          }
+        ],
+        "api_metric_used": "page_profile_views",
+        "timeframe_since": "2026-06-19",
+        "timeframe_until": "2026-06-25",
+        "ui_label_facebook": "Visitas",
+        "daily_points_count": 7,
+        "source_metric_name": "page_profile_views",
+        "facebook_ui_target_label": "Visitas"
+      },
+      "interactions": {
+        "total": 338,
+        "timeframe": {
+          "since": "2026-06-19",
+          "until": "2026-06-25"
+        },
+        "daily_series": [
+          {
+            "date": "2026-06-19",
+            "value": 105
+          },
+          {
+            "date": "2026-06-20",
+            "value": 34
+          },
+          {
+            "date": "2026-06-21",
+            "value": 38
+          },
+          {
+            "date": "2026-06-22",
+            "value": 42
+          },
+          {
+            "date": "2026-06-23",
+            "value": 45
+          },
+          {
+            "date": "2026-06-24",
+            "value": 50
+          },
+          {
+            "date": "2026-06-25",
+            "value": 24
+          }
+        ],
+        "api_metric_used": "page_post_engagements",
+        "timeframe_since": "2026-06-19",
+        "timeframe_until": "2026-06-25",
+        "ui_label_facebook": "Interacciones con el contenido",
+        "daily_points_count": 7,
+        "source_metric_name": "page_post_engagements",
+        "facebook_ui_target_label": "Interacciones con el contenido"
+      },
+      "followers_growth": {
+        "total": null,
+        "timeframe": {
+          "since": "2026-06-19",
+          "until": "2026-06-25"
+        },
+        "daily_series": [
+          {
+            "date": "2026-06-19",
+            "value": null
+          },
+          {
+            "date": "2026-06-20",
+            "value": null
+          },
+          {
+            "date": "2026-06-21",
+            "value": null
+          },
+          {
+            "date": "2026-06-22",
+            "value": null
+          },
+          {
+            "date": "2026-06-23",
+            "value": null
+          },
+          {
+            "date": "2026-06-24",
+            "value": null
+          },
+          {
+            "date": "2026-06-25",
+            "value": null
+          }
+        ],
+        "api_metric_used": "page_fan_adds",
+        "timeframe_since": "2026-06-19",
+        "timeframe_until": "2026-06-25",
+        "ui_label_facebook": "Seguidores",
+        "daily_points_count": 7,
+        "source_metric_name": "page_fan_adds",
+        "facebook_ui_target_label": "Seguidores"
+      }
+    },
+    "top_post_by_engagement": null,
+    "engagement_source_metric": "page_post_engagements",
+    "page_views_source_metric": "page_views_total",
+    "impressions_source_metric": null,
+    "normalized_report_metrics": {
+      "daily_reach": [
+        {
+          "date": "2026-06-19",
+          "value": null
+        },
+        {
+          "date": "2026-06-20",
+          "value": null
+        },
+        {
+          "date": "2026-06-21",
+          "value": null
+        },
+        {
+          "date": "2026-06-22",
+          "value": null
+        },
+        {
+          "date": "2026-06-23",
+          "value": null
+        },
+        {
+          "date": "2026-06-24",
+          "value": null
+        },
+        {
+          "date": "2026-06-25",
+          "value": null
+        }
+      ],
+      "reach_total": null,
+      "views_daily": [
+        {
+          "date": "2026-06-19",
+          "value": 178
+        },
+        {
+          "date": "2026-06-20",
+          "value": 42
+        },
+        {
+          "date": "2026-06-21",
+          "value": 91
+        },
+        {
+          "date": "2026-06-22",
+          "value": 59
+        },
+        {
+          "date": "2026-06-23",
+          "value": 38
+        },
+        {
+          "date": "2026-06-24",
+          "value": 62
+        },
+        {
+          "date": "2026-06-25",
+          "value": 76
+        }
+      ],
+      "views_total": 546,
+      "shares_total": 0,
+      "current_since": "2026-06-19",
+      "current_until": "2026-06-25",
+      "viewers_daily": [
+        {
+          "date": "2026-06-19",
+          "value": null
+        },
+        {
+          "date": "2026-06-20",
+          "value": null
+        },
+        {
+          "date": "2026-06-21",
+          "value": null
+        },
+        {
+          "date": "2026-06-22",
+          "value": null
+        },
+        {
+          "date": "2026-06-23",
+          "value": null
+        },
+        {
+          "date": "2026-06-24",
+          "value": null
+        },
+        {
+          "date": "2026-06-25",
+          "value": null
+        }
+      ],
+      "viewers_total": null,
+      "comments_total": 0,
+      "previous_since": "2026-06-12",
+      "previous_until": "2026-06-18",
+      "followers_total": 5374,
+      "reactions_total": 0,
+      "requested_since": "2026-06-12",
+      "requested_until": "2026-06-25",
+      "timeframe_since": "2026-06-19",
+      "timeframe_until": "2026-06-25",
+      "daily_engagement": [
+        {
+          "date": "2026-06-19",
+          "value": 105
+        },
+        {
+          "date": "2026-06-20",
+          "value": 34
+        },
+        {
+          "date": "2026-06-21",
+          "value": 38
+        },
+        {
+          "date": "2026-06-22",
+          "value": 42
+        },
+        {
+          "date": "2026-06-23",
+          "value": 45
+        },
+        {
+          "date": "2026-06-24",
+          "value": 50
+        },
+        {
+          "date": "2026-06-25",
+          "value": 24
+        }
+      ],
+      "daily_page_views": [
+        {
+          "date": "2026-06-19",
+          "value": 178
+        },
+        {
+          "date": "2026-06-20",
+          "value": 42
+        },
+        {
+          "date": "2026-06-21",
+          "value": 91
+        },
+        {
+          "date": "2026-06-22",
+          "value": 59
+        },
+        {
+          "date": "2026-06-23",
+          "value": 38
+        },
+        {
+          "date": "2026-06-24",
+          "value": 62
+        },
+        {
+          "date": "2026-06-25",
+          "value": 76
+        }
+      ],
+      "engagement_total": 338,
+      "page_views_total": 546,
+      "daily_impressions": [
+        {
+          "date": "2026-06-19",
+          "value": null
+        },
+        {
+          "date": "2026-06-20",
+          "value": null
+        },
+        {
+          "date": "2026-06-21",
+          "value": null
+        },
+        {
+          "date": "2026-06-22",
+          "value": null
+        },
+        {
+          "date": "2026-06-23",
+          "value": null
+        },
+        {
+          "date": "2026-06-24",
+          "value": null
+        },
+        {
+          "date": "2026-06-25",
+          "value": null
+        }
+      ],
+      "impressions_daily": [
+        {
+          "date": "2026-06-19",
+          "value": null
+        },
+        {
+          "date": "2026-06-20",
+          "value": null
+        },
+        {
+          "date": "2026-06-21",
+          "value": null
+        },
+        {
+          "date": "2026-06-22",
+          "value": null
+        },
+        {
+          "date": "2026-06-23",
+          "value": null
+        },
+        {
+          "date": "2026-06-24",
+          "value": null
+        },
+        {
+          "date": "2026-06-25",
+          "value": null
+        }
+      ],
+      "impressions_total": null,
+      "link_clicks_daily": [
+        {
+          "date": "2026-06-19",
+          "value": null
+        },
+        {
+          "date": "2026-06-20",
+          "value": null
+        },
+        {
+          "date": "2026-06-21",
+          "value": null
+        },
+        {
+          "date": "2026-06-22",
+          "value": null
+        },
+        {
+          "date": "2026-06-23",
+          "value": null
+        },
+        {
+          "date": "2026-06-24",
+          "value": null
+        },
+        {
+          "date": "2026-06-25",
+          "value": null
+        }
+      ],
+      "link_clicks_total": null,
+      "page_visits_daily": [
+        {
+          "date": "2026-06-19",
+          "value": null
+        },
+        {
+          "date": "2026-06-20",
+          "value": null
+        },
+        {
+          "date": "2026-06-21",
+          "value": null
+        },
+        {
+          "date": "2026-06-22",
+          "value": null
+        },
+        {
+          "date": "2026-06-23",
+          "value": null
+        },
+        {
+          "date": "2026-06-24",
+          "value": null
+        },
+        {
+          "date": "2026-06-25",
+          "value": null
+        }
+      ],
+      "page_visits_total": null,
+      "interactions_daily": [
+        {
+          "date": "2026-06-19",
+          "value": 105
+        },
+        {
+          "date": "2026-06-20",
+          "value": 34
+        },
+        {
+          "date": "2026-06-21",
+          "value": 38
+        },
+        {
+          "date": "2026-06-22",
+          "value": 42
+        },
+        {
+          "date": "2026-06-23",
+          "value": 45
+        },
+        {
+          "date": "2026-06-24",
+          "value": 50
+        },
+        {
+          "date": "2026-06-25",
+          "value": 24
+        }
+      ],
+      "interactions_total": 338,
+      "posts_analyzed_count": 0,
+      "followers_growth_daily": [
+        {
+          "date": "2026-06-19",
+          "value": null
+        },
+        {
+          "date": "2026-06-20",
+          "value": null
+        },
+        {
+          "date": "2026-06-21",
+          "value": null
+        },
+        {
+          "date": "2026-06-22",
+          "value": null
+        },
+        {
+          "date": "2026-06-23",
+          "value": null
+        },
+        {
+          "date": "2026-06-24",
+          "value": null
+        },
+        {
+          "date": "2026-06-25",
+          "value": null
+        }
+      ],
+      "followers_growth_total": null,
+      "top_post_by_engagement": null
+    }
+  },
+  "normalized_report_metrics": {
+    "daily_reach": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "reach_total": null,
+    "views_daily": [
+      {
+        "date": "2026-06-19",
+        "value": 178
+      },
+      {
+        "date": "2026-06-20",
+        "value": 42
+      },
+      {
+        "date": "2026-06-21",
+        "value": 91
+      },
+      {
+        "date": "2026-06-22",
+        "value": 59
+      },
+      {
+        "date": "2026-06-23",
+        "value": 38
+      },
+      {
+        "date": "2026-06-24",
+        "value": 62
+      },
+      {
+        "date": "2026-06-25",
+        "value": 76
+      }
+    ],
+    "views_total": 546,
+    "shares_total": 0,
+    "current_since": "2026-06-19",
+    "current_until": "2026-06-25",
+    "viewers_daily": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "viewers_total": null,
+    "comments_total": 0,
+    "previous_since": "2026-06-12",
+    "previous_until": "2026-06-18",
+    "followers_total": 5374,
+    "reactions_total": 0,
+    "requested_since": "2026-06-12",
+    "requested_until": "2026-06-25",
+    "timeframe_since": "2026-06-19",
+    "timeframe_until": "2026-06-25",
+    "daily_engagement": [
+      {
+        "date": "2026-06-19",
+        "value": 105
+      },
+      {
+        "date": "2026-06-20",
+        "value": 34
+      },
+      {
+        "date": "2026-06-21",
+        "value": 38
+      },
+      {
+        "date": "2026-06-22",
+        "value": 42
+      },
+      {
+        "date": "2026-06-23",
+        "value": 45
+      },
+      {
+        "date": "2026-06-24",
+        "value": 50
+      },
+      {
+        "date": "2026-06-25",
+        "value": 24
+      }
+    ],
+    "daily_page_views": [
+      {
+        "date": "2026-06-19",
+        "value": 178
+      },
+      {
+        "date": "2026-06-20",
+        "value": 42
+      },
+      {
+        "date": "2026-06-21",
+        "value": 91
+      },
+      {
+        "date": "2026-06-22",
+        "value": 59
+      },
+      {
+        "date": "2026-06-23",
+        "value": 38
+      },
+      {
+        "date": "2026-06-24",
+        "value": 62
+      },
+      {
+        "date": "2026-06-25",
+        "value": 76
+      }
+    ],
+    "engagement_total": 338,
+    "page_views_total": 546,
+    "daily_impressions": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "impressions_daily": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "impressions_total": null,
+    "link_clicks_daily": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "link_clicks_total": null,
+    "page_visits_daily": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "page_visits_total": null,
+    "interactions_daily": [
+      {
+        "date": "2026-06-19",
+        "value": 105
+      },
+      {
+        "date": "2026-06-20",
+        "value": 34
+      },
+      {
+        "date": "2026-06-21",
+        "value": 38
+      },
+      {
+        "date": "2026-06-22",
+        "value": 42
+      },
+      {
+        "date": "2026-06-23",
+        "value": 45
+      },
+      {
+        "date": "2026-06-24",
+        "value": 50
+      },
+      {
+        "date": "2026-06-25",
+        "value": 24
+      }
+    ],
+    "interactions_total": 338,
+    "posts_analyzed_count": 0,
+    "followers_growth_daily": [
+      {
+        "date": "2026-06-19",
+        "value": null
+      },
+      {
+        "date": "2026-06-20",
+        "value": null
+      },
+      {
+        "date": "2026-06-21",
+        "value": null
+      },
+      {
+        "date": "2026-06-22",
+        "value": null
+      },
+      {
+        "date": "2026-06-23",
+        "value": null
+      },
+      {
+        "date": "2026-06-24",
+        "value": null
+      },
+      {
+        "date": "2026-06-25",
+        "value": null
+      }
+    ],
+    "followers_growth_total": null,
+    "top_post_by_engagement": null
+  },
+  "blocks_full": [
+    {
+      "id": 2572,
+      "order": 1,
+      "type": "title",
+      "semantic_name": "cover",
+      "title": null,
+      "data": {
+        "slide_number": 1,
+        "slide_type": "cover",
+        "text": "Facebook Pages Report - Summary & Insights",
+        "subtitle": "Botanero NL",
+        "page_name": "Botanero NL",
+        "platform": "Facebook Pages",
+        "timeframe": {
+          "key": "last_7_days",
+          "label": "Last 7 Days",
+          "preset": "last_7_days",
+          "since": "2026-06-19",
+          "until": "2026-06-25"
+        },
+        "period_label": "Last 7 Days",
+        "period_since": "2026-06-19",
+        "period_until": "2026-06-25",
+        "branding": {
+          "name": "ATRIA Marketing",
+          "display_name": "ATRIA Marketing",
+          "brand_name": "ATRIA Marketing",
+          "logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "brand_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "fallback_logo_url": "http://localhost:3000/brand/measurable-logo.svg",
+          "resolved_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "resolved_brand_name": "ATRIA Marketing",
+          "source": "user",
+          "watermark_enabled": false,
+          "watermark_label": null,
+          "watermark_logo_light_url": null,
+          "watermark_logo_dark_url": null,
+          "has_custom_branding": true
+        },
+        "brand_name": "ATRIA Marketing",
+        "brand_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+        "resolved_brand_name": "ATRIA Marketing",
+        "resolved_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+        "cover_branding": {
+          "resolved_brand_name": "ATRIA Marketing",
+          "resolved_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png"
+        },
+        "semantic_name": "cover"
+      }
+    },
+    {
+      "id": 2573,
+      "order": 2,
+      "type": "stat",
+      "semantic_name": "reach_overview",
+      "title": "Reach",
+      "data": {
+        "slide_number": 2,
+        "slide_type": "metric",
+        "metric_key": "reach",
+        "metric_label": "Reach",
+        "metric_label_es": "Alcance",
+        "metric_label_en": "Reach",
+        "value": null,
+        "total": null,
+        "formatted_total": "N/A",
+        "is_available": false,
+        "unavailable_reason": "Meta did not return this metric for the selected period.",
+        "unavailable_message": "Meta did not return unique reach for the selected period.",
+        "metric_source": "not_available",
+        "branding": {
+          "name": "ATRIA Marketing",
+          "display_name": "ATRIA Marketing",
+          "brand_name": "ATRIA Marketing",
+          "logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "brand_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "fallback_logo_url": "http://localhost:3000/brand/measurable-logo.svg",
+          "resolved_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "resolved_brand_name": "ATRIA Marketing",
+          "source": "user",
+          "watermark_enabled": false,
+          "watermark_label": null,
+          "watermark_logo_light_url": null,
+          "watermark_logo_dark_url": null,
+          "has_custom_branding": true
+        },
+        "daily_series": [],
+        "highest_day": null,
+        "lowest_day": null,
+        "frequency": null,
+        "daily_series_reason": "daily_series_unavailable_from_source",
+        "daily_series_source_path": null,
+        "daily_series_source_metric_key": null,
+        "chart": {
+          "label": "Daily Total Reach – Last 7 Days",
+          "metric": "reach",
+          "points": [],
+          "data": [],
+          "series": [],
+          "timeframe": {
+            "key": "last_7_days",
+            "label": "Last 7 Days",
+            "preset": "last_7_days",
+            "since": "2026-06-19",
+            "until": "2026-06-25"
+          },
+          "is_available": false
+        },
+        "insight_short": "Meta did not return unique reach for the selected period.",
+        "insight": "Meta did not return unique reach for the selected period.",
+        "insight_tone": "executive_ai",
+        "insight_max_chars": 260,
+        "insight_full": "Meta did not return unique reach for the selected period.",
+        "title": "Reach",
+        "label": "Total Reach",
+        "semantic_name": "reach_overview",
+        "primary_metric_label": "TOTAL REACH",
+        "secondary_metric": null,
+        "current_value": null,
+        "previous_value": null,
+        "change_absolute": null,
+        "change_percentage": null,
+        "trend": null,
+        "summary": "Daily reach data is limited for this period, so trend interpretation should be reviewed with caution.",
+        "content": "Daily reach data is limited for this period, so trend interpretation should be reviewed with caution.",
+        "text": "Meta did not return unique reach for the selected period.",
+        "points": []
+      }
+    },
+    {
+      "id": 2574,
+      "order": 3,
+      "type": "stat",
+      "semantic_name": "impressions_overview",
+      "title": "Impressions",
+      "data": {
+        "slide_number": 3,
+        "slide_type": "metric",
+        "metric_key": "impressions",
+        "metric_label": "Impressions",
+        "metric_label_es": "Impresiones",
+        "metric_label_en": "Impressions",
+        "value": 546,
+        "total": 546,
+        "formatted_total": "546",
+        "is_available": true,
+        "unavailable_reason": null,
+        "unavailable_message": null,
+        "metric_source": "direct_meta_metric",
+        "branding": {
+          "name": "ATRIA Marketing",
+          "display_name": "ATRIA Marketing",
+          "brand_name": "ATRIA Marketing",
+          "logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "brand_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "fallback_logo_url": "http://localhost:3000/brand/measurable-logo.svg",
+          "resolved_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "resolved_brand_name": "ATRIA Marketing",
+          "source": "user",
+          "watermark_enabled": false,
+          "watermark_label": null,
+          "watermark_logo_light_url": null,
+          "watermark_logo_dark_url": null,
+          "has_custom_branding": true
+        },
+        "daily_series": [],
+        "highest_day": null,
+        "lowest_day": null,
+        "frequency": null,
+        "daily_series_reason": "daily_series_unavailable_from_source",
+        "daily_series_source_path": null,
+        "daily_series_source_metric_key": null,
+        "chart": {
+          "label": "Daily Total Impressions – Last 7 Days",
+          "metric": "impressions",
+          "points": [],
+          "data": [],
+          "series": [],
+          "timeframe": {
+            "key": "last_7_days",
+            "label": "Last 7 Days",
+            "preset": "last_7_days",
+            "since": "2026-06-19",
+            "until": "2026-06-25"
+          },
+          "is_available": false
+        },
+        "insight_short": "Impressions cerró en 546. La serie diaria disponible ayuda a ubicar el momento de mayor tracción. Toma los días pico como referencia para el siguiente periodo.",
+        "insight": "Impressions cerró en 546. La serie diaria disponible ayuda a ubicar el momento de mayor tracción. Toma los días pico como referencia para el siguiente periodo.",
+        "insight_tone": "executive_ai",
+        "insight_max_chars": 260,
+        "insight_full": "Impressions cerró en 546. La serie diaria disponible ayuda a ubicar el momento de mayor tracción. Toma los días pico como referencia para el siguiente periodo.",
+        "title": "Impressions",
+        "label": "Total Impressions",
+        "semantic_name": "impressions_overview",
+        "primary_metric_label": "TOTAL IMPRESSIONS",
+        "secondary_metric": null,
+        "current_value": 546.0,
+        "previous_value": null,
+        "change_absolute": null,
+        "change_percentage": null,
+        "trend": null,
+        "summary": null,
+        "content": null,
+        "text": "Impressions cerró en 546. La serie diaria disponible ayuda a ubicar el momento de mayor tracción. Toma los días pico como referencia para el siguiente periodo.",
+        "points": []
+      }
+    },
+    {
+      "id": 2575,
+      "order": 4,
+      "type": "stat",
+      "semantic_name": "engagement_overview",
+      "title": "Engagement",
+      "data": {
+        "slide_number": 4,
+        "slide_type": "metric",
+        "metric_key": "engagement",
+        "metric_label": "Total Engagement",
+        "metric_label_es": "Engagement",
+        "metric_label_en": "Total Engagement",
+        "value": 233,
+        "total": 233,
+        "formatted_total": "233",
+        "is_available": true,
+        "unavailable_reason": null,
+        "unavailable_message": null,
+        "metric_source": "direct_meta_metric",
+        "branding": {
+          "name": "ATRIA Marketing",
+          "display_name": "ATRIA Marketing",
+          "brand_name": "ATRIA Marketing",
+          "logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "brand_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "fallback_logo_url": "http://localhost:3000/brand/measurable-logo.svg",
+          "resolved_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "resolved_brand_name": "ATRIA Marketing",
+          "source": "user",
+          "watermark_enabled": false,
+          "watermark_label": null,
+          "watermark_logo_light_url": null,
+          "watermark_logo_dark_url": null,
+          "has_custom_branding": true
+        },
+        "daily_series": [
+          {
+            "date": "2026-06-19",
+            "label": "Jun 19",
+            "value": 105
+          },
+          {
+            "date": "2026-06-20",
+            "label": "Jun 20",
+            "value": 34
+          },
+          {
+            "date": "2026-06-21",
+            "label": "Jun 21",
+            "value": 38
+          },
+          {
+            "date": "2026-06-22",
+            "label": "Jun 22",
+            "value": 42
+          },
+          {
+            "date": "2026-06-23",
+            "label": "Jun 23",
+            "value": 45
+          },
+          {
+            "date": "2026-06-24",
+            "label": "Jun 24",
+            "value": 50
+          },
+          {
+            "date": "2026-06-25",
+            "label": "Jun 25",
+            "value": 24
+          }
+        ],
+        "highest_day": {
+          "date": "2026-06-19",
+          "label": "Friday, June 19, 2026",
+          "value": 105
+        },
+        "lowest_day": {
+          "date": "2026-06-25",
+          "label": "Thursday, June 25, 2026",
+          "value": 24
+        },
+        "frequency": null,
+        "daily_series_reason": "",
+        "daily_series_source_path": "report_inputs.daily_engagement",
+        "daily_series_source_metric_key": "daily_engagement",
+        "chart": {
+          "label": "Total Engagement",
+          "metric": "engagement",
+          "points": [
+            {
+              "date": "2026-06-19",
+              "label": "Jun 19",
+              "value": 105
+            },
+            {
+              "date": "2026-06-20",
+              "label": "Jun 20",
+              "value": 34
+            },
+            {
+              "date": "2026-06-21",
+              "label": "Jun 21",
+              "value": 38
+            },
+            {
+              "date": "2026-06-22",
+              "label": "Jun 22",
+              "value": 42
+            },
+            {
+              "date": "2026-06-23",
+              "label": "Jun 23",
+              "value": 45
+            },
+            {
+              "date": "2026-06-24",
+              "label": "Jun 24",
+              "value": 50
+            },
+            {
+              "date": "2026-06-25",
+              "label": "Jun 25",
+              "value": 24
+            }
+          ],
+          "data": [
+            {
+              "date": "2026-06-19",
+              "label": "Jun 19",
+              "value": 105
+            },
+            {
+              "date": "2026-06-20",
+              "label": "Jun 20",
+              "value": 34
+            },
+            {
+              "date": "2026-06-21",
+              "label": "Jun 21",
+              "value": 38
+            },
+            {
+              "date": "2026-06-22",
+              "label": "Jun 22",
+              "value": 42
+            },
+            {
+              "date": "2026-06-23",
+              "label": "Jun 23",
+              "value": 45
+            },
+            {
+              "date": "2026-06-24",
+              "label": "Jun 24",
+              "value": 50
+            },
+            {
+              "date": "2026-06-25",
+              "label": "Jun 25",
+              "value": 24
+            }
+          ],
+          "series": [
+            {
+              "date": "2026-06-19",
+              "label": "Jun 19",
+              "value": 105
+            },
+            {
+              "date": "2026-06-20",
+              "label": "Jun 20",
+              "value": 34
+            },
+            {
+              "date": "2026-06-21",
+              "label": "Jun 21",
+              "value": 38
+            },
+            {
+              "date": "2026-06-22",
+              "label": "Jun 22",
+              "value": 42
+            },
+            {
+              "date": "2026-06-23",
+              "label": "Jun 23",
+              "value": 45
+            },
+            {
+              "date": "2026-06-24",
+              "label": "Jun 24",
+              "value": 50
+            },
+            {
+              "date": "2026-06-25",
+              "label": "Jun 25",
+              "value": 24
+            }
+          ],
+          "is_available": true,
+          "timeframe": {
+            "key": "last_7_days",
+            "label": "Last 7 Days",
+            "preset": "last_7_days",
+            "since": "2026-06-19",
+            "until": "2026-06-25"
+          }
+        },
+        "insight_short": "El engagement alcanzó 233. El pico más alto aparece en Friday, June 19, 2026. El punto más bajo fue Thursday, June 25, 2026. La serie diaria de total engagement cerró por debajo del inicio, lo que ayuda a ubicar el momento con mayor tracción.",
+        "insight": "El engagement alcanzó 233. El pico más alto aparece en Friday, June 19, 2026. El punto más bajo fue Thursday, June 25, 2026. La serie diaria de total engagement cerró por debajo del inicio, lo que ayuda a ubicar el momento con mayor tracción. Analiza formato, copy y llamada a la acción del mejor día.",
+        "insight_tone": "executive_ai",
+        "insight_max_chars": 260,
+        "insight_full": "El engagement alcanzó 233. El pico más alto aparece en Friday, June 19, 2026. El punto más bajo fue Thursday, June 25, 2026. La serie diaria de total engagement cerró por debajo del inicio, lo que ayuda a ubicar el momento con mayor tracción. Analiza formato, copy y llamada a la acción del mejor día.",
+        "title": "Engagement",
+        "label": "Total Engagement",
+        "semantic_name": "engagement_overview",
+        "primary_metric_label": "TOTAL ENGAGEMENT",
+        "secondary_metric": null,
+        "current_value": 233.0,
+        "previous_value": null,
+        "change_absolute": null,
+        "change_percentage": null,
+        "trend": null,
+        "summary": null,
+        "content": null,
+        "text": "El engagement alcanzó 233. El pico más alto aparece en Friday, June 19, 2026. El punto más bajo fue Thursday, June 25, 2026. La serie diaria de total engagement cerró por debajo del inicio, lo que ayuda a ubicar el momento con mayor tracción.",
+        "points": [
+          {
+            "date": "2026-06-19",
+            "label": "Jun 19",
+            "value": 105
+          },
+          {
+            "date": "2026-06-20",
+            "label": "Jun 20",
+            "value": 34
+          },
+          {
+            "date": "2026-06-21",
+            "label": "Jun 21",
+            "value": 38
+          },
+          {
+            "date": "2026-06-22",
+            "label": "Jun 22",
+            "value": 42
+          },
+          {
+            "date": "2026-06-23",
+            "label": "Jun 23",
+            "value": 45
+          },
+          {
+            "date": "2026-06-24",
+            "label": "Jun 24",
+            "value": 50
+          },
+          {
+            "date": "2026-06-25",
+            "label": "Jun 25",
+            "value": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": 2576,
+      "order": 5,
+      "type": "text",
+      "semantic_name": "executive_summary",
+      "title": "Resumen final",
+      "data": {
+        "slide_number": 5,
+        "slide_type": "summary",
+        "title": "Resumen final",
+        "title_en": "Final Summary",
+        "branding": {
+          "name": "ATRIA Marketing",
+          "display_name": "ATRIA Marketing",
+          "brand_name": "ATRIA Marketing",
+          "logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "brand_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "fallback_logo_url": "http://localhost:3000/brand/measurable-logo.svg",
+          "resolved_logo_url": "http://localhost:8001/workspace/branding/logo/1/20260620205912-00639d1d2231717d.png",
+          "resolved_brand_name": "ATRIA Marketing",
+          "source": "user",
+          "watermark_enabled": false,
+          "watermark_label": null,
+          "watermark_logo_light_url": null,
+          "watermark_logo_dark_url": null,
+          "has_custom_branding": true
+        },
+        "metrics_summary": {
+          "reach": {
+            "label": "Reach",
+            "value": null,
+            "formatted_value": "N/A",
+            "is_available": false,
+            "description": "Meta did not return this metric for the selected period."
+          },
+          "impressions": {
+            "label": "Impressions",
+            "value": 546,
+            "formatted_value": "546",
+            "is_available": true,
+            "description": "Total impressions"
+          },
+          "engagement": {
+            "label": "Engagement",
+            "value": 233,
+            "formatted_value": "233",
+            "is_available": true,
+            "description": "Total engagement"
+          },
+          "page_views": {
+            "label": "Page Views",
+            "value": 546,
+            "formatted_value": "546",
+            "is_available": true,
+            "description": "Total page views"
+          },
+          "followers": {
+            "label": "Followers",
+            "value": 5374,
+            "formatted_value": "5,374",
+            "is_available": true,
+            "description": "Current audience size"
+          }
+        },
+        "ai_summary": "Durante Last 7 Days, Meta did not return unique reach for the selected period, Impressions registró 546, Engagement registró 233, Followers cerró en 5,374, Page Views alcanzó 546. La lectura ejecutiva apunta a reforzar los días y formatos que concentran visibilidad, interacción e intención de visita. Métricas no disponibles por ahora: Reach.",
+        "recommendation": "Revisa qué publicación o formato impulsó el pico de Engagement en Friday, June 19, 2026 y úsalo como referencia para el siguiente periodo.",
+        "text": "Durante Last 7 Days, Meta did not return unique reach for the selected period, Impressions registró 546, Engagement registró 233, Followers cerró en 5,374, Page Views alcanzó 546. La lectura ejecutiva apunta a reforzar los días y formatos que concentran visibilidad, interacción e intención de visita. Métricas no disponibles por ahora: Reach.",
+        "insight": "Durante Last 7 Days, Meta did not return unique reach for the selected period, Impressions registró 546, Engagement registró 233, Followers cerró en 5,374, Page Views alcanzó 546. La lectura ejecutiva apunta a reforzar los días y formatos que concentran visibilidad, interacción e intención de visita. Métricas no disponibles por ahora: Reach.",
+        "insight_short": "Durante Last 7 Days, Meta did not return unique reach for the selected period, Impressions registró 546, Engagement registró 233, Followers cerró en 5,374, Page Views alcanzó 546. La lectura ejecutiva apunta a reforzar los días y formatos que concentran visibilidad, interacción e intención de visita. Métricas no disponibles por ahora: Reach.",
+        "semantic_name": "executive_summary",
+        "timeframe": {
+          "key": "last_7_days",
+          "label": "Last 7 Days",
+          "preset": "last_7_days",
+          "since": "2026-06-19",
+          "until": "2026-06-25"
+        },
+        "label": "Resumen final",
+        "current_value": null,
+        "value": null,
+        "total": null,
+        "previous_value": null,
+        "change_absolute": null,
+        "change_percentage": null,
+        "trend": null,
+        "insight_full": "Durante Last 7 Days, Meta did not return unique reach for the selected period, Impressions registró 546, Engagement registró 233, Followers cerró en 5,374, Page Views alcanzó 546. La lectura ejecutiva apunta a reforzar los días y formatos que concentran visibilidad, interacción e intención de visita. Métricas no disponibles por ahora: Reach.",
+        "summary": null,
+        "content": null,
+        "chart": {
+          "label": "Daily Resumen final – Last 7 Days",
+          "metric": "reach",
+          "points": [],
+          "data": [],
+          "series": [],
+          "timeframe": {
+            "key": "last_7_days",
+            "label": "Last 7 Days",
+            "preset": "last_7_days",
+            "since": "2026-06-19",
+            "until": "2026-06-25"
+          },
+          "is_available": false
+        },
+        "points": []
+      }
+    }
+  ]
+}
