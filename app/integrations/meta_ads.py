@@ -129,6 +129,17 @@ def _require_meta_config() -> None:
         raise RuntimeError("META config missing")
 
 
+def get_missing_meta_ads_config_fields() -> list[str]:
+    missing_fields: list[str] = []
+    if not settings.meta_app_id:
+        missing_fields.append("META_APP_ID")
+    if not settings.meta_app_secret:
+        missing_fields.append("META_APP_SECRET")
+    if not settings.meta_redirect_uri:
+        missing_fields.append("META_REDIRECT_URI")
+    return missing_fields
+
+
 def get_meta_ads_redirect_uri() -> str:
     _require_meta_config()
     configured_redirect_uri = str(settings.meta_redirect_uri or "").strip()

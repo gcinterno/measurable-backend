@@ -679,7 +679,7 @@ def test_instagram_business_connect_returns_controlled_error_when_not_configured
         headers=_auth_headers_for("instagram-missing-config@example.com"),
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 409
     assert response.json() == {
         "error": "instagram_business_not_configured",
         "missing": ["INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET", "INSTAGRAM_REDIRECT_URI"],

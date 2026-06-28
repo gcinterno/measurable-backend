@@ -66,6 +66,7 @@ from .integrations.meta_ads import (
     fetch_page_posts,
     fetch_post_metrics,
     exchange_pages_code_for_token,
+    get_missing_meta_ads_config_fields,
     get_meta_ads_redirect_uri,
     get_meta_pages_redirect_uri,
     get_businesses,
@@ -200,6 +201,7 @@ from .schemas import (
     MeOut,
     MeUpdateIn,
     IntegrationSchema,
+    InstagramBusinessStatusOut,
     MetaPageOut,
     MetaPageCatalogOut,
     MetaDisconnectIn,
@@ -6730,6 +6732,81 @@ def _meta_ads_status_message(*, status: str, connected: bool, accounts_count: in
     if accounts_count == 0:
         return "No ad accounts found for this Meta Ads connection."
     return None
+
+
+def _normalized_provider_status(raw_status: str | None) -> str:
+    normalized = str(raw_status or "").strip().lower()
+    if normalized in {"connected"}:
+        return "connected"
+    if normalized in {"reauthorization_required", "needs_reconnect"}:
+        return "needs_reconnect"
+    return "disconnected"
+
+
+def _facebook_pages_connected(db: Session, integration: Integration) -> bool:
+    if integration.provider != "meta":
+        return False
+    if _normalized_provider_status(integration.status) != "connected":
+        return False
+    pages_count = (
+        db.query(func.count(MetaPage.id))
+        .filter(
+            MetaPage.integration_id == integration.id,
+            MetaPage.record_type == META_RECORD_TYPE_FACEBOOK_PAGE,
+        )
+        .scalar()
+        or 0
+    )
+    return int(pages_count) > 0
+
+
+def _integration_schema_payload(
+    *,
+    integration: Integration,
+    provider: str,
+    name: str,
+    status: str,
+) -> IntegrationSchema:
+    return IntegrationSchema(
+        id=integration.id,
+        workspace_id=integration.workspace_id,
+        provider=provider,
+        name=name,
+        status=status,
+        created_at=integration.created_at,
+        updated_at=integration.updated_at,
+    )
+
+
+def _integration_entries_for_workspace(db: Session, workspace_id: int) -> list[IntegrationSchema]:
+    facebook_integration = _get_or_create_meta_integration_for_workspace(db, workspace_id)
+    instagram_integration = _get_or_create_instagram_business_integration_for_workspace(db, workspace_id)
+    meta_ads_integration = _get_or_create_meta_ads_integration_for_workspace(db, workspace_id)
+    facebook_status = (
+        "connected"
+        if _facebook_pages_connected(db, facebook_integration)
+        else _normalized_provider_status(facebook_integration.status)
+    )
+    return [
+        _integration_schema_payload(
+            integration=facebook_integration,
+            provider="facebook_pages",
+            name="Facebook Pages",
+            status=facebook_status,
+        ),
+        _integration_schema_payload(
+            integration=instagram_integration,
+            provider="instagram_business",
+            name="Instagram Business",
+            status=_normalized_provider_status(instagram_integration.status),
+        ),
+        _integration_schema_payload(
+            integration=meta_ads_integration,
+            provider="meta_ads",
+            name="Meta Ads",
+            status=_normalized_provider_status(meta_ads_integration.status),
+        ),
+    ]
 
 
 def _disconnect_meta_ads_integration(
@@ -18779,13 +18856,19 @@ def list_integrations(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[IntegrationSchema]:
-    integrations = (
-        db.query(Integration)
-        .join(WorkspaceMember, WorkspaceMember.workspace_id == Integration.workspace_id)
-        .filter(WorkspaceMember.user_id == current_user.id)
-        .order_by(Integration.updated_at.desc(), Integration.id.desc())
-        .all()
-    )
+    workspace_ids = [
+        workspace_id
+        for (workspace_id,) in (
+            db.query(WorkspaceMember.workspace_id)
+            .filter(WorkspaceMember.user_id == current_user.id)
+            .distinct()
+            .all()
+        )
+    ]
+    integrations: list[IntegrationSchema] = []
+    for workspace_id in workspace_ids:
+        integrations.extend(_integration_entries_for_workspace(db, int(workspace_id)))
+    integrations.sort(key=lambda integration: (integration.updated_at, integration.id), reverse=True)
     for integration in integrations:
         logger.info(
             "INTEGRATION_STATUS_RESOLVED %s",
@@ -19011,56 +19094,144 @@ def _run_meta_ads_sync(
     )
 
 
-@app.get("/integrations/meta-ads/connect", response_model=MetaAdsConnectOut)
+@app.get("/integrations/meta-ads/connect", response_model=None)
 def meta_ads_connect(
     workspace_id: int | None = Query(default=None),
     reconnect: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> MetaAdsConnectOut:
-    resolved_workspace_id = _resolve_meta_connect_workspace_id(
-        db,
-        user_id=current_user.id,
-        requested_workspace_id=workspace_id,
+) -> Any:
+    logger.info(
+        "META_ADS_CONNECT_REQUESTED %s",
+        json.dumps(
+            {
+                "workspace_id": workspace_id,
+                "user_id": current_user.id,
+                "reconnect_requested": reconnect,
+                "endpoint": "/integrations/meta-ads/connect",
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
     )
-    integration = _get_or_create_meta_ads_integration_for_workspace(db, resolved_workspace_id)
-    state = encode_state(
-        {
-            "workspace_id": resolved_workspace_id,
-            "user_id": current_user.id,
-            "integration_id": integration.id,
-            "provider": "meta_ads",
-            "integration_type": "meta_ads",
-            "source": "meta_ads",
-            "callback_route": "/integrations/meta-ads/callback",
-            "reconnect": reconnect,
-        }
-    )
-    _meta_oauth_log(
-        "META_OAUTH_SCOPES_REQUESTED",
-        provider="meta_ads",
-        workspace_id=resolved_workspace_id,
-        user_id=current_user.id,
-        integration_id=integration.id,
-        integration_type="meta_ads",
-        reconnect_requested=reconnect,
-        callback_route="/integrations/meta-ads/callback",
-        redirect_uri=get_meta_ads_redirect_uri(),
-        scopes_requested=META_ADS_SCOPES,
-        scope=META_ADS_OAUTH_SCOPE,
-    )
-    return MetaAdsConnectOut(
-        auth_url=oauth_connect_url(
+    missing_config = get_missing_meta_ads_config_fields()
+    if missing_config:
+        logger.info(
+            "META_ADS_CONNECT_CONFIG_MISSING %s",
+            json.dumps(
+                {
+                    "missing": missing_config,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "meta_ads_not_configured",
+                "missing": missing_config,
+                "message": "Meta Ads OAuth is not fully configured.",
+            },
+        )
+    try:
+        resolved_workspace_id = _resolve_meta_connect_workspace_id(
+            db,
+            user_id=current_user.id,
+            requested_workspace_id=workspace_id,
+        )
+        integration = _get_or_create_meta_ads_integration_for_workspace(db, resolved_workspace_id)
+        redirect_uri = get_meta_ads_redirect_uri()
+        state = encode_state(
+            {
+                "workspace_id": resolved_workspace_id,
+                "user_id": current_user.id,
+                "integration_id": integration.id,
+                "provider": "meta_ads",
+                "integration_type": "meta_ads",
+                "source": "meta_ads",
+                "callback_route": "/integrations/meta-ads/callback",
+                "reconnect": reconnect,
+            }
+        )
+        auth_url = oauth_connect_url(
             state,
             scope=META_ADS_OAUTH_SCOPE,
-            redirect_uri=get_meta_ads_redirect_uri(),
+            redirect_uri=redirect_uri,
             auth_type="rerequest",
             integration_type="meta_ads",
-        ),
-        integration_id=integration.id,
-        scope=META_ADS_OAUTH_SCOPE,
-        message="Connect Meta Ads to sync read-only ad performance data.",
-    )
+        )
+        logger.info(
+            "META_ADS_AUTH_URL_CREATED %s",
+            json.dumps(
+                {
+                    "workspace_id": resolved_workspace_id,
+                    "user_id": current_user.id,
+                    "integration_id": integration.id,
+                    "scope": META_ADS_OAUTH_SCOPE,
+                    "callback_route": "/integrations/meta-ads/callback",
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        _meta_oauth_log(
+            "META_OAUTH_SCOPES_REQUESTED",
+            provider="meta_ads",
+            workspace_id=resolved_workspace_id,
+            user_id=current_user.id,
+            integration_id=integration.id,
+            integration_type="meta_ads",
+            reconnect_requested=reconnect,
+            callback_route="/integrations/meta-ads/callback",
+            redirect_uri=redirect_uri,
+            scopes_requested=META_ADS_SCOPES,
+            scope=META_ADS_OAUTH_SCOPE,
+        )
+        return MetaAdsConnectOut(
+            auth_url=auth_url,
+            integration_id=integration.id,
+            scope=META_ADS_OAUTH_SCOPE,
+            message="Connect Meta Ads to sync read-only ad performance data.",
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        message = str(detail.get("message") or exc.detail or "Meta Ads OAuth is not fully configured.").strip()
+        logger.info(
+            "META_ADS_CONNECT_FAILED %s",
+            json.dumps(
+                {
+                    "code": str(detail.get("code") or "meta_ads_connect_failed"),
+                    "workspace_id": workspace_id,
+                    "user_id": current_user.id,
+                    "message": message,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "meta_ads_connect_failed",
+                "missing": [],
+                "message": message,
+            },
+        )
+    except Exception:
+        logger.exception("META_ADS_CONNECT_FAILED")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "meta_ads_connect_failed",
+                "missing": [],
+                "message": "Meta Ads OAuth is not fully configured.",
+            },
+        )
 
 
 @app.get("/integrations/meta-ads/callback")
@@ -20722,13 +20893,13 @@ def meta_callback(
     )
 
 
-@app.get("/integrations/instagram-business/connect")
+@app.get("/integrations/instagram-business/connect", response_model=None)
 def instagram_business_connect(
     workspace_id: int | None = Query(default=None),
     reconnect: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> dict[str, Any]:
+) -> Any:
     logger.info(
         "INSTAGRAM_BUSINESS_CONNECT_REQUESTED %s",
         json.dumps(
@@ -20757,50 +20928,120 @@ def instagram_business_connect(
                 sort_keys=True,
             ),
         )
-        return {
-            "error": "instagram_business_not_configured",
-            "missing": missing_config,
-        }
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "instagram_business_not_configured",
+                "missing": missing_config,
+            },
+        )
     resolved_workspace_id = _resolve_meta_connect_workspace_id(
         db,
         user_id=current_user.id,
         requested_workspace_id=workspace_id,
     )
-    integration = _get_or_create_instagram_business_integration_for_workspace(db, resolved_workspace_id)
-    state = encode_instagram_business_state(
-        {
-            "workspace_id": resolved_workspace_id,
-            "user_id": current_user.id,
-            "integration_id": integration.id,
-            "integration_type": "instagram_business",
-            "source": "instagram_business_connect",
-            "callback_route": INSTAGRAM_BUSINESS_CALLBACK_PATH,
-            "reconnect": reconnect,
-        }
-    )
-    auth_url = build_instagram_business_auth_url(state)
-    logger.info(
-        "INSTAGRAM_BUSINESS_AUTH_URL_CREATED %s",
-        json.dumps(
+    try:
+        integration = _get_or_create_instagram_business_integration_for_workspace(db, resolved_workspace_id)
+        state = encode_instagram_business_state(
             {
                 "workspace_id": resolved_workspace_id,
                 "user_id": current_user.id,
                 "integration_id": integration.id,
-                "scope": INSTAGRAM_BUSINESS_OAUTH_SCOPE,
+                "integration_type": "instagram_business",
+                "source": "instagram_business_connect",
                 "callback_route": INSTAGRAM_BUSINESS_CALLBACK_PATH,
-                "uses_instagram_oauth": auth_url.startswith("https://api.instagram.com/"),
+                "reconnect": reconnect,
+            }
+        )
+        auth_url = build_instagram_business_auth_url(state)
+        logger.info(
+            "INSTAGRAM_BUSINESS_AUTH_URL_CREATED %s",
+            json.dumps(
+                {
+                    "workspace_id": resolved_workspace_id,
+                    "user_id": current_user.id,
+                    "integration_id": integration.id,
+                    "scope": INSTAGRAM_BUSINESS_OAUTH_SCOPE,
+                    "callback_route": INSTAGRAM_BUSINESS_CALLBACK_PATH,
+                    "uses_instagram_oauth": auth_url.startswith("https://api.instagram.com/"),
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return {
+            "auth_url": auth_url,
+            "integration_id": integration.id,
+            "scope": INSTAGRAM_BUSINESS_OAUTH_SCOPE,
+            "message": "Connect Instagram Business to sync read-only account insights.",
+        }
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        logger.info(
+            "INSTAGRAM_BUSINESS_CONNECT_FAILED %s",
+            json.dumps(
+                {
+                    "stage": "connect",
+                    "workspace_id": resolved_workspace_id,
+                    "user_id": current_user.id,
+                    "code": str(detail.get("code") or "instagram_business_connect_failed"),
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "instagram_business_not_configured",
+                "missing": missing_config,
             },
-            ensure_ascii=False,
-            default=str,
-            sort_keys=True,
-        ),
+        )
+    except Exception:
+        logger.exception("INSTAGRAM_BUSINESS_CONNECT_FAILED")
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "instagram_business_not_configured",
+                "missing": missing_config,
+            },
+        )
+
+
+def _resolve_instagram_business_status_integration(
+    db: Session,
+    current_user: User,
+    *,
+    workspace_id: int | None,
+) -> Integration:
+    resolved_workspace_id = _resolve_meta_connect_workspace_id(
+        db,
+        user_id=current_user.id,
+        requested_workspace_id=workspace_id,
     )
-    return {
-        "auth_url": auth_url,
-        "integration_id": integration.id,
-        "scope": INSTAGRAM_BUSINESS_OAUTH_SCOPE,
-        "message": "Connect Instagram Business to sync read-only account insights.",
-    }
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    return _get_or_create_instagram_business_integration_for_workspace(db, resolved_workspace_id)
+
+
+@app.get("/integrations/instagram-business/status", response_model=InstagramBusinessStatusOut)
+def instagram_business_status(
+    workspace_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramBusinessStatusOut:
+    integration = _resolve_instagram_business_status_integration(
+        db,
+        current_user,
+        workspace_id=workspace_id,
+    )
+    normalized_status = _normalized_provider_status(integration.status)
+    return InstagramBusinessStatusOut(
+        connected=normalized_status == "connected",
+        provider="instagram_business",
+        status=cast(Literal["connected", "disconnected", "needs_reconnect"], normalized_status),
+    )
 
 
 @app.get("/integrations/instagram-business/callback")

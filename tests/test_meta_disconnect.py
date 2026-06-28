@@ -461,8 +461,10 @@ def test_integrations_and_account_summary_show_disconnected_after_disconnect(cli
     summary_response = client.get("/account/summary", headers=_auth_headers(int(refs["user_id"])))
 
     assert integrations_response.status_code == 200
-    assert integrations_response.json()[0]["provider"] == "meta"
-    assert integrations_response.json()[0]["status"] == "disconnected"
+    providers = {item["provider"]: item["status"] for item in integrations_response.json()}
+    assert providers["facebook_pages"] == "disconnected"
+    assert providers["instagram_business"] == "disconnected"
+    assert providers["meta_ads"] == "disconnected"
     assert summary_response.status_code == 200
     assert summary_response.json()["integrations_connected_count"] == 0
 
