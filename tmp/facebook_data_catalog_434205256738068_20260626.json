@@ -1,0 +1,3899 @@
+{
+  "generated_at": "2026-06-26T01:57:32.068147+00:00",
+  "context": {
+    "mode": "report",
+    "report_id": 338,
+    "report_version_id": 325,
+    "report_version": 1,
+    "dataset_id": 204,
+    "dataset_name": "meta_page_434205256738068_insights.csv",
+    "workspace_id": 1,
+    "integration_id": 1,
+    "integration_name": "Meta Ads",
+    "meta_page_id": 1650,
+    "page_id": "434205256738068",
+    "page_name": "1111 Day & Night",
+    "since": "2026-05-01",
+    "until": "2026-05-24",
+    "token_source": "meta_page_cache_token",
+    "graph_api_version": "v19.0"
+  },
+  "page_fields": [
+    {
+      "section": "page_fields",
+      "field": "id",
+      "available": true,
+      "value_type": "str",
+      "sample_value": "434205256738068",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "name",
+      "available": true,
+      "value_type": "str",
+      "sample_value": "1111 Day & Night",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"name\": \"1111 Day & Night\", \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "username",
+      "available": true,
+      "value_type": "str",
+      "sample_value": "1111daynight",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"username\": \"1111daynight\", \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "about",
+      "available": true,
+      "value_type": "str",
+      "sample_value": "#Litros & Snacks en Mitras Centro🍹\n¡Hamburguesas, Litros, Boneless & más! 🍔\nVisitanos esta semana 🙌",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"about\": \"#Litros & Snacks en Mitras Centro🍹\\n¡Hamburguesas, Litros, Boneless & más! 🍔\\nVisitanos esta semana 🙌\", \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "category",
+      "available": true,
+      "value_type": "str",
+      "sample_value": "Pub",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"category\": \"Pub\", \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "category_list",
+      "available": true,
+      "value_type": "list",
+      "sample_value": "[{\"id\": \"218693881483234\", \"name\": \"Pub\"}]",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"category_list\": [{\"id\": \"218693881483234\", \"name\": \"Pub\"}], \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "link",
+      "available": true,
+      "value_type": "str",
+      "sample_value": "https://www.facebook.com/434205256738068",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"link\": \"https://www.facebook.com/434205256738068\", \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "website",
+      "available": true,
+      "value_type": "str",
+      "sample_value": "http://www.1111daynight.com/",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"website\": \"http://www.1111daynight.com/\", \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "phone",
+      "available": true,
+      "value_type": "str",
+      "sample_value": "+528116008040",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"phone\": \"+528116008040\", \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "emails",
+      "available": false,
+      "value_type": "null",
+      "sample_value": null,
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "location",
+      "available": true,
+      "value_type": "dict",
+      "sample_value": "{\"city\": \"Monterrey\", \"country\": \"Mexico\", \"latitude\": 25.687973986, \"longitude\": -100.34448898078, \"street\": \"Av. Simón Bolívar 1111, Mitras Centro\", \"zip\": \"64460\"}",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"location\": {\"city\": \"Monterrey\", \"country\": \"Mexico\", \"latitude\": 25.687973986, \"longitude\": -100.34448898078, \"street\": \"Av. Simón Bolívar 1111, Mitras Centro\", \"zip\": \"64460\"}, \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "hours",
+      "available": true,
+      "value_type": "dict",
+      "sample_value": "{\"tue_1_open\": \"13:00\", \"tue_1_close\": \"00:00\", \"wed_1_open\": \"13:00\", \"wed_1_close\": \"00:00\", \"thu_1_open\": \"13:00\", \"thu_1_close\": \"01:00\", \"fri_1_open\": \"13:00\", \"fri_1_close\": \"02:00\", \"sat_1_open\": \"13:00\", \"sat_1_close\": \"06:00\", \"sun_1_open\": \"13:00\", \"sun_1_close\": \"23:30\"}",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"hours\": {\"tue_1_open\": \"13:00\", \"tue_1_close\": \"00:00\", \"wed_1_open\": \"13:00\", \"wed_1_close\": \"00:00\", \"thu_1_open\": \"13:00\", \"thu_1_close\": \"01:00\", \"fri_1_open\": \"13:00\", \"fri_1_close\": \"02:00\", \"sat_1_open\": \"13:00\", \"sat_1_close\": \"06:00\", \"sun_1_open\": \"13:00\", \"sun_1_close\": \"23:30\"}, \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "picture",
+      "available": true,
+      "value_type": "dict",
+      "sample_value": "{\"data\": {\"height\": 50, \"is_silhouette\": false, \"url\": \"https://scontent.fgdl17-1.fna.fbcdn.net/v/t39.30808-1/696340715_1271994501810553_8573186896832194714_n.jpg?stp=cp0_dst-jpg_s50x50_tt6&_nc_cat=104&ccb=1-7&_nc_sid=f907e8&_nc_eui2=AeHAt1rZ6xKhx_VFypv6-vuLGMVWS5HELyMYxVZLkcQvI7oiE_R4RpM7OiEmoPVd2ay0EhyoObKllj-W887Ny1P_&_nc_ohc=iWLuPc21GFkQ7kNvwGGgowe&_nc_oc=Adr64uRTwnY7GNCy0Oyd2atzrbIT5b4D5bp5RtdblR7NBpOVKI09jOGS1kxRrCE-jSRB_9b56YGQS9IT9NN9dOrQ&_nc_zt=24&_nc_ht=scontent.fgdl17-1.fna&edm=AJdBtusEAAAA&_nc_gid=7d31o-AhU6N0Q6xxy_72Rw&_nc_tpa=Q5bMBQGD4FANGC6FDUkK-XmRthRiBXdGRP1ASwShQRRjNFG5LOp2fLwPi0iAPdMSdnFOeyluTGmuMrwV&oh=00_Af_SBvdGMViSbCgJcrxpPO8fdYzgVNACkD_VH03kad6K2A&oe=6A43AD06\", \"width\": 50}}",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"picture\": {\"data\": {\"height\": 50, \"is_silhouette\": false, \"url\": \"https://scontent.fgdl17-1.fna.fbcdn.net/v/t39.30808-1/696340715_1271994501810553_8573186896832194714_n.jpg?stp=cp0_dst-jpg_s50x50_tt6&_nc_cat=104&ccb=1-7&_nc_sid=f907e8&_nc_eui2=AeHAt1rZ6xKhx_VFypv6-vuLGMVWS5HELyMYxVZLkcQvI7oiE_R4RpM7OiEmoPVd2ay0EhyoObKllj-W887Ny1P_&_nc_ohc=iWLuPc21GFkQ7kNvwGGgowe&_nc_oc=Adr64uRTwnY7GNCy0Oyd2atzrbIT5b4D5bp5RtdblR7NBpOVKI09jOGS1kxRrCE-jSRB_9b56YGQS9IT9NN9dOrQ&_nc_zt=24&_nc_ht=scontent.fgdl17-1.fna&edm=AJdBtusEAAAA&_nc_gid=7d31o-AhU6N0Q6xxy_72Rw&_nc_tpa=Q5bMBQGD4FANGC6FDUkK-XmRthRiBXdGRP1ASwShQRRjNFG5LOp2fLwPi0iAPdMSdnFOeyluTGmuMrwV&oh=00_Af_SBvdGMViSbCgJcrxpPO8fdYzgVNACkD_VH03kad6K2A&oe=6A43AD06\", \"width\": 50}}, \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "cover",
+      "available": false,
+      "value_type": "null",
+      "sample_value": null,
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "followers_count",
+      "available": true,
+      "value_type": "int",
+      "sample_value": "78212",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"followers_count\": 78212, \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "fan_count",
+      "available": true,
+      "value_type": "int",
+      "sample_value": "78212",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"fan_count\": 78212, \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "rating_count",
+      "available": true,
+      "value_type": "int",
+      "sample_value": "3101",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"rating_count\": 3101, \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "overall_star_rating",
+      "available": true,
+      "value_type": "float",
+      "sample_value": "4.7",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"overall_star_rating\": 4.7, \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "verification_status",
+      "available": true,
+      "value_type": "str",
+      "sample_value": "not_verified",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"verification_status\": \"not_verified\", \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "is_verified",
+      "available": true,
+      "value_type": "bool",
+      "sample_value": "false",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"is_verified\": false, \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "were_here_count",
+      "available": true,
+      "value_type": "int",
+      "sample_value": "20177",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"were_here_count\": 20177, \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "talking_about_count",
+      "available": true,
+      "value_type": "int",
+      "sample_value": "106",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"talking_about_count\": 106, \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "new_like_count",
+      "available": false,
+      "value_type": "null",
+      "sample_value": null,
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "access_token",
+      "available": true,
+      "value_type": "str",
+      "sample_value": "EAAM8CZCMoyPoBRykxNCYbNtRitWNlsctSZBZBiSPYSTN2xxmemNqtc5xPbxirrtvQTJss1BqB5o0qkod3ZCzi4xgWaLp369VUjLeg1yDuBRZCIzhLtQjhvgezfANxZAmkMxw14VCRpG7EhgeR1jKEJPe2y6kYZBigk4kkJSYjfZBIViFuhTSmRC95CCB9ZB9uVJQqpNSzZCSgX",
+      "status_code": 200,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"access_token\": \"EAAM8CZCMoyPoBRykxNCYbNtRitWNlsctSZBZBiSPYSTN2xxmemNqtc5xPbxirrtvQTJss1BqB5o0qkod3ZCzi4xgWaLp369VUjLeg1yDuBRZCIzhLtQjhvgezfANxZAmkMxw14VCRpG7EhgeR1jKEJPe2y6kYZBigk4kkJSYjfZBIViFuhTSmRC95CCB9ZB9uVJQqpNSzZCSgX\", \"id\": \"434205256738068\"}"
+    },
+    {
+      "section": "page_fields",
+      "field": "tasks",
+      "available": false,
+      "value_type": "null",
+      "sample_value": null,
+      "status_code": 400,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) Tried accessing nonexisting field (tasks)",
+      "fbtrace_id": "A1hAASiDHz-n60GRSyx8PH3",
+      "raw_response": "{\"error\": {\"message\": \"(#100) Tried accessing nonexisting field (tasks)\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A1hAASiDHz-n60GRSyx8PH3\"}}"
+    }
+  ],
+  "page_insights": [
+    {
+      "section": "page_insights",
+      "metric": "page_post_engagements",
+      "period": "day",
+      "available": true,
+      "status_code": 200,
+      "values_count": 23,
+      "raw_values": [
+        {
+          "value": 1,
+          "end_time": "2026-05-02T07:00:00+0000"
+        },
+        {
+          "value": 3,
+          "end_time": "2026-05-03T07:00:00+0000"
+        },
+        {
+          "value": 9,
+          "end_time": "2026-05-04T07:00:00+0000"
+        },
+        {
+          "value": 3,
+          "end_time": "2026-05-05T07:00:00+0000"
+        },
+        {
+          "value": 5,
+          "end_time": "2026-05-06T07:00:00+0000"
+        },
+        {
+          "value": 10,
+          "end_time": "2026-05-07T07:00:00+0000"
+        },
+        {
+          "value": 232,
+          "end_time": "2026-05-08T07:00:00+0000"
+        },
+        {
+          "value": 356,
+          "end_time": "2026-05-09T07:00:00+0000"
+        },
+        {
+          "value": 258,
+          "end_time": "2026-05-10T07:00:00+0000"
+        },
+        {
+          "value": 380,
+          "end_time": "2026-05-11T07:00:00+0000"
+        },
+        {
+          "value": 284,
+          "end_time": "2026-05-12T07:00:00+0000"
+        },
+        {
+          "value": 127,
+          "end_time": "2026-05-13T07:00:00+0000"
+        },
+        {
+          "value": 76,
+          "end_time": "2026-05-14T07:00:00+0000"
+        },
+        {
+          "value": 98,
+          "end_time": "2026-05-15T07:00:00+0000"
+        },
+        {
+          "value": 46,
+          "end_time": "2026-05-16T07:00:00+0000"
+        },
+        {
+          "value": 59,
+          "end_time": "2026-05-17T07:00:00+0000"
+        },
+        {
+          "value": 73,
+          "end_time": "2026-05-18T07:00:00+0000"
+        },
+        {
+          "value": 68,
+          "end_time": "2026-05-19T07:00:00+0000"
+        },
+        {
+          "value": 110,
+          "end_time": "2026-05-20T07:00:00+0000"
+        },
+        {
+          "value": 65,
+          "end_time": "2026-05-21T07:00:00+0000"
+        },
+        {
+          "value": 108,
+          "end_time": "2026-05-22T07:00:00+0000"
+        },
+        {
+          "value": 91,
+          "end_time": "2026-05-23T07:00:00+0000"
+        },
+        {
+          "value": 86,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 2548,
+      "latest_value": 86,
+      "supports_daily_series": true,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_post_engagements\", \"period\": \"day\", \"values\": [{\"value\": 1, \"end_time\": \"2026-05-02T07:00:00+0000\"}, {\"value\": 3, \"end_time\": \"2026-05-03T07:00:00+0000\"}, {\"value\": 9, \"end_time\": \"2026-05-04T07:00:00+0000\"}, {\"value\": 3, \"end_time\": \"2026-05-05T07:00:00+0000\"}, {\"value\": 5, \"end_time\": \"2026-05-06T07:00:00+0000\"}, {\"value\": 10, \"end_time\": \"2026-05-07T07:00:00+0000\"}, {\"value\": 232, \"end_time\": \"2026-05-08T07:00:00+0000\"}, {\"value\": 356, \"end_time\": \"2026-05-09T07:00:00+0000\"}, {\"value\": 258, \"end_time\": \"2026-05-10T07:00:00+0000\"}, {\"value\": 380, \"end_time\": \"2026-05-11T07:00:00+0000\"}, {\"value\": 284, \"end_time\": \"2026-05-12T07:00:00+0000\"}, {\"value\": 127, \"end_time\": \"2026-05-13T07:00:00+0000\"}, {\"value\": 76, \"end_time\": \"2026-05-14T07:00:00+0000\"}, {\"value\": 98, \"end_time\": \"2026-05-15T07:00:00+0000\"}, {\"value\": 46, \"end_time\": \"2026-05-16T07:00:00+0000\"}, {\"value\": 59, \"end_time\": \"2026-05-17T07:00:00+0000\"}, {\"value\": 73, \"end_time\": \"2026-05-18T07:00:00+0000\"}, {\"value\": 68, \"end_time\": \"2026-05-19T07:00:00+0000\"}, {\"value\": 110, \"end_time\": \"2026-05-20T07:00:00+0000\"}, {\"value\": 65, \"end_time\": \"2026-05-21T07:00:00+0000\"}, {\"value\": 108, \"end_time\":...[truncated 1104 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_post_engagements",
+      "period": "days_28",
+      "available": true,
+      "status_code": 200,
+      "values_count": 23,
+      "raw_values": [
+        {
+          "value": 2108,
+          "end_time": "2026-05-02T07:00:00+0000"
+        },
+        {
+          "value": 2108,
+          "end_time": "2026-05-03T07:00:00+0000"
+        },
+        {
+          "value": 2117,
+          "end_time": "2026-05-04T07:00:00+0000"
+        },
+        {
+          "value": 2027,
+          "end_time": "2026-05-05T07:00:00+0000"
+        },
+        {
+          "value": 1641,
+          "end_time": "2026-05-06T07:00:00+0000"
+        },
+        {
+          "value": 1284,
+          "end_time": "2026-05-07T07:00:00+0000"
+        },
+        {
+          "value": 1203,
+          "end_time": "2026-05-08T07:00:00+0000"
+        },
+        {
+          "value": 1279,
+          "end_time": "2026-05-09T07:00:00+0000"
+        },
+        {
+          "value": 1254,
+          "end_time": "2026-05-10T07:00:00+0000"
+        },
+        {
+          "value": 1315,
+          "end_time": "2026-05-11T07:00:00+0000"
+        },
+        {
+          "value": 1586,
+          "end_time": "2026-05-12T07:00:00+0000"
+        },
+        {
+          "value": 1709,
+          "end_time": "2026-05-13T07:00:00+0000"
+        },
+        {
+          "value": 1782,
+          "end_time": "2026-05-14T07:00:00+0000"
+        },
+        {
+          "value": 1878,
+          "end_time": "2026-05-15T07:00:00+0000"
+        },
+        {
+          "value": 1923,
+          "end_time": "2026-05-16T07:00:00+0000"
+        },
+        {
+          "value": 1980,
+          "end_time": "2026-05-17T07:00:00+0000"
+        },
+        {
+          "value": 2053,
+          "end_time": "2026-05-18T07:00:00+0000"
+        },
+        {
+          "value": 2119,
+          "end_time": "2026-05-19T07:00:00+0000"
+        },
+        {
+          "value": 2229,
+          "end_time": "2026-05-20T07:00:00+0000"
+        },
+        {
+          "value": 2294,
+          "end_time": "2026-05-21T07:00:00+0000"
+        },
+        {
+          "value": 2399,
+          "end_time": "2026-05-22T07:00:00+0000"
+        },
+        {
+          "value": 2490,
+          "end_time": "2026-05-23T07:00:00+0000"
+        },
+        {
+          "value": 2573,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 43351,
+      "latest_value": 2573,
+      "supports_daily_series": false,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_post_engagements\", \"period\": \"days_28\", \"values\": [{\"value\": 2108, \"end_time\": \"2026-05-02T07:00:00+0000\"}, {\"value\": 2108, \"end_time\": \"2026-05-03T07:00:00+0000\"}, {\"value\": 2117, \"end_time\": \"2026-05-04T07:00:00+0000\"}, {\"value\": 2027, \"end_time\": \"2026-05-05T07:00:00+0000\"}, {\"value\": 1641, \"end_time\": \"2026-05-06T07:00:00+0000\"}, {\"value\": 1284, \"end_time\": \"2026-05-07T07:00:00+0000\"}, {\"value\": 1203, \"end_time\": \"2026-05-08T07:00:00+0000\"}, {\"value\": 1279, \"end_time\": \"2026-05-09T07:00:00+0000\"}, {\"value\": 1254, \"end_time\": \"2026-05-10T07:00:00+0000\"}, {\"value\": 1315, \"end_time\": \"2026-05-11T07:00:00+0000\"}, {\"value\": 1586, \"end_time\": \"2026-05-12T07:00:00+0000\"}, {\"value\": 1709, \"end_time\": \"2026-05-13T07:00:00+0000\"}, {\"value\": 1782, \"end_time\": \"2026-05-14T07:00:00+0000\"}, {\"value\": 1878, \"end_time\": \"2026-05-15T07:00:00+0000\"}, {\"value\": 1923, \"end_time\": \"2026-05-16T07:00:00+0000\"}, {\"value\": 1980, \"end_time\": \"2026-05-17T07:00:00+0000\"}, {\"value\": 2053, \"end_time\": \"2026-05-18T07:00:00+0000\"}, {\"value\": 2119, \"end_time\": \"2026-05-19T07:00:00+0000\"}, {\"value\": 2229, \"end_time\": \"2026-05-20T07:00:00+0000\"}, {\"value\": 2294, \"end_time\": \"2026-05-21T0...[truncated 1167 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_post_engagements",
+      "period": "total_over_range",
+      "available": true,
+      "status_code": 200,
+      "values_count": 1,
+      "raw_values": [
+        {
+          "value": 2548,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 2548,
+      "latest_value": 2548,
+      "supports_daily_series": false,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_post_engagements\", \"period\": \"total_over_range\", \"values\": [{\"value\": 2548, \"end_time\": \"2026-05-24T07:00:00+0000\"}], \"title\": null, \"description\": \"Número de veces que las personas interactuaron con tus publicaciones por medio de reacciones, comentarios, contenido compartido, etc.\", \"id\": \"434205256738068/insights/page_post_engagements/total_over_range\"}], \"paging\": {\"previous\": \"https://graph.facebook.com/v25.0/434205256738068/insights?access_token=EAAM8CZCMoyPoBR53aJq7eMSkzQnXZB7wZAayh66BkZAeHfgarI6YPgmelS5n5NwhEERGsPdE1LBxknZAgIQp2vS4wynwgRkPMdvKSqOFjb1fbXGLR25ONLQwIlaxEbeGNlZCLKIkaZARTsxedwNUOEujLuZCVkt5fPkW4HjsOH5uCQkszzxSZCglJD3wfj9D75Y271WUt0nwS&since=1775631600&until=1777618800&metric=page_post_engagements&period=total_over_range\", \"next\": \"https://graph.facebook.com/v25.0/434205256738068/insights?access_token=EAAM8CZCMoyPoBR53aJq7eMSkzQnXZB7wZAayh66BkZAeHfgarI6YPgmelS5n5NwhEERGsPdE1LBxknZAgIQp2vS4wynwgRkPMdvKSqOFjb1fbXGLR25ONLQwIlaxEbeGNlZCLKIkaZARTsxedwNUOEujLuZCVkt5fPkW4HjsOH5uCQkszzxSZCglJD3wfj9D75Y271WUt0nwS&since=1779606000&until=1781593200&metric=page_post_engagements&period=total_over_range\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_actions_post_reactions_total",
+      "period": "day",
+      "available": true,
+      "status_code": 200,
+      "values_count": 23,
+      "raw_values": [
+        {
+          "value": {},
+          "end_time": "2026-05-02T07:00:00+0000"
+        },
+        {
+          "value": {},
+          "end_time": "2026-05-03T07:00:00+0000"
+        },
+        {
+          "value": {},
+          "end_time": "2026-05-04T07:00:00+0000"
+        },
+        {
+          "value": {},
+          "end_time": "2026-05-05T07:00:00+0000"
+        },
+        {
+          "value": {},
+          "end_time": "2026-05-06T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 1
+          },
+          "end_time": "2026-05-07T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 27,
+            "love": 2
+          },
+          "end_time": "2026-05-08T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 67,
+            "love": 2
+          },
+          "end_time": "2026-05-09T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 50,
+            "love": 4
+          },
+          "end_time": "2026-05-10T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 60
+          },
+          "end_time": "2026-05-11T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 30,
+            "love": 2,
+            "wow": 2
+          },
+          "end_time": "2026-05-12T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 9,
+            "love": 1
+          },
+          "end_time": "2026-05-13T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 7,
+            "love": 1
+          },
+          "end_time": "2026-05-14T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 8,
+            "love": 2
+          },
+          "end_time": "2026-05-15T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 10,
+            "love": 2
+          },
+          "end_time": "2026-05-16T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 4
+          },
+          "end_time": "2026-05-17T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 8
+          },
+          "end_time": "2026-05-18T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 4
+          },
+          "end_time": "2026-05-19T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 10,
+            "love": 1
+          },
+          "end_time": "2026-05-20T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 3
+          },
+          "end_time": "2026-05-21T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 7,
+            "love": 1
+          },
+          "end_time": "2026-05-22T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 3,
+            "love": 3
+          },
+          "end_time": "2026-05-23T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 10,
+            "love": 1
+          },
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 342,
+      "latest_value": {
+        "like": 10,
+        "love": 1
+      },
+      "supports_daily_series": true,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_actions_post_reactions_total\", \"period\": \"day\", \"values\": [{\"value\": {}, \"end_time\": \"2026-05-02T07:00:00+0000\"}, {\"value\": {}, \"end_time\": \"2026-05-03T07:00:00+0000\"}, {\"value\": {}, \"end_time\": \"2026-05-04T07:00:00+0000\"}, {\"value\": {}, \"end_time\": \"2026-05-05T07:00:00+0000\"}, {\"value\": {}, \"end_time\": \"2026-05-06T07:00:00+0000\"}, {\"value\": {\"like\": 1}, \"end_time\": \"2026-05-07T07:00:00+0000\"}, {\"value\": {\"like\": 27, \"love\": 2}, \"end_time\": \"2026-05-08T07:00:00+0000\"}, {\"value\": {\"like\": 67, \"love\": 2}, \"end_time\": \"2026-05-09T07:00:00+0000\"}, {\"value\": {\"like\": 50, \"love\": 4}, \"end_time\": \"2026-05-10T07:00:00+0000\"}, {\"value\": {\"like\": 60}, \"end_time\": \"2026-05-11T07:00:00+0000\"}, {\"value\": {\"like\": 30, \"love\": 2, \"wow\": 2}, \"end_time\": \"2026-05-12T07:00:00+0000\"}, {\"value\": {\"like\": 9, \"love\": 1}, \"end_time\": \"2026-05-13T07:00:00+0000\"}, {\"value\": {\"like\": 7, \"love\": 1}, \"end_time\": \"2026-05-14T07:00:00+0000\"}, {\"value\": {\"like\": 8, \"love\": 2}, \"end_time\": \"2026-05-15T07:00:00+0000\"}, {\"value\": {\"like\": 10, \"love\": 2}, \"end_time\": \"2026-05-16T07:00:00+0000\"}, {\"value\": {\"like\": 4}, \"end_time\": \"2026-05-17T07:00:00+0000\"}, {\"value\": {\"like\": 8}, \"end_time\"...[truncated 1409 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_actions_post_reactions_total",
+      "period": "days_28",
+      "available": true,
+      "status_code": 200,
+      "values_count": 23,
+      "raw_values": [
+        {
+          "value": {
+            "like": 1886,
+            "love": 55,
+            "sorry": 1
+          },
+          "end_time": "2026-05-02T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 1886,
+            "love": 55,
+            "sorry": 1
+          },
+          "end_time": "2026-05-03T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 1886,
+            "love": 55,
+            "sorry": 1
+          },
+          "end_time": "2026-05-04T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 1807,
+            "love": 54,
+            "sorry": 1
+          },
+          "end_time": "2026-05-05T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 1445,
+            "love": 42
+          },
+          "end_time": "2026-05-06T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 1113,
+            "love": 28
+          },
+          "end_time": "2026-05-07T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 856,
+            "love": 21
+          },
+          "end_time": "2026-05-08T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 672,
+            "love": 18
+          },
+          "end_time": "2026-05-09T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 465,
+            "love": 11
+          },
+          "end_time": "2026-05-10T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 222,
+            "love": 8
+          },
+          "end_time": "2026-05-11T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 239,
+            "love": 10,
+            "wow": 2
+          },
+          "end_time": "2026-05-12T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 248,
+            "love": 11,
+            "wow": 2
+          },
+          "end_time": "2026-05-13T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 253,
+            "love": 12,
+            "wow": 2
+          },
+          "end_time": "2026-05-14T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 260,
+            "love": 14,
+            "wow": 2
+          },
+          "end_time": "2026-05-15T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 270,
+            "love": 16,
+            "wow": 2
+          },
+          "end_time": "2026-05-16T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 273,
+            "love": 16,
+            "wow": 2
+          },
+          "end_time": "2026-05-17T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 281,
+            "love": 16,
+            "wow": 2
+          },
+          "end_time": "2026-05-18T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 285,
+            "love": 16,
+            "wow": 2
+          },
+          "end_time": "2026-05-19T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 295,
+            "love": 17,
+            "wow": 2
+          },
+          "end_time": "2026-05-20T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 298,
+            "love": 17,
+            "wow": 2
+          },
+          "end_time": "2026-05-21T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 305,
+            "love": 18,
+            "wow": 2
+          },
+          "end_time": "2026-05-22T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 308,
+            "love": 21,
+            "wow": 2
+          },
+          "end_time": "2026-05-23T07:00:00+0000"
+        },
+        {
+          "value": {
+            "like": 318,
+            "love": 22,
+            "wow": 2
+          },
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 16454,
+      "latest_value": {
+        "like": 318,
+        "love": 22,
+        "wow": 2
+      },
+      "supports_daily_series": false,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_actions_post_reactions_total\", \"period\": \"days_28\", \"values\": [{\"value\": {\"like\": 1886, \"love\": 55, \"sorry\": 1}, \"end_time\": \"2026-05-02T07:00:00+0000\"}, {\"value\": {\"like\": 1886, \"love\": 55, \"sorry\": 1}, \"end_time\": \"2026-05-03T07:00:00+0000\"}, {\"value\": {\"like\": 1886, \"love\": 55, \"sorry\": 1}, \"end_time\": \"2026-05-04T07:00:00+0000\"}, {\"value\": {\"like\": 1807, \"love\": 54, \"sorry\": 1}, \"end_time\": \"2026-05-05T07:00:00+0000\"}, {\"value\": {\"like\": 1445, \"love\": 42}, \"end_time\": \"2026-05-06T07:00:00+0000\"}, {\"value\": {\"like\": 1113, \"love\": 28}, \"end_time\": \"2026-05-07T07:00:00+0000\"}, {\"value\": {\"like\": 856, \"love\": 21}, \"end_time\": \"2026-05-08T07:00:00+0000\"}, {\"value\": {\"like\": 672, \"love\": 18}, \"end_time\": \"2026-05-09T07:00:00+0000\"}, {\"value\": {\"like\": 465, \"love\": 11}, \"end_time\": \"2026-05-10T07:00:00+0000\"}, {\"value\": {\"like\": 222, \"love\": 8}, \"end_time\": \"2026-05-11T07:00:00+0000\"}, {\"value\": {\"like\": 239, \"love\": 10, \"wow\": 2}, \"end_time\": \"2026-05-12T07:00:00+0000\"}, {\"value\": {\"like\": 248, \"love\": 11, \"wow\": 2}, \"end_time\": \"2026-05-13T07:00:00+0000\"}, {\"value\": {\"like\": 253, \"love\": 12, \"wow\": 2}, \"end_time\": \"2026-05-14T07:00:00+0000\"}, {\"value\": {\"lik...[truncated 1822 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_actions_post_reactions_total",
+      "period": "total_over_range",
+      "available": true,
+      "status_code": 200,
+      "values_count": 1,
+      "raw_values": [
+        {
+          "value": {
+            "like": 318,
+            "love": 22,
+            "wow": 2
+          },
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 342,
+      "latest_value": {
+        "like": 318,
+        "love": 22,
+        "wow": 2
+      },
+      "supports_daily_series": false,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_actions_post_reactions_total\", \"period\": \"total_over_range\", \"values\": [{\"value\": {\"like\": 318, \"love\": 22, \"wow\": 2}, \"end_time\": \"2026-05-24T07:00:00+0000\"}], \"title\": null, \"description\": \"Total de reacciones diarias a las publicaciones de una página por tipo.\", \"id\": \"434205256738068/insights/page_actions_post_reactions_total/total_over_range\"}], \"paging\": {\"previous\": \"https://graph.facebook.com/v25.0/434205256738068/insights?access_token=EAAM8CZCMoyPoBR53aJq7eMSkzQnXZB7wZAayh66BkZAeHfgarI6YPgmelS5n5NwhEERGsPdE1LBxknZAgIQp2vS4wynwgRkPMdvKSqOFjb1fbXGLR25ONLQwIlaxEbeGNlZCLKIkaZARTsxedwNUOEujLuZCVkt5fPkW4HjsOH5uCQkszzxSZCglJD3wfj9D75Y271WUt0nwS&since=1775631600&until=1777618800&metric=page_actions_post_reactions_total&period=total_over_range\", \"next\": \"https://graph.facebook.com/v25.0/434205256738068/insights?access_token=EAAM8CZCMoyPoBR53aJq7eMSkzQnXZB7wZAayh66BkZAeHfgarI6YPgmelS5n5NwhEERGsPdE1LBxknZAgIQp2vS4wynwgRkPMdvKSqOFjb1fbXGLR25ONLQwIlaxEbeGNlZCLKIkaZARTsxedwNUOEujLuZCVkt5fPkW4HjsOH5uCQkszzxSZCglJD3wfj9D75Y271WUt0nwS&since=1779606000&until=1781593200&metric=page_actions_post_reactions_total&period=total_over_range\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_views_total",
+      "period": "day",
+      "available": true,
+      "status_code": 200,
+      "values_count": 23,
+      "raw_values": [
+        {
+          "value": 136,
+          "end_time": "2026-05-02T07:00:00+0000"
+        },
+        {
+          "value": 88,
+          "end_time": "2026-05-03T07:00:00+0000"
+        },
+        {
+          "value": 69,
+          "end_time": "2026-05-04T07:00:00+0000"
+        },
+        {
+          "value": 67,
+          "end_time": "2026-05-05T07:00:00+0000"
+        },
+        {
+          "value": 59,
+          "end_time": "2026-05-06T07:00:00+0000"
+        },
+        {
+          "value": 101,
+          "end_time": "2026-05-07T07:00:00+0000"
+        },
+        {
+          "value": 309,
+          "end_time": "2026-05-08T07:00:00+0000"
+        },
+        {
+          "value": 270,
+          "end_time": "2026-05-09T07:00:00+0000"
+        },
+        {
+          "value": 205,
+          "end_time": "2026-05-10T07:00:00+0000"
+        },
+        {
+          "value": 170,
+          "end_time": "2026-05-11T07:00:00+0000"
+        },
+        {
+          "value": 153,
+          "end_time": "2026-05-12T07:00:00+0000"
+        },
+        {
+          "value": 168,
+          "end_time": "2026-05-13T07:00:00+0000"
+        },
+        {
+          "value": 150,
+          "end_time": "2026-05-14T07:00:00+0000"
+        },
+        {
+          "value": 189,
+          "end_time": "2026-05-15T07:00:00+0000"
+        },
+        {
+          "value": 123,
+          "end_time": "2026-05-16T07:00:00+0000"
+        },
+        {
+          "value": 117,
+          "end_time": "2026-05-17T07:00:00+0000"
+        },
+        {
+          "value": 94,
+          "end_time": "2026-05-18T07:00:00+0000"
+        },
+        {
+          "value": 69,
+          "end_time": "2026-05-19T07:00:00+0000"
+        },
+        {
+          "value": 150,
+          "end_time": "2026-05-20T07:00:00+0000"
+        },
+        {
+          "value": 109,
+          "end_time": "2026-05-21T07:00:00+0000"
+        },
+        {
+          "value": 274,
+          "end_time": "2026-05-22T07:00:00+0000"
+        },
+        {
+          "value": 165,
+          "end_time": "2026-05-23T07:00:00+0000"
+        },
+        {
+          "value": 136,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 3371,
+      "latest_value": 136,
+      "supports_daily_series": true,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_views_total\", \"period\": \"day\", \"values\": [{\"value\": 136, \"end_time\": \"2026-05-02T07:00:00+0000\"}, {\"value\": 88, \"end_time\": \"2026-05-03T07:00:00+0000\"}, {\"value\": 69, \"end_time\": \"2026-05-04T07:00:00+0000\"}, {\"value\": 67, \"end_time\": \"2026-05-05T07:00:00+0000\"}, {\"value\": 59, \"end_time\": \"2026-05-06T07:00:00+0000\"}, {\"value\": 101, \"end_time\": \"2026-05-07T07:00:00+0000\"}, {\"value\": 309, \"end_time\": \"2026-05-08T07:00:00+0000\"}, {\"value\": 270, \"end_time\": \"2026-05-09T07:00:00+0000\"}, {\"value\": 205, \"end_time\": \"2026-05-10T07:00:00+0000\"}, {\"value\": 170, \"end_time\": \"2026-05-11T07:00:00+0000\"}, {\"value\": 153, \"end_time\": \"2026-05-12T07:00:00+0000\"}, {\"value\": 168, \"end_time\": \"2026-05-13T07:00:00+0000\"}, {\"value\": 150, \"end_time\": \"2026-05-14T07:00:00+0000\"}, {\"value\": 189, \"end_time\": \"2026-05-15T07:00:00+0000\"}, {\"value\": 123, \"end_time\": \"2026-05-16T07:00:00+0000\"}, {\"value\": 117, \"end_time\": \"2026-05-17T07:00:00+0000\"}, {\"value\": 94, \"end_time\": \"2026-05-18T07:00:00+0000\"}, {\"value\": 69, \"end_time\": \"2026-05-19T07:00:00+0000\"}, {\"value\": 150, \"end_time\": \"2026-05-20T07:00:00+0000\"}, {\"value\": 109, \"end_time\": \"2026-05-21T07:00:00+0000\"}, {\"value\": 274, \"end...[truncated 1035 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_views_total",
+      "period": "days_28",
+      "available": true,
+      "status_code": 200,
+      "values_count": 23,
+      "raw_values": [
+        {
+          "value": 2057,
+          "end_time": "2026-05-02T07:00:00+0000"
+        },
+        {
+          "value": 2050,
+          "end_time": "2026-05-03T07:00:00+0000"
+        },
+        {
+          "value": 2066,
+          "end_time": "2026-05-04T07:00:00+0000"
+        },
+        {
+          "value": 2075,
+          "end_time": "2026-05-05T07:00:00+0000"
+        },
+        {
+          "value": 2061,
+          "end_time": "2026-05-06T07:00:00+0000"
+        },
+        {
+          "value": 2104,
+          "end_time": "2026-05-07T07:00:00+0000"
+        },
+        {
+          "value": 2335,
+          "end_time": "2026-05-08T07:00:00+0000"
+        },
+        {
+          "value": 2525,
+          "end_time": "2026-05-09T07:00:00+0000"
+        },
+        {
+          "value": 2640,
+          "end_time": "2026-05-10T07:00:00+0000"
+        },
+        {
+          "value": 2746,
+          "end_time": "2026-05-11T07:00:00+0000"
+        },
+        {
+          "value": 2880,
+          "end_time": "2026-05-12T07:00:00+0000"
+        },
+        {
+          "value": 2913,
+          "end_time": "2026-05-13T07:00:00+0000"
+        },
+        {
+          "value": 2916,
+          "end_time": "2026-05-14T07:00:00+0000"
+        },
+        {
+          "value": 3035,
+          "end_time": "2026-05-15T07:00:00+0000"
+        },
+        {
+          "value": 3051,
+          "end_time": "2026-05-16T07:00:00+0000"
+        },
+        {
+          "value": 3062,
+          "end_time": "2026-05-17T07:00:00+0000"
+        },
+        {
+          "value": 3130,
+          "end_time": "2026-05-18T07:00:00+0000"
+        },
+        {
+          "value": 3174,
+          "end_time": "2026-05-19T07:00:00+0000"
+        },
+        {
+          "value": 3291,
+          "end_time": "2026-05-20T07:00:00+0000"
+        },
+        {
+          "value": 3356,
+          "end_time": "2026-05-21T07:00:00+0000"
+        },
+        {
+          "value": 3580,
+          "end_time": "2026-05-22T07:00:00+0000"
+        },
+        {
+          "value": 3674,
+          "end_time": "2026-05-23T07:00:00+0000"
+        },
+        {
+          "value": 3707,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 64428,
+      "latest_value": 3707,
+      "supports_daily_series": false,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_views_total\", \"period\": \"days_28\", \"values\": [{\"value\": 2057, \"end_time\": \"2026-05-02T07:00:00+0000\"}, {\"value\": 2050, \"end_time\": \"2026-05-03T07:00:00+0000\"}, {\"value\": 2066, \"end_time\": \"2026-05-04T07:00:00+0000\"}, {\"value\": 2075, \"end_time\": \"2026-05-05T07:00:00+0000\"}, {\"value\": 2061, \"end_time\": \"2026-05-06T07:00:00+0000\"}, {\"value\": 2104, \"end_time\": \"2026-05-07T07:00:00+0000\"}, {\"value\": 2335, \"end_time\": \"2026-05-08T07:00:00+0000\"}, {\"value\": 2525, \"end_time\": \"2026-05-09T07:00:00+0000\"}, {\"value\": 2640, \"end_time\": \"2026-05-10T07:00:00+0000\"}, {\"value\": 2746, \"end_time\": \"2026-05-11T07:00:00+0000\"}, {\"value\": 2880, \"end_time\": \"2026-05-12T07:00:00+0000\"}, {\"value\": 2913, \"end_time\": \"2026-05-13T07:00:00+0000\"}, {\"value\": 2916, \"end_time\": \"2026-05-14T07:00:00+0000\"}, {\"value\": 3035, \"end_time\": \"2026-05-15T07:00:00+0000\"}, {\"value\": 3051, \"end_time\": \"2026-05-16T07:00:00+0000\"}, {\"value\": 3062, \"end_time\": \"2026-05-17T07:00:00+0000\"}, {\"value\": 3130, \"end_time\": \"2026-05-18T07:00:00+0000\"}, {\"value\": 3174, \"end_time\": \"2026-05-19T07:00:00+0000\"}, {\"value\": 3291, \"end_time\": \"2026-05-20T07:00:00+0000\"}, {\"value\": 3356, \"end_time\": \"2026-05-21T07:00:...[truncated 1084 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_views_total",
+      "period": "total_over_range",
+      "available": true,
+      "status_code": 200,
+      "values_count": 1,
+      "raw_values": [
+        {
+          "value": 3371,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 3371,
+      "latest_value": 3371,
+      "supports_daily_series": false,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_views_total\", \"period\": \"total_over_range\", \"values\": [{\"value\": 3371, \"end_time\": \"2026-05-24T07:00:00+0000\"}], \"title\": null, \"description\": \"Número de veces que personas que iniciaron sesión y no iniciaron sesión vieron el perfil de una página.\", \"id\": \"434205256738068/insights/page_views_total/total_over_range\"}], \"paging\": {\"previous\": \"https://graph.facebook.com/v25.0/434205256738068/insights?access_token=EAAM8CZCMoyPoBR53aJq7eMSkzQnXZB7wZAayh66BkZAeHfgarI6YPgmelS5n5NwhEERGsPdE1LBxknZAgIQp2vS4wynwgRkPMdvKSqOFjb1fbXGLR25ONLQwIlaxEbeGNlZCLKIkaZARTsxedwNUOEujLuZCVkt5fPkW4HjsOH5uCQkszzxSZCglJD3wfj9D75Y271WUt0nwS&since=1775631600&until=1777618800&metric=page_views_total&period=total_over_range\", \"next\": \"https://graph.facebook.com/v25.0/434205256738068/insights?access_token=EAAM8CZCMoyPoBR53aJq7eMSkzQnXZB7wZAayh66BkZAeHfgarI6YPgmelS5n5NwhEERGsPdE1LBxknZAgIQp2vS4wynwgRkPMdvKSqOFjb1fbXGLR25ONLQwIlaxEbeGNlZCLKIkaZARTsxedwNUOEujLuZCVkt5fPkW4HjsOH5uCQkszzxSZCglJD3wfj9D75Y271WUt0nwS&since=1779606000&until=1781593200&metric=page_views_total&period=total_over_range\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_organic",
+      "period": "day",
+      "available": true,
+      "status_code": 200,
+      "values_count": 23,
+      "raw_values": [
+        {
+          "value": 251,
+          "end_time": "2026-05-02T07:00:00+0000"
+        },
+        {
+          "value": 216,
+          "end_time": "2026-05-03T07:00:00+0000"
+        },
+        {
+          "value": 114,
+          "end_time": "2026-05-04T07:00:00+0000"
+        },
+        {
+          "value": 188,
+          "end_time": "2026-05-05T07:00:00+0000"
+        },
+        {
+          "value": 156,
+          "end_time": "2026-05-06T07:00:00+0000"
+        },
+        {
+          "value": 378,
+          "end_time": "2026-05-07T07:00:00+0000"
+        },
+        {
+          "value": 811,
+          "end_time": "2026-05-08T07:00:00+0000"
+        },
+        {
+          "value": 1276,
+          "end_time": "2026-05-09T07:00:00+0000"
+        },
+        {
+          "value": 801,
+          "end_time": "2026-05-10T07:00:00+0000"
+        },
+        {
+          "value": 946,
+          "end_time": "2026-05-11T07:00:00+0000"
+        },
+        {
+          "value": 732,
+          "end_time": "2026-05-12T07:00:00+0000"
+        },
+        {
+          "value": 723,
+          "end_time": "2026-05-13T07:00:00+0000"
+        },
+        {
+          "value": 378,
+          "end_time": "2026-05-14T07:00:00+0000"
+        },
+        {
+          "value": 367,
+          "end_time": "2026-05-15T07:00:00+0000"
+        },
+        {
+          "value": 348,
+          "end_time": "2026-05-16T07:00:00+0000"
+        },
+        {
+          "value": 182,
+          "end_time": "2026-05-17T07:00:00+0000"
+        },
+        {
+          "value": 149,
+          "end_time": "2026-05-18T07:00:00+0000"
+        },
+        {
+          "value": 112,
+          "end_time": "2026-05-19T07:00:00+0000"
+        },
+        {
+          "value": 355,
+          "end_time": "2026-05-20T07:00:00+0000"
+        },
+        {
+          "value": 258,
+          "end_time": "2026-05-21T07:00:00+0000"
+        },
+        {
+          "value": 478,
+          "end_time": "2026-05-22T07:00:00+0000"
+        },
+        {
+          "value": 539,
+          "end_time": "2026-05-23T07:00:00+0000"
+        },
+        {
+          "value": 429,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 10187,
+      "latest_value": 429,
+      "supports_daily_series": true,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_posts_impressions_organic\", \"period\": \"day\", \"values\": [{\"value\": 251, \"end_time\": \"2026-05-02T07:00:00+0000\"}, {\"value\": 216, \"end_time\": \"2026-05-03T07:00:00+0000\"}, {\"value\": 114, \"end_time\": \"2026-05-04T07:00:00+0000\"}, {\"value\": 188, \"end_time\": \"2026-05-05T07:00:00+0000\"}, {\"value\": 156, \"end_time\": \"2026-05-06T07:00:00+0000\"}, {\"value\": 378, \"end_time\": \"2026-05-07T07:00:00+0000\"}, {\"value\": 811, \"end_time\": \"2026-05-08T07:00:00+0000\"}, {\"value\": 1276, \"end_time\": \"2026-05-09T07:00:00+0000\"}, {\"value\": 801, \"end_time\": \"2026-05-10T07:00:00+0000\"}, {\"value\": 946, \"end_time\": \"2026-05-11T07:00:00+0000\"}, {\"value\": 732, \"end_time\": \"2026-05-12T07:00:00+0000\"}, {\"value\": 723, \"end_time\": \"2026-05-13T07:00:00+0000\"}, {\"value\": 378, \"end_time\": \"2026-05-14T07:00:00+0000\"}, {\"value\": 367, \"end_time\": \"2026-05-15T07:00:00+0000\"}, {\"value\": 348, \"end_time\": \"2026-05-16T07:00:00+0000\"}, {\"value\": 182, \"end_time\": \"2026-05-17T07:00:00+0000\"}, {\"value\": 149, \"end_time\": \"2026-05-18T07:00:00+0000\"}, {\"value\": 112, \"end_time\": \"2026-05-19T07:00:00+0000\"}, {\"value\": 355, \"end_time\": \"2026-05-20T07:00:00+0000\"}, {\"value\": 258, \"end_time\": \"2026-05-21T07:00:00+0000\"}...[truncated 1181 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_organic",
+      "period": "days_28",
+      "available": true,
+      "status_code": 200,
+      "values_count": 23,
+      "raw_values": [
+        {
+          "value": 4958,
+          "end_time": "2026-05-02T07:00:00+0000"
+        },
+        {
+          "value": 5049,
+          "end_time": "2026-05-03T07:00:00+0000"
+        },
+        {
+          "value": 5107,
+          "end_time": "2026-05-04T07:00:00+0000"
+        },
+        {
+          "value": 5182,
+          "end_time": "2026-05-05T07:00:00+0000"
+        },
+        {
+          "value": 5165,
+          "end_time": "2026-05-06T07:00:00+0000"
+        },
+        {
+          "value": 5327,
+          "end_time": "2026-05-07T07:00:00+0000"
+        },
+        {
+          "value": 5854,
+          "end_time": "2026-05-08T07:00:00+0000"
+        },
+        {
+          "value": 6875,
+          "end_time": "2026-05-09T07:00:00+0000"
+        },
+        {
+          "value": 7401,
+          "end_time": "2026-05-10T07:00:00+0000"
+        },
+        {
+          "value": 8129,
+          "end_time": "2026-05-11T07:00:00+0000"
+        },
+        {
+          "value": 8823,
+          "end_time": "2026-05-12T07:00:00+0000"
+        },
+        {
+          "value": 9246,
+          "end_time": "2026-05-13T07:00:00+0000"
+        },
+        {
+          "value": 9290,
+          "end_time": "2026-05-14T07:00:00+0000"
+        },
+        {
+          "value": 9464,
+          "end_time": "2026-05-15T07:00:00+0000"
+        },
+        {
+          "value": 9585,
+          "end_time": "2026-05-16T07:00:00+0000"
+        },
+        {
+          "value": 9526,
+          "end_time": "2026-05-17T07:00:00+0000"
+        },
+        {
+          "value": 9610,
+          "end_time": "2026-05-18T07:00:00+0000"
+        },
+        {
+          "value": 9671,
+          "end_time": "2026-05-19T07:00:00+0000"
+        },
+        {
+          "value": 9968,
+          "end_time": "2026-05-20T07:00:00+0000"
+        },
+        {
+          "value": 10161,
+          "end_time": "2026-05-21T07:00:00+0000"
+        },
+        {
+          "value": 10451,
+          "end_time": "2026-05-22T07:00:00+0000"
+        },
+        {
+          "value": 10837,
+          "end_time": "2026-05-23T07:00:00+0000"
+        },
+        {
+          "value": 10969,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 186648,
+      "latest_value": 10969,
+      "supports_daily_series": false,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_posts_impressions_organic\", \"period\": \"days_28\", \"values\": [{\"value\": 4958, \"end_time\": \"2026-05-02T07:00:00+0000\"}, {\"value\": 5049, \"end_time\": \"2026-05-03T07:00:00+0000\"}, {\"value\": 5107, \"end_time\": \"2026-05-04T07:00:00+0000\"}, {\"value\": 5182, \"end_time\": \"2026-05-05T07:00:00+0000\"}, {\"value\": 5165, \"end_time\": \"2026-05-06T07:00:00+0000\"}, {\"value\": 5327, \"end_time\": \"2026-05-07T07:00:00+0000\"}, {\"value\": 5854, \"end_time\": \"2026-05-08T07:00:00+0000\"}, {\"value\": 6875, \"end_time\": \"2026-05-09T07:00:00+0000\"}, {\"value\": 7401, \"end_time\": \"2026-05-10T07:00:00+0000\"}, {\"value\": 8129, \"end_time\": \"2026-05-11T07:00:00+0000\"}, {\"value\": 8823, \"end_time\": \"2026-05-12T07:00:00+0000\"}, {\"value\": 9246, \"end_time\": \"2026-05-13T07:00:00+0000\"}, {\"value\": 9290, \"end_time\": \"2026-05-14T07:00:00+0000\"}, {\"value\": 9464, \"end_time\": \"2026-05-15T07:00:00+0000\"}, {\"value\": 9585, \"end_time\": \"2026-05-16T07:00:00+0000\"}, {\"value\": 9526, \"end_time\": \"2026-05-17T07:00:00+0000\"}, {\"value\": 9610, \"end_time\": \"2026-05-18T07:00:00+0000\"}, {\"value\": 9671, \"end_time\": \"2026-05-19T07:00:00+0000\"}, {\"value\": 9968, \"end_time\": \"2026-05-20T07:00:00+0000\"}, {\"value\": 10161, \"end_time\": \"20...[truncated 1227 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_organic",
+      "period": "total_over_range",
+      "available": true,
+      "status_code": 200,
+      "values_count": 1,
+      "raw_values": [
+        {
+          "value": 10187,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 10187,
+      "latest_value": 10187,
+      "supports_daily_series": false,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_posts_impressions_organic\", \"period\": \"total_over_range\", \"values\": [{\"value\": 10187, \"end_time\": \"2026-05-24T07:00:00+0000\"}], \"title\": \"Impresiones orgánicas de las publicaciones de tu página\", \"description\": \"Número de veces que las publicaciones de tu página se mostraron en pantalla a través de distribución orgánica.\", \"id\": \"434205256738068/insights/page_posts_impressions_organic/total_over_range\"}], \"paging\": {\"previous\": \"https://graph.facebook.com/v25.0/434205256738068/insights?access_token=EAAM8CZCMoyPoBR53aJq7eMSkzQnXZB7wZAayh66BkZAeHfgarI6YPgmelS5n5NwhEERGsPdE1LBxknZAgIQp2vS4wynwgRkPMdvKSqOFjb1fbXGLR25ONLQwIlaxEbeGNlZCLKIkaZARTsxedwNUOEujLuZCVkt5fPkW4HjsOH5uCQkszzxSZCglJD3wfj9D75Y271WUt0nwS&since=1775631600&until=1777618800&metric=page_posts_impressions_organic&period=total_over_range\", \"next\": \"https://graph.facebook.com/v25.0/434205256738068/insights?access_token=EAAM8CZCMoyPoBR53aJq7eMSkzQnXZB7wZAayh66BkZAeHfgarI6YPgmelS5n5NwhEERGsPdE1LBxknZAgIQp2vS4wynwgRkPMdvKSqOFjb1fbXGLR25ONLQwIlaxEbeGNlZCLKIkaZARTsxedwNUOEujLuZCVkt5fPkW4HjsOH5uCQkszzxSZCglJD3wfj9D75Y271WUt0nwS&since=1779606000&until=1781593200&metric=page_posts_impressions_organic&period=...[truncated 19 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_paid",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A5WB7m7bnmH_5UweQKFb896",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A5WB7m7bnmH_5UweQKFb896\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_paid",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AkFuI1uu_NqFP7pv0a6PDyy",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AkFuI1uu_NqFP7pv0a6PDyy\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_paid",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AWzNdsVqqgPl6vTtf0SdZAL",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AWzNdsVqqgPl6vTtf0SdZAL\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_unique",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "ANbznClmXBKkAtZLG_ZawAD",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"ANbznClmXBKkAtZLG_ZawAD\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_unique",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AGn3rDwJZdsxhb4rqVVN4i9",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AGn3rDwJZdsxhb4rqVVN4i9\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_unique",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A_XbKZXaxLNKg28CZTPlC5T",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A_XbKZXaxLNKg28CZTPlC5T\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AZ1W7ge8ArZbWaeB2a_Vf1H",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AZ1W7ge8ArZbWaeB2a_Vf1H\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A2OOjp46IIIJab3wV_v4PAF",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A2OOjp46IIIJab3wV_v4PAF\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AVswL_f9iPPfuueXbFPRvrP",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AVswL_f9iPPfuueXbFPRvrP\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A53Wg6sdhaDbZTnR7SsXE_G",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A53Wg6sdhaDbZTnR7SsXE_G\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A7urzwTQOzc-uyM1gh74i8j",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A7urzwTQOzc-uyM1gh74i8j\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AGmuoLn0I0Sc-fXU0e8t9XV",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AGmuoLn0I0Sc-fXU0e8t9XV\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions_unique",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A8eQxQ0qqKgfCrboXaI5CDV",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A8eQxQ0qqKgfCrboXaI5CDV\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions_unique",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AbdqT6uFwiyhjfSC_K_Cf-p",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AbdqT6uFwiyhjfSC_K_Cf-p\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions_unique",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AThAwYTfbKQdWSJMkLNU5x-",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AThAwYTfbKQdWSJMkLNU5x-\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions_paid",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AiOb1iOSbidTYOJWADlV34d",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AiOb1iOSbidTYOJWADlV34d\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions_paid",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AMiBSmzDXX6qGySTpJMqvPT",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AMiBSmzDXX6qGySTpJMqvPT\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions_paid",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AfrBd22C-N-V_lZ9LatU3fw",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AfrBd22C-N-V_lZ9LatU3fw\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions_organic",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "Ago4hIOAeHlsxlNtmg9SXaf",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"Ago4hIOAeHlsxlNtmg9SXaf\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions_organic",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AxJgwj85lZMBq4ubjwdVlbd",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AxJgwj85lZMBq4ubjwdVlbd\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_impressions_organic",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AVlqMzh_KVRhDZSwZnOOQOi",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AVlqMzh_KVRhDZSwZnOOQOi\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AY_ntMezfpSTLxs40qaHNwP",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AY_ntMezfpSTLxs40qaHNwP\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AxzR43b02EMUJ4PYj_0u-OD",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AxzR43b02EMUJ4PYj_0u-OD\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AZv8KOj1V-UudHvPTLCgJhj",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AZv8KOj1V-UudHvPTLCgJhj\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans_city",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AjkySD7Z4S-rOEi0MyqUxOg",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AjkySD7Z4S-rOEi0MyqUxOg\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans_city",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AoisiNwLsTsYpNPj1vuVo6R",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AoisiNwLsTsYpNPj1vuVo6R\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans_city",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AF4wMa55LgzA5FU6OqwO_o9",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AF4wMa55LgzA5FU6OqwO_o9\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans_country",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A9zBeSSGekZMc0yR9FaMaw0",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A9zBeSSGekZMc0yR9FaMaw0\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans_country",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AWl7RoXuNGDyjkozkpOwOzL",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AWl7RoXuNGDyjkozkpOwOzL\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans_country",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AiJPufLdGFXqJsww4R3Uvfe",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AiJPufLdGFXqJsww4R3Uvfe\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans_gender_age",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AzcPmzGASt_JiYz56mbgRLe",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AzcPmzGASt_JiYz56mbgRLe\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans_gender_age",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AW94PsPFVYeXULRV39p9zAY",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AW94PsPFVYeXULRV39p9zAY\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fans_gender_age",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A5vM83rppa4pASvN_zu5CRw",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A5vM83rppa4pASvN_zu5CRw\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fan_adds",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "Axs7w2sC3UVUPXJEiaMfxiv",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"Axs7w2sC3UVUPXJEiaMfxiv\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fan_adds",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AbDXrwHhR8pGKJpjlnAyc3h",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AbDXrwHhR8pGKJpjlnAyc3h\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fan_adds",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "Ah9RIJGrCiQkXD5soBAvKfk",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"Ah9RIJGrCiQkXD5soBAvKfk\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fan_removes",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AsGcs4m2AfJOz75hrHyp0Dv",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AsGcs4m2AfJOz75hrHyp0Dv\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fan_removes",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AFVosFYPXsXDlxNHCCPVeP6",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AFVosFYPXsXDlxNHCCPVeP6\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_fan_removes",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "ANtWKKPPU9imyy0mvSnFghl",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"ANtWKKPPU9imyy0mvSnFghl\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_views_by_site_logged_in_unique",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A84G4HwAqWzSisXmgTiSVIT",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A84G4HwAqWzSisXmgTiSVIT\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_views_by_site_logged_in_unique",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AELngpKfgvpF0Vtutr20hn9",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AELngpKfgvpF0Vtutr20hn9\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_views_by_site_logged_in_unique",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "ANoGBXB6zECJEKXCoGebw1G",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"ANoGBXB6zECJEKXCoGebw1G\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_views_by_profile_tab_total",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "ANGKMii36XMURw1N5AxxE3z",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"ANGKMii36XMURw1N5AxxE3z\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_views_by_profile_tab_total",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A8nQOeXS1wV0bF954lcFQ5K",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A8nQOeXS1wV0bF954lcFQ5K\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_views_by_profile_tab_total",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AEGbs7S5gStiZrLXn2tVNOQ",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AEGbs7S5gStiZrLXn2tVNOQ\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_total_actions",
+      "period": "day",
+      "available": true,
+      "status_code": 200,
+      "values_count": 23,
+      "raw_values": [
+        {
+          "value": 0,
+          "end_time": "2026-05-02T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-03T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-04T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-05T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-06T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-07T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-08T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-09T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-10T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-11T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-12T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-13T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-14T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-15T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-16T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-17T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-18T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-19T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-20T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-21T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-22T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-23T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 0,
+      "latest_value": 0,
+      "supports_daily_series": true,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_total_actions\", \"period\": \"day\", \"values\": [{\"value\": 0, \"end_time\": \"2026-05-02T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-03T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-04T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-05T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-06T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-07T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-08T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-09T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-10T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-11T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-12T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-13T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-14T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-15T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-16T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-17T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-18T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-19T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-20T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-21T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-22T07:00:00+0000\"...[truncated 1060 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_total_actions",
+      "period": "days_28",
+      "available": true,
+      "status_code": 200,
+      "values_count": 23,
+      "raw_values": [
+        {
+          "value": 0,
+          "end_time": "2026-05-02T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-03T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-04T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-05T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-06T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-07T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-08T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-09T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-10T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-11T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-12T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-13T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-14T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-15T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-16T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-17T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-18T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-19T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-20T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-21T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-22T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-23T07:00:00+0000"
+        },
+        {
+          "value": 0,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 0,
+      "latest_value": 0,
+      "supports_daily_series": false,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_total_actions\", \"period\": \"days_28\", \"values\": [{\"value\": 0, \"end_time\": \"2026-05-02T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-03T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-04T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-05T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-06T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-07T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-08T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-09T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-10T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-11T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-12T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-13T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-14T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-15T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-16T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-17T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-18T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-19T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-20T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-21T07:00:00+0000\"}, {\"value\": 0, \"end_time\": \"2026-05-22T07:00:00+0...[truncated 1080 chars]"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_total_actions",
+      "period": "total_over_range",
+      "available": true,
+      "status_code": 200,
+      "values_count": 1,
+      "raw_values": [
+        {
+          "value": 0,
+          "end_time": "2026-05-24T07:00:00+0000"
+        }
+      ],
+      "raw_sum": 0,
+      "latest_value": 0,
+      "supports_daily_series": false,
+      "supports_total_over_range": true,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": null,
+      "fbtrace_id": null,
+      "raw_response": "{\"data\": [{\"name\": \"page_total_actions\", \"period\": \"total_over_range\", \"values\": [{\"value\": 0, \"end_time\": \"2026-05-24T07:00:00+0000\"}], \"title\": null, \"description\": \"Número de clics en la información de contacto de tu página y el botón de llamada a la acción.\", \"id\": \"434205256738068/insights/page_total_actions/total_over_range\"}], \"paging\": {\"previous\": \"https://graph.facebook.com/v25.0/434205256738068/insights?access_token=EAAM8CZCMoyPoBR53aJq7eMSkzQnXZB7wZAayh66BkZAeHfgarI6YPgmelS5n5NwhEERGsPdE1LBxknZAgIQp2vS4wynwgRkPMdvKSqOFjb1fbXGLR25ONLQwIlaxEbeGNlZCLKIkaZARTsxedwNUOEujLuZCVkt5fPkW4HjsOH5uCQkszzxSZCglJD3wfj9D75Y271WUt0nwS&since=1775631600&until=1777618800&metric=page_total_actions&period=total_over_range\", \"next\": \"https://graph.facebook.com/v25.0/434205256738068/insights?access_token=EAAM8CZCMoyPoBR53aJq7eMSkzQnXZB7wZAayh66BkZAeHfgarI6YPgmelS5n5NwhEERGsPdE1LBxknZAgIQp2vS4wynwgRkPMdvKSqOFjb1fbXGLR25ONLQwIlaxEbeGNlZCLKIkaZARTsxedwNUOEujLuZCVkt5fPkW4HjsOH5uCQkszzxSZCglJD3wfj9D75Y271WUt0nwS&since=1779606000&until=1781593200&metric=page_total_actions&period=total_over_range\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_cta_clicks_logged_in_total",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AxgKdZStywGo7UQAkmwQcOE",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AxgKdZStywGo7UQAkmwQcOE\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_cta_clicks_logged_in_total",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A00LH7KY5EAG5b2K3zgodqu",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A00LH7KY5EAG5b2K3zgodqu\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_cta_clicks_logged_in_total",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A6wVHRISRDho55x6UAbZEmL",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A6wVHRISRDho55x6UAbZEmL\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_get_directions_clicks_logged_in_unique",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "Az8uuFshxtauzTz_SIad1pD",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"Az8uuFshxtauzTz_SIad1pD\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_get_directions_clicks_logged_in_unique",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AXUbYmYJkjtN6LEQw2CJ8Q1",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AXUbYmYJkjtN6LEQw2CJ8Q1\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_get_directions_clicks_logged_in_unique",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "Alx9SSBYtnw1jIXyF0GUV16",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"Alx9SSBYtnw1jIXyF0GUV16\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_website_clicks_logged_in_unique",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AQ8YmIvTAjhWto5rpEXbRPT",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AQ8YmIvTAjhWto5rpEXbRPT\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_website_clicks_logged_in_unique",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AVkIFWZq1BwEwHIWmz6_YDX",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AVkIFWZq1BwEwHIWmz6_YDX\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_website_clicks_logged_in_unique",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A9Rd0DwO0uaboCc9JJf2k6K",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A9Rd0DwO0uaboCc9JJf2k6K\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_call_phone_clicks_logged_in_unique",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "Ai4FW2TYSrGMnEr5SMo5kwt",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"Ai4FW2TYSrGMnEr5SMo5kwt\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_call_phone_clicks_logged_in_unique",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "ADMDZe9gnihDb2-RixnWvX-",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"ADMDZe9gnihDb2-RixnWvX-\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_call_phone_clicks_logged_in_unique",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AnKCxHAy3fCYQ62VBVcLYyD",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AnKCxHAy3fCYQ62VBVcLYyD\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_consumptions",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "ANn7ilqt4XEUBgAtr6z8QPs",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"ANn7ilqt4XEUBgAtr6z8QPs\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_consumptions",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "ACNAVsGXkRvY4_wKtfHPyDe",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"ACNAVsGXkRvY4_wKtfHPyDe\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_consumptions",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AK5yzYe7TH80pAubzww_lM1",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AK5yzYe7TH80pAubzww_lM1\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_consumptions_unique",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AsULBoriRIkbFJCwAo2CXVb",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AsULBoriRIkbFJCwAo2CXVb\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_consumptions_unique",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AjaRp7tsxmFPQlUjB1qKKVH",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AjaRp7tsxmFPQlUjB1qKKVH\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_consumptions_unique",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A7DyfAhl-HY-dNn2PL7rt2h",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A7DyfAhl-HY-dNn2PL7rt2h\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_positive_feedback_by_type",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AQvoF_fT2vINYOCXOdBqRfR",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AQvoF_fT2vINYOCXOdBqRfR\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_positive_feedback_by_type",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AjwpxgQQMcYI_ZAju61cbGH",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AjwpxgQQMcYI_ZAju61cbGH\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_positive_feedback_by_type",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AXwShJCpg3gRDe2uCMjVzQU",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AXwShJCpg3gRDe2uCMjVzQU\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_negative_feedback_by_type",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "Ay0_v-8QN5QtG8z8GvCKCaX",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"Ay0_v-8QN5QtG8z8GvCKCaX\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_negative_feedback_by_type",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A3GsPqzvXzGsGIyeq5tawWr",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A3GsPqzvXzGsGIyeq5tawWr\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_negative_feedback_by_type",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "APbnwan_9Bv9aPzi3q9ntmy",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"APbnwan_9Bv9aPzi3q9ntmy\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_places_checkin_total",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AJqdx2XP7Hkia3JlK8aHAmp",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AJqdx2XP7Hkia3JlK8aHAmp\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_places_checkin_total",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AThHU76IG5-89dQ8_GKk_EW",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AThHU76IG5-89dQ8_GKk_EW\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_places_checkin_total",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AFTvK3QyzwGU7NSMIqVCDjf",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AFTvK3QyzwGU7NSMIqVCDjf\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_places_checkin_total_unique",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AsndYXBCJgAydhELvWbg9Pu",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AsndYXBCJgAydhELvWbg9Pu\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_places_checkin_total_unique",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AjwtqDz_aQpwa2PCQISCFvq",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AjwtqDz_aQpwa2PCQISCFvq\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_places_checkin_total_unique",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A3V-ki5X-yVV1mJIGLtoMo7",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A3V-ki5X-yVV1mJIGLtoMo7\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_organic_unique",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A0bIHT49y4SwTdEbMR33z6I",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A0bIHT49y4SwTdEbMR33z6I\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_organic_unique",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A4kWlSix0icmFoUlBOzKeNt",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A4kWlSix0icmFoUlBOzKeNt\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_organic_unique",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AR8Up7uOZsgDd0QCHNLgPTm",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AR8Up7uOZsgDd0QCHNLgPTm\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_viral",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AcJ-Uvfi7lGp-aLGKeX3KdG",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AcJ-Uvfi7lGp-aLGKeX3KdG\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_viral",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AH1E6q6ML-_NBygZG03_Cyl",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AH1E6q6ML-_NBygZG03_Cyl\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_viral",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AA3qPIxWr5Mo-LID-_0YfzD",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AA3qPIxWr5Mo-LID-_0YfzD\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_viral_unique",
+      "period": "day",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AwQHiDHNbbLyrRYKvZQ-KYa",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AwQHiDHNbbLyrRYKvZQ-KYa\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_viral_unique",
+      "period": "days_28",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "AfZbCpKZfdRB179a1rJm25F",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"AfZbCpKZfdRB179a1rJm25F\"}}"
+    },
+    {
+      "section": "page_insights",
+      "metric": "page_posts_impressions_viral_unique",
+      "period": "total_over_range",
+      "available": false,
+      "status_code": 400,
+      "values_count": 0,
+      "raw_values": [],
+      "raw_sum": null,
+      "latest_value": null,
+      "supports_daily_series": false,
+      "supports_total_over_range": false,
+      "error_code": 100,
+      "error_subcode": null,
+      "error_message": "(#100) The value must be a valid insights metric",
+      "fbtrace_id": "A2wNfKolvWHEydisGJ-GLBz",
+      "raw_response": "{\"error\": {\"message\": \"(#100) The value must be a valid insights metric\", \"type\": \"OAuthException\", \"code\": 100, \"fbtrace_id\": \"A2wNfKolvWHEydisGJ-GLBz\"}}"
+    }
+  ],
+  "page_posts_request": {
+    "section": "page_posts_request",
+    "endpoint": "434205256738068/published_posts",
+    "status_code": 400,
+    "available": false,
+    "posts_count": 0,
+    "error": {
+      "error_code": 10,
+      "error_subcode": null,
+      "error_message": "(#10) This endpoint requires the 'pages_read_user_content' permission or the 'Page Public Content Access' feature. Refer to https://developers.facebook.com/docs/apps/review/login-permissions#manage-pages and https://developers.facebook.com/docs/apps/review/feature#reference-PAGES_ACCESS for details.",
+      "error_type": "OAuthException",
+      "fbtrace_id": "AbQjleUGfVrO920I7-z4GGt"
+    },
+    "raw_response": "{\"error\": {\"message\": \"(#10) This endpoint requires the 'pages_read_user_content' permission or the 'Page Public Content Access' feature. Refer to https://developers.facebook.com/docs/apps/review/login-permissions#manage-pages and https://developers.facebook.com/docs/apps/review/feature#reference-PAGES_ACCESS for details.\", \"type\": \"OAuthException\", \"code\": 10, \"fbtrace_id\": \"AbQjleUGfVrO920I7-z4GGt\"}}"
+  },
+  "page_posts": [
+    {
+      "section": "page_posts",
+      "field": "id",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "message",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "created_time",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "permalink_url",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "full_picture",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "status_type",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "story",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "attachments",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "shares",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "comments.summary(true)",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "reactions.summary(true)",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    },
+    {
+      "section": "page_posts",
+      "field": "likes.summary(true)",
+      "available": false,
+      "sample_value": null,
+      "coverage_count": 0,
+      "error_message": "field_not_present_in_sampled_posts"
+    }
+  ],
+  "sampled_posts": [],
+  "post_insights": [],
+  "video_insights": [
+    {
+      "section": "video_insights",
+      "status": "not_tested_no_video_posts_found",
+      "available": false,
+      "post_id": null,
+      "video_id": null,
+      "metric": null,
+      "raw_values": null,
+      "raw_sum": null,
+      "error_code": null,
+      "error_subcode": null,
+      "error_message": "not_tested_no_video_posts_found",
+      "fbtrace_id": null
+    }
+  ],
+  "executive_summary": {
+    "available_and_product_ready": [
+      {
+        "metric_or_field": "about",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=str"
+      },
+      {
+        "metric_or_field": "access_token",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=str"
+      },
+      {
+        "metric_or_field": "category",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=str"
+      },
+      {
+        "metric_or_field": "category_list",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=list"
+      },
+      {
+        "metric_or_field": "fan_count",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": "summary_card_followers",
+        "confidence": "high",
+        "notes": "value_type=int"
+      },
+      {
+        "metric_or_field": "followers_count",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": "summary_card_followers",
+        "confidence": "high",
+        "notes": "value_type=int"
+      },
+      {
+        "metric_or_field": "hours",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=dict"
+      },
+      {
+        "metric_or_field": "id",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=str"
+      },
+      {
+        "metric_or_field": "is_verified",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=bool"
+      },
+      {
+        "metric_or_field": "link",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=str"
+      },
+      {
+        "metric_or_field": "location",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=dict"
+      },
+      {
+        "metric_or_field": "name",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "high",
+        "notes": "value_type=str"
+      },
+      {
+        "metric_or_field": "overall_star_rating",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=float"
+      },
+      {
+        "metric_or_field": "phone",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=str"
+      },
+      {
+        "metric_or_field": "picture",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=dict"
+      },
+      {
+        "metric_or_field": "rating_count",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=int"
+      },
+      {
+        "metric_or_field": "talking_about_count",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=int"
+      },
+      {
+        "metric_or_field": "username",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=str"
+      },
+      {
+        "metric_or_field": "verification_status",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=str"
+      },
+      {
+        "metric_or_field": "website",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=str"
+      },
+      {
+        "metric_or_field": "were_here_count",
+        "section": "page_fields",
+        "total_available": true,
+        "daily_series_available": false,
+        "recommended_slide_use": null,
+        "confidence": "medium",
+        "notes": "value_type=int"
+      },
+      {
+        "metric_or_field": "page_actions_post_reactions_total",
+        "section": "page_insights",
+        "total_available": true,
+        "daily_series_available": true,
+        "recommended_slide_use": "summary_card_reactions",
+        "confidence": "high",
+        "notes": "available_periods=day,days_28,total_over_range"
+      },
+      {
+        "metric_or_field": "page_post_engagements",
+        "section": "page_insights",
+        "total_available": true,
+        "daily_series_available": true,
+        "recommended_slide_use": "engagement_slide",
+        "confidence": "high",
+        "notes": "available_periods=day,days_28,total_over_range"
+      },
+      {
+        "metric_or_field": "page_posts_impressions_organic",
+        "section": "page_insights",
+        "total_available": true,
+        "daily_series_available": true,
+        "recommended_slide_use": "visibility_slide_or_summary",
+        "confidence": "high",
+        "notes": "available_periods=day,days_28,total_over_range"
+      },
+      {
+        "metric_or_field": "page_total_actions",
+        "section": "page_insights",
+        "total_available": true,
+        "daily_series_available": true,
+        "recommended_slide_use": null,
+        "confidence": "high",
+        "notes": "available_periods=day,days_28,total_over_range"
+      },
+      {
+        "metric_or_field": "page_views_total",
+        "section": "page_insights",
+        "total_available": true,
+        "daily_series_available": true,
+        "recommended_slide_use": "summary_card_page_views",
+        "confidence": "high",
+        "notes": "available_periods=day,days_28,total_over_range"
+      }
+    ],
+    "invalid_or_deprecated": [
+      {
+        "metric": "page_call_phone_clicks_logged_in_unique",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_consumptions",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_consumptions_unique",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_cta_clicks_logged_in_total",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_fan_adds",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_fan_removes",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_fans",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_fans_city",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_fans_country",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_fans_gender_age",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_get_directions_clicks_logged_in_unique",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_impressions",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_impressions_organic",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_impressions_paid",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_impressions_unique",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_negative_feedback_by_type",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_places_checkin_total",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_places_checkin_total_unique",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_positive_feedback_by_type",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_posts_impressions",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_posts_impressions_organic_unique",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_posts_impressions_paid",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_posts_impressions_unique",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_posts_impressions_viral",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_posts_impressions_viral_unique",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_views_by_profile_tab_total",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_views_by_site_logged_in_unique",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      },
+      {
+        "metric": "page_website_clicks_logged_in_unique",
+        "error_code": 100,
+        "error_message": "(#100) The value must be a valid insights metric"
+      }
+    ],
+    "empty_but_valid": [
+      {
+        "metric": "video_insights",
+        "reason": "not_tested_no_video_posts_found"
+      }
+    ],
+    "missing_permission": [],
+    "post_field_coverage": [
+      {
+        "section": "page_posts",
+        "field": "id",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "message",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "created_time",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "permalink_url",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "full_picture",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "status_type",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "story",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "attachments",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "shares",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "comments.summary(true)",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "reactions.summary(true)",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      },
+      {
+        "section": "page_posts",
+        "field": "likes.summary(true)",
+        "available": false,
+        "sample_value": null,
+        "coverage_count": 0,
+        "error_message": "field_not_present_in_sampled_posts"
+      }
+    ]
+  },
+  "product_suggestion": {
+    "recommended_facebook_report_metrics": [
+      {
+        "metric": "page_posts_impressions_organic",
+        "display_name": "Organic Post Impressions",
+        "reason": "available visibility metric returned directly by Page Insights",
+        "chartable": true,
+        "confidence": "high"
+      },
+      {
+        "metric": "page_post_engagements",
+        "display_name": "Page Post Engagements",
+        "reason": "stable page-level engagement metric with daily series and total range",
+        "chartable": true,
+        "confidence": "high"
+      },
+      {
+        "metric": "page_actions_post_reactions_total",
+        "display_name": "Post Reactions",
+        "reason": "reaction totals are available and interpretable",
+        "chartable": true,
+        "confidence": "high"
+      },
+      {
+        "metric": "page_views_total",
+        "display_name": "Page Views",
+        "reason": "page view totals and daily series are available",
+        "chartable": true,
+        "confidence": "high"
+      },
+      {
+        "metric": "followers_count",
+        "display_name": "Followers",
+        "reason": "direct page field available from Page node",
+        "chartable": false,
+        "confidence": "high"
+      },
+      {
+        "metric": "fan_count",
+        "display_name": "Fans",
+        "reason": "direct page field available from Page node",
+        "chartable": false,
+        "confidence": "high"
+      }
+    ]
+  }
+}
