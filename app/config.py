@@ -92,6 +92,21 @@ class Settings(BaseSettings):
     google_client_secret: str | None = Field(default=None, validation_alias="GOOGLE_CLIENT_SECRET")
     google_redirect_uri: str | None = Field(default=None, validation_alias="GOOGLE_REDIRECT_URI")
     meta_api_version: str = "v19.0"
+    instagram_app_id: str | None = Field(default=None, validation_alias="INSTAGRAM_APP_ID")
+    instagram_app_secret: str | None = Field(default=None, validation_alias="INSTAGRAM_APP_SECRET")
+    instagram_redirect_uri: str | None = Field(default=None, validation_alias="INSTAGRAM_REDIRECT_URI")
+    instagram_oauth_authorize_url: str = Field(
+        default="https://api.instagram.com/oauth/authorize",
+        validation_alias="INSTAGRAM_OAUTH_AUTHORIZE_URL",
+    )
+    instagram_oauth_access_token_url: str = Field(
+        default="https://api.instagram.com/oauth/access_token",
+        validation_alias="INSTAGRAM_OAUTH_ACCESS_TOKEN_URL",
+    )
+    instagram_graph_api_base: str = Field(
+        default="https://graph.instagram.com",
+        validation_alias="INSTAGRAM_GRAPH_API_BASE",
+    )
     tiktok_app_id: str | None = Field(default=None, validation_alias="TIKTOK_APP_ID")
     tiktok_secret: str | None = Field(default=None, validation_alias="TIKTOK_SECRET")
     tiktok_api_base: str = Field(

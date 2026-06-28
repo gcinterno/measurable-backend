@@ -45,8 +45,12 @@ from .config import settings
 from .crypto import decrypt_secret, encrypt_secret
 from .db import SessionLocal, engine
 from .integrations.meta_ads import (
+    FACEBOOK_PAGES_OAUTH_SCOPE,
+    FACEBOOK_PAGES_SCOPES,
+    INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN,
+    INSTAGRAM_BUSINESS_SCOPES_LEGACY_FACEBOOK_LOGIN,
     META_ADS_OAUTH_SCOPE,
-    META_OAUTH_SCOPES,
+    META_ADS_SCOPES,
     META_PAGES_OAUTH_SCOPE,
     debug_ads_permissions,
     debug_token,
@@ -68,6 +72,9 @@ from .integrations.meta_ads import (
     get_owned_ad_accounts,
     list_ad_accounts,
     list_pages,
+    meta_oauth_scope_string_for_integration_type,
+    meta_oauth_scopes_for_integration_type,
+    normalize_meta_oauth_integration_type,
     oauth_connect_url,
     oauth_connect_pages_url,
 )
@@ -99,6 +106,18 @@ from .integrations.shopify import (
     shopify_webhook_hmac_valid,
 )
 from .integrations.meta_capi import send_meta_capi_event
+from .integrations.instagram_business import (
+    INSTAGRAM_BUSINESS_CALLBACK_PATH,
+    INSTAGRAM_BUSINESS_OAUTH_SCOPE,
+    INSTAGRAM_BUSINESS_SCOPES,
+    build_instagram_business_auth_url,
+    decode_instagram_business_state,
+    encode_instagram_business_state,
+    exchange_instagram_business_code_for_token,
+    fetch_instagram_business_profile,
+    get_missing_instagram_business_config_fields,
+    get_instagram_business_redirect_uri,
+)
 from .models import (
     AccountDeletionFeedback,
     AuditLog,
@@ -6445,6 +6464,10 @@ def _meta_token_account_external_id(integration_id: int) -> str:
     return f"{META_TOKEN_ACCOUNT_PREFIX}{integration_id}"
 
 
+def _instagram_business_token_account_external_id(integration_id: int) -> str:
+    return f"instagram_business_token_{integration_id}"
+
+
 def _meta_page_account_external_id(page_id: str) -> str:
     return f"{META_PAGE_ACCOUNT_PREFIX}{page_id}"
 
@@ -6507,6 +6530,28 @@ def _get_or_create_meta_ads_integration_for_workspace(db: Session, workspace_id:
         workspace_id=workspace_id,
         provider="meta_ads",
         name="Meta Ads",
+        status="disconnected",
+    )
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+    return integration
+
+
+def _get_or_create_instagram_business_integration_for_workspace(db: Session, workspace_id: int) -> Integration:
+    integration = (
+        db.query(Integration)
+        .filter(Integration.workspace_id == workspace_id, Integration.provider == "instagram_business")
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    if integration:
+        return integration
+
+    integration = Integration(
+        workspace_id=workspace_id,
+        provider="instagram_business",
+        name="Instagram Business",
         status="disconnected",
     )
     db.add(integration)
@@ -7111,8 +7156,8 @@ def _extract_meta_debug_token_target_ids(debug_token_payload: dict[str, Any]) ->
         "pages_show_list",
         "pages_read_engagement",
         "pages_read_user_content",
-        "instagram_business_basic",
-        "instagram_business_manage_insights",
+        "instagram_basic",
+        "instagram_manage_insights",
         "ads_read",
     }
     target_ids: list[str] = []
@@ -9292,6 +9337,14 @@ def _meta_oauth_log(event: str, **payload: Any) -> None:
     logger.info("%s %s", event, json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True))
 
 
+def _meta_oauth_expected_scopes(integration_type: str | None) -> list[str]:
+    return meta_oauth_scopes_for_integration_type(normalize_meta_oauth_integration_type(integration_type))
+
+
+def _meta_oauth_expected_scope_string(integration_type: str | None) -> str:
+    return meta_oauth_scope_string_for_integration_type(normalize_meta_oauth_integration_type(integration_type))
+
+
 def _run_meta_pages_oauth_callback(
     *,
     code: str,
@@ -9313,9 +9366,7 @@ def _run_meta_pages_oauth_callback(
         state_user_id = int(payload.get("user_id", 0))
         workspace_id = int(payload.get("workspace_id", 0))
         state_integration_id = int(payload.get("integration_id", 0)) if payload.get("integration_id") else None
-        selected_integration_type = (
-            str(payload.get("integration_type") or "").strip() or None
-        )
+        selected_integration_type = normalize_meta_oauth_integration_type(payload.get("integration_type"))
         reconnect_requested = bool(payload.get("reconnect"))
         state_source = str(payload.get("source") or "").strip() or None
         state_callback_route = str(payload.get("callback_route") or "").strip() or None
@@ -9355,7 +9406,7 @@ def _run_meta_pages_oauth_callback(
             user_id=effective_user_id,
             state_integration_id=state_integration_id,
             redirect_uri_param=redirect_uri,
-            selected_integration_type=selected_integration_type,
+            integration_type=selected_integration_type,
             reconnect_requested=reconnect_requested,
             state_callback_route=state_callback_route,
             state_payload=payload,
@@ -9492,6 +9543,7 @@ def _run_meta_pages_oauth_callback(
         )
         debug_token_payload = debug_token(access_token)
         debug_token_summary = _extract_debug_token_summary(debug_token_payload)
+        requested_scopes = _meta_oauth_expected_scopes(selected_integration_type)
         received_scopes = [
             str(scope).strip()
             for scope in debug_token_summary["scopes"]
@@ -9504,13 +9556,14 @@ def _run_meta_pages_oauth_callback(
             workspace_id=workspace_id,
             user_id=effective_user_id,
             token_account_id=token_account.id,
+            integration_type=selected_integration_type,
             token_valid=debug_token_summary["is_valid"],
             scopes_received=received_scopes,
-            requested_scopes=META_OAUTH_SCOPES,
+            requested_scopes=requested_scopes,
             granular_target_ids=debug_token_summary["granular_target_ids"],
             reconnect_requested=reconnect_requested,
         )
-        missing_scopes = [scope for scope in META_OAUTH_SCOPES if scope not in received_scopes]
+        missing_scopes = [scope for scope in requested_scopes if scope not in received_scopes]
         if missing_scopes:
             _meta_oauth_log(
                 "META_PERMISSION_MISSING",
@@ -9518,6 +9571,7 @@ def _run_meta_pages_oauth_callback(
                 integration_id=integration.id,
                 workspace_id=workspace_id,
                 user_id=effective_user_id,
+                integration_type=selected_integration_type,
                 missing_scopes=missing_scopes,
                 scopes_received=received_scopes,
             )
@@ -9583,13 +9637,19 @@ def _run_meta_pages_oauth_callback(
             integration_id=integration.id,
             workspace_id=workspace_id,
             user_id=effective_user_id,
-            selected_integration_type=selected_integration_type,
+            integration_type=selected_integration_type,
             assets_count=len(connected_assets),
             facebook_pages_count=len(page_payloads),
             instagram_accounts_count=len(instagram_accounts),
             assets=connected_assets,
         )
-        if not connected_assets:
+        required_assets = instagram_accounts if selected_integration_type == "instagram_business" else page_payloads
+        unavailable_reason = (
+            "Meta connected, but no authorized Instagram Business accounts were returned."
+            if selected_integration_type == "instagram_business"
+            else "Meta connected, but no authorized Facebook Pages were returned."
+        )
+        if not required_assets:
             if not reconnect_requested:
                 _set_meta_integration_status(db, integration, status="disconnected")
             return (
@@ -9598,7 +9658,7 @@ def _run_meta_pages_oauth_callback(
                     source=state_source,
                     integration_id=integration.id,
                     error="no_authorized_assets",
-                    message="Meta connected, but no authorized Facebook Pages or Instagram assets were returned.",
+                    message=unavailable_reason,
                 )
                 if redirect_to_frontend
                 else _safe_meta_callback_payload(
@@ -10046,6 +10106,47 @@ def _replace_integration_token(
             "token_updated_at": token.updated_at.isoformat() if token.updated_at else None,
         },
     )
+    return token
+
+
+def _replace_integration_token_encrypted(
+    db: Session,
+    *,
+    account_id: int,
+    workspace_id: int,
+    access_token: str,
+    refresh_token: str | None = None,
+    expires_at: datetime | None = None,
+) -> IntegrationToken:
+    existing_tokens = (
+        db.query(IntegrationToken)
+        .filter(IntegrationToken.account_id == account_id)
+        .order_by(IntegrationToken.updated_at.desc(), IntegrationToken.id.desc())
+        .all()
+    )
+    encrypted_access_token = encrypt_secret(access_token)
+    encrypted_refresh_token = encrypt_secret(refresh_token) if refresh_token else None
+    token = existing_tokens[0] if existing_tokens else None
+    if not token:
+        token = IntegrationToken(
+            account_id=account_id,
+            workspace_id=workspace_id,
+            token_type="access_token",
+            access_token=encrypted_access_token,
+            refresh_token=encrypted_refresh_token,
+            expires_at=expires_at,
+        )
+        db.add(token)
+    else:
+        token.token_type = "access_token"
+        token.access_token = encrypted_access_token
+        token.refresh_token = encrypted_refresh_token
+        token.expires_at = expires_at
+        db.add(token)
+        for stale_token in existing_tokens[1:]:
+            db.delete(stale_token)
+    db.commit()
+    db.refresh(token)
     return token
 
 
@@ -18913,6 +19014,8 @@ def meta_ads_connect(
             "user_id": current_user.id,
             "integration_id": integration.id,
             "provider": "meta_ads",
+            "integration_type": "meta_ads",
+            "source": "meta_ads",
             "callback_route": "/integrations/meta-ads/callback",
             "reconnect": reconnect,
         }
@@ -18923,10 +19026,11 @@ def meta_ads_connect(
         workspace_id=resolved_workspace_id,
         user_id=current_user.id,
         integration_id=integration.id,
+        integration_type="meta_ads",
         reconnect_requested=reconnect,
         callback_route="/integrations/meta-ads/callback",
         redirect_uri=get_meta_ads_redirect_uri(),
-        scopes_requested=META_OAUTH_SCOPES,
+        scopes_requested=META_ADS_SCOPES,
         scope=META_ADS_OAUTH_SCOPE,
     )
     return MetaAdsConnectOut(
@@ -18935,6 +19039,7 @@ def meta_ads_connect(
             scope=META_ADS_OAUTH_SCOPE,
             redirect_uri=get_meta_ads_redirect_uri(),
             auth_type="rerequest",
+            integration_type="meta_ads",
         ),
         integration_id=integration.id,
         scope=META_ADS_OAUTH_SCOPE,
@@ -18951,10 +19056,12 @@ def meta_ads_callback(
     error_description: str | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
+    selected_integration_type = "meta_ads"
     if error:
         _meta_oauth_log(
             "META_OAUTH_CALLBACK_RECEIVED",
             provider="meta_ads",
+            integration_type=selected_integration_type,
             callback_route="/integrations/meta-ads/callback",
             code_received=bool(code),
             state_received=bool(state),
@@ -18972,6 +19079,7 @@ def meta_ads_callback(
         _meta_oauth_log(
             "META_OAUTH_CALLBACK_RECEIVED",
             provider="meta_ads",
+            integration_type=selected_integration_type,
             callback_route="/integrations/meta-ads/callback",
             code_received=bool(code),
             state_received=bool(state),
@@ -18991,6 +19099,7 @@ def meta_ads_callback(
         _meta_oauth_log(
             "META_OAUTH_CALLBACK_RECEIVED",
             provider="meta_ads",
+            integration_type=selected_integration_type,
             callback_route="/integrations/meta-ads/callback",
             code_received=bool(code),
             state_received=bool(state),
@@ -19004,6 +19113,8 @@ def meta_ads_callback(
             provider="meta_ads",
         )
 
+    selected_integration_type = normalize_meta_oauth_integration_type(state_payload.get("integration_type"))
+    requested_scopes = _meta_oauth_expected_scopes(selected_integration_type)
     integration_id = int(state_payload.get("integration_id") or 0)
     integration = db.get(Integration, integration_id)
     if integration is None or integration.provider != "meta_ads":
@@ -19049,18 +19160,20 @@ def meta_ads_callback(
     _meta_oauth_log(
         "META_OAUTH_TOKEN_SCOPES_RECEIVED",
         provider="meta_ads",
+        integration_type=selected_integration_type,
         integration_id=integration.id,
         workspace_id=integration.workspace_id,
         scopes_received=received_scopes,
         granular_target_ids=debug_token_summary["granular_target_ids"],
-        requested_scopes=META_OAUTH_SCOPES,
+        requested_scopes=requested_scopes,
         token_valid=debug_token_summary["is_valid"],
     )
-    missing_scopes = [scope for scope in META_OAUTH_SCOPES if scope not in received_scopes]
+    missing_scopes = [scope for scope in requested_scopes if scope not in received_scopes]
     if missing_scopes:
         _meta_oauth_log(
             "META_PERMISSION_MISSING",
             provider="meta_ads",
+            integration_type=selected_integration_type,
             integration_id=integration.id,
             workspace_id=integration.workspace_id,
             missing_scopes=missing_scopes,
@@ -19091,6 +19204,7 @@ def meta_ads_callback(
         _meta_oauth_log(
             "META_PERMISSION_MISSING",
             provider="meta_ads",
+            integration_type=selected_integration_type,
             integration_id=integration.id,
             workspace_id=integration.workspace_id,
             missing_scopes=missing_scopes,
@@ -19099,6 +19213,7 @@ def meta_ads_callback(
     _meta_oauth_log(
         "META_CONNECTED_ASSETS_DISCOVERED",
         provider="meta_ads",
+        integration_type=selected_integration_type,
         integration_id=integration.id,
         workspace_id=integration.workspace_id,
         assets_count=len(accounts_discovered),
@@ -20503,7 +20618,8 @@ def meta_connect_pages(
         },
     )
     integration = _get_or_create_meta_integration_for_workspace(db, resolved_workspace_id)
-    selected_integration_type = str(integration_type or "").strip() or None
+    selected_integration_type = normalize_meta_oauth_integration_type(integration_type)
+    selected_scope = _meta_oauth_expected_scope_string(selected_integration_type)
     state = encode_state(
         {
             "workspace_id": resolved_workspace_id,
@@ -20522,23 +20638,29 @@ def meta_connect_pages(
         workspace_id=resolved_workspace_id,
         user_id=current_user.id,
         integration_id=integration.id,
-        selected_integration_type=selected_integration_type,
+        integration_type=selected_integration_type,
         reconnect_requested=reconnect,
         callback_route="/integrations/meta/callback-pages",
         redirect_uri=redirect_uri,
-        scopes_requested=META_OAUTH_SCOPES,
-        scope=META_PAGES_OAUTH_SCOPE,
+        scopes_requested=_meta_oauth_expected_scopes(selected_integration_type),
+        scope=selected_scope,
     )
     url = oauth_connect_pages_url(
         state,
         redirect_uri=redirect_uri,
         auth_type="rerequest",
+        scope=selected_scope,
+        integration_type=selected_integration_type,
     )
     return {
         "auth_url": url,
         "integration_id": integration.id,
-        "scope": META_PAGES_OAUTH_SCOPE,
-        "message": "Connect Meta for Facebook Pages insights.",
+        "scope": selected_scope,
+        "message": (
+            "Connect Meta for Instagram Business insights."
+            if selected_integration_type == "instagram_business"
+            else "Connect Meta for Facebook Pages insights."
+        ),
     }
 
 
@@ -20557,6 +20679,414 @@ def meta_callback(
         db=db,
         current_user=current_user,
     )
+
+
+@app.get("/integrations/instagram-business/connect")
+def instagram_business_connect(
+    workspace_id: int | None = Query(default=None),
+    reconnect: bool = Query(default=False),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    missing_config = get_missing_instagram_business_config_fields()
+    if missing_config:
+        logger.info(
+            "INSTAGRAM_BUSINESS_CONNECT_FAILED %s",
+            json.dumps(
+                {
+                    "stage": "config_validation",
+                    "missing": missing_config,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return {
+            "error": "instagram_business_not_configured",
+            "missing": missing_config,
+        }
+    resolved_workspace_id = _resolve_meta_connect_workspace_id(
+        db,
+        user_id=current_user.id,
+        requested_workspace_id=workspace_id,
+    )
+    integration = _get_or_create_instagram_business_integration_for_workspace(db, resolved_workspace_id)
+    state = encode_instagram_business_state(
+        {
+            "workspace_id": resolved_workspace_id,
+            "user_id": current_user.id,
+            "integration_id": integration.id,
+            "integration_type": "instagram_business",
+            "source": "instagram_business_connect",
+            "callback_route": INSTAGRAM_BUSINESS_CALLBACK_PATH,
+            "reconnect": reconnect,
+        }
+    )
+    auth_url = build_instagram_business_auth_url(state)
+    return {
+        "auth_url": auth_url,
+        "integration_id": integration.id,
+        "scope": INSTAGRAM_BUSINESS_OAUTH_SCOPE,
+        "message": "Connect Instagram Business to sync read-only account insights.",
+    }
+
+
+@app.get("/integrations/instagram-business/callback")
+def instagram_business_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_reason: str | None = None,
+    error_description: str | None = None,
+    db: Session = Depends(get_db),
+) -> Response:
+    if error:
+        logger.info(
+            "INSTAGRAM_BUSINESS_CALLBACK_RECEIVED %s",
+            json.dumps(
+                {
+                    "callback_route": INSTAGRAM_BUSINESS_CALLBACK_PATH,
+                    "code_received": bool(code),
+                    "state_received": bool(state),
+                    "error": str(error or "").strip() or None,
+                    "error_reason": str(error_reason or "").strip() or None,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return _meta_oauth_popup_response(
+            status="error",
+            error=str(error_reason or error).strip() or "oauth_error",
+            message=str(error_description or error_reason or "Instagram returned an OAuth error.").strip(),
+            callback_path="/integrations/instagram-business/callback",
+            provider="instagram_business",
+        )
+    if not code or not state:
+        logger.info(
+            "INSTAGRAM_BUSINESS_CALLBACK_RECEIVED %s",
+            json.dumps(
+                {
+                    "callback_route": INSTAGRAM_BUSINESS_CALLBACK_PATH,
+                    "code_received": bool(code),
+                    "state_received": bool(state),
+                    "error": "missing_required_query_params",
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return _meta_oauth_popup_response(
+            status="error",
+            error="invalid_state",
+            message="The Instagram Business connection could not be verified. Please try again.",
+            callback_path="/integrations/instagram-business/callback",
+            provider="instagram_business",
+        )
+
+    try:
+        state_payload = decode_instagram_business_state(state)
+    except ValueError:
+        logger.info(
+            "INSTAGRAM_BUSINESS_CALLBACK_RECEIVED %s",
+            json.dumps(
+                {
+                    "callback_route": INSTAGRAM_BUSINESS_CALLBACK_PATH,
+                    "code_received": bool(code),
+                    "state_received": bool(state),
+                    "error": "invalid_state",
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return _meta_oauth_popup_response(
+            status="error",
+            error="invalid_state",
+            message="The Instagram Business connection request expired. Please try again.",
+            callback_path="/integrations/instagram-business/callback",
+            provider="instagram_business",
+        )
+
+    workspace_id = int(state_payload.get("workspace_id") or 0)
+    user_id = int(state_payload.get("user_id") or 0)
+    integration_id = int(state_payload.get("integration_id") or 0)
+    reconnect_requested = bool(state_payload.get("reconnect"))
+    if workspace_id <= 0 or user_id <= 0 or integration_id <= 0:
+        logger.info(
+            "INSTAGRAM_BUSINESS_CONNECT_FAILED %s",
+            json.dumps(
+                {
+                    "stage": "state_validation",
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "integration_id": integration_id,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return _meta_oauth_popup_response(
+            status="error",
+            error="invalid_state",
+            message="The Instagram Business connection request is invalid.",
+            callback_path="/integrations/instagram-business/callback",
+            provider="instagram_business",
+        )
+
+    integration = db.get(Integration, integration_id)
+    if integration is None or integration.provider != "instagram_business" or integration.workspace_id != workspace_id:
+        return _meta_oauth_popup_response(
+            status="error",
+            error="integration_not_found",
+            message="Instagram Business integration not found.",
+            callback_path="/integrations/instagram-business/callback",
+            provider="instagram_business",
+        )
+
+    logger.info(
+        "INSTAGRAM_BUSINESS_CALLBACK_RECEIVED %s",
+        json.dumps(
+            {
+                "callback_route": INSTAGRAM_BUSINESS_CALLBACK_PATH,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "integration_id": integration_id,
+                "code_received": bool(code),
+                "state_received": bool(state),
+                "reconnect_requested": reconnect_requested,
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
+
+    try:
+        token_payload = exchange_instagram_business_code_for_token(code)
+        access_token = str(token_payload.get("access_token") or "").strip()
+        refresh_token = str(token_payload.get("refresh_token") or "").strip() or None
+        expires_in = token_payload.get("expires_in")
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+            if isinstance(expires_in, int) or (isinstance(expires_in, str) and str(expires_in).isdigit())
+            else None
+        )
+        logger.info(
+            "INSTAGRAM_BUSINESS_TOKEN_EXCHANGED %s",
+            json.dumps(
+                {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "integration_id": integration_id,
+                    "token_received": bool(access_token),
+                    "refresh_token_received": bool(refresh_token),
+                    "expires_at": expires_at.isoformat() if expires_at else None,
+                    "status_code": token_payload.get("_http_status_code"),
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        if not access_token:
+            raise http_error(400, "instagram_business_token_exchange_failed", "Instagram did not return an access token.")
+
+        granted_scopes_raw = token_payload.get("scope") or token_payload.get("scopes") or token_payload.get("permissions")
+        if isinstance(granted_scopes_raw, str):
+            granted_scopes = [item.strip() for item in granted_scopes_raw.replace(" ", ",").split(",") if item.strip()]
+        elif isinstance(granted_scopes_raw, list):
+            granted_scopes = [str(item).strip() for item in granted_scopes_raw if str(item).strip()]
+        else:
+            granted_scopes = []
+        missing_scopes = [scope for scope in INSTAGRAM_BUSINESS_SCOPES if granted_scopes and scope not in granted_scopes]
+        if missing_scopes:
+            logger.info(
+                "INSTAGRAM_BUSINESS_PERMISSION_MISSING %s",
+                json.dumps(
+                    {
+                        "workspace_id": workspace_id,
+                        "user_id": user_id,
+                        "integration_id": integration_id,
+                        "missing_scopes": missing_scopes,
+                        "granted_scopes": granted_scopes,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                    sort_keys=True,
+                ),
+            )
+
+        profile_payload = fetch_instagram_business_profile(access_token)
+        instagram_user_id = str(
+            profile_payload.get("user_id")
+            or profile_payload.get("id")
+            or ""
+        ).strip()
+        username = str(profile_payload.get("username") or "").strip() or None
+        account_type = str(profile_payload.get("account_type") or "").strip() or None
+        display_name = str(profile_payload.get("name") or username or instagram_user_id).strip() or instagram_user_id
+        profile_picture_url = str(profile_payload.get("profile_picture_url") or "").strip() or None
+        if not instagram_user_id:
+            raise http_error(400, "instagram_business_account_missing", "Instagram did not return an authorized professional account.")
+
+        logger.info(
+            "INSTAGRAM_BUSINESS_ACCOUNT_DISCOVERED %s",
+            json.dumps(
+                {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "integration_id": integration_id,
+                    "instagram_user_id": instagram_user_id,
+                    "username": username,
+                    "account_type": account_type,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+
+        token_account = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id == _instagram_business_token_account_external_id(integration.id),
+            )
+            .first()
+        )
+        if token_account is None:
+            token_account = IntegrationAccount(
+                integration_id=integration.id,
+                workspace_id=workspace_id,
+                external_account_id=_instagram_business_token_account_external_id(integration.id),
+                display_name="Instagram Business token store",
+            )
+            db.add(token_account)
+            db.commit()
+            db.refresh(token_account)
+
+        account_record = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id == instagram_user_id,
+            )
+            .first()
+        )
+        if account_record is None:
+            account_record = IntegrationAccount(
+                integration_id=integration.id,
+                workspace_id=workspace_id,
+                external_account_id=instagram_user_id,
+                display_name=display_name,
+            )
+            db.add(account_record)
+        else:
+            account_record.display_name = display_name
+            db.add(account_record)
+        db.commit()
+        db.refresh(account_record)
+
+        _replace_integration_token_encrypted(
+            db,
+            account_id=token_account.id,
+            workspace_id=workspace_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+        )
+        _cache_meta_pages(
+            db,
+            integration,
+            user_id,
+            [
+                {
+                    "record_type": META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+                    "page_id": instagram_user_id,
+                    "parent_page_id": None,
+                    "name": display_name,
+                    "instagram_username": username,
+                    "profile_picture_url": profile_picture_url,
+                    "page_access_token": None,
+                    "tasks": None,
+                    "perms": granted_scopes or INSTAGRAM_BUSINESS_SCOPES,
+                    "category": account_type,
+                    "business_name": display_name,
+                }
+            ],
+        )
+        _set_meta_integration_status(db, integration, status="connected")
+        logger.info(
+            "INSTAGRAM_BUSINESS_CONNECT_SUCCESS %s",
+            json.dumps(
+                {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "integration_id": integration_id,
+                    "instagram_user_id": instagram_user_id,
+                    "username": username,
+                    "account_type": account_type,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return _meta_oauth_popup_response(
+            status="connected",
+            source="instagram_business_connect",
+            integration_id=integration.id,
+            message="Instagram Business connected successfully.",
+            callback_path="/integrations/instagram-business/callback",
+            provider="instagram_business",
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        logger.info(
+            "INSTAGRAM_BUSINESS_CONNECT_FAILED %s",
+            json.dumps(
+                {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "integration_id": integration_id,
+                    "error_code": str(detail.get("code") or "instagram_business_connect_failed"),
+                    "message": str(detail.get("message") or exc.detail or "").strip() or None,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        if not reconnect_requested:
+            _set_meta_integration_status(db, integration, status="disconnected")
+        return _meta_oauth_popup_response(
+            status="error",
+            source="instagram_business_connect",
+            integration_id=integration.id,
+            error=str(detail.get("code") or "instagram_business_connect_failed"),
+            message=str(detail.get("message") or "We could not complete the Instagram Business connection."),
+            callback_path="/integrations/instagram-business/callback",
+            provider="instagram_business",
+        )
+    except Exception:
+        logger.exception("Instagram Business OAuth callback failed unexpectedly")
+        if not reconnect_requested:
+            _set_meta_integration_status(db, integration, status="disconnected")
+        return _meta_oauth_popup_response(
+            status="error",
+            source="instagram_business_connect",
+            integration_id=integration.id,
+            error="instagram_business_connect_failed",
+            message="We could not complete the Instagram Business connection.",
+            callback_path="/integrations/instagram-business/callback",
+            provider="instagram_business",
+        )
 
 
 @app.get("/integrations/meta/callback-pages")
@@ -21173,7 +21703,7 @@ def debug_meta_instagram_diagnostics(
         integration,
         access_token=access_token,
         user_id=current_user.id,
-        selected_integration_type="instagram_accounts",
+        selected_integration_type="instagram_business",
         context="debug_instagram_diagnostics",
         return_empty_on_error=True,
     )
@@ -21186,7 +21716,7 @@ def debug_meta_instagram_diagnostics(
         "workspace_id": integration.workspace_id,
         "token_received": bool(access_token),
         "token_preview": _meta_token_preview(access_token),
-        "oauth_scope": META_PAGES_OAUTH_SCOPE,
+        "oauth_scope": INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN,
         "diagnostics": diagnostics,
         "pages_count": len(diagnostics),
         "page_names": [item.get("page_name") for item in diagnostics if item.get("page_name")],
@@ -21227,7 +21757,7 @@ def debug_meta_instagram_live(
         integration,
         access_token=access_token,
         user_id=current_user.id,
-        selected_integration_type="instagram_accounts",
+        selected_integration_type="instagram_business",
         context="debug_meta_instagram_live",
         return_empty_on_error=True,
     )
@@ -21239,7 +21769,7 @@ def debug_meta_instagram_live(
         "integration_id": integration.id,
         "workspace_id": integration.workspace_id,
         "user_id": current_user.id,
-        "scope": META_PAGES_OAUTH_SCOPE,
+        "scope": INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN,
         "token_received": bool(access_token),
         "token_preview": _meta_token_preview(access_token),
         "token_id": latest_token.id if latest_token else None,
@@ -21544,7 +22074,7 @@ def _sync_meta_instagram_account(
             "integration_id": integration.id,
             "selected_instagram_account_id": instagram_user_id,
             "selected_instagram_username": instagram_username,
-            "instagram_scope_used": META_PAGES_OAUTH_SCOPE,
+            "instagram_scope_used": INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN,
             "timeframe": timeframe_config,
         },
     )
@@ -21600,7 +22130,7 @@ def _sync_meta_instagram_account(
             "integration_id": integration.id,
             "selected_instagram_account_id": instagram_user_id,
             "selected_instagram_username": instagram_username,
-            "instagram_scope_used": META_PAGES_OAUTH_SCOPE,
+            "instagram_scope_used": INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN,
             "ig_insights_request_metrics": requested_metrics,
         },
     )

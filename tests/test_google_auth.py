@@ -22,6 +22,7 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 
 from app.deps import get_db
 from app.db import Base, SessionLocal, engine
+from app.integrations import instagram_business
 from app.integrations import meta_ads
 from app.main import app
 from app.models import (
@@ -320,9 +321,11 @@ def test_meta_connect_pages_uses_single_available_workspace_when_request_is_stal
     monkeypatch.setattr("app.main._meta_pages_redirect_uri", lambda: "https://backend.example.com/callback")
     monkeypatch.setattr(
         "app.main.oauth_connect_pages_url",
-        lambda state, redirect_uri=None, auth_type=None: (
+        lambda state, redirect_uri=None, auth_type=None, scope=None, integration_type=None: (
             f"https://facebook.example.com/oauth?state={state}&redirect_uri={redirect_uri}"
             + (f"&auth_type={auth_type}" if auth_type else "")
+            + (f"&scope={scope}" if scope else "")
+            + (f"&integration_type={integration_type}" if integration_type else "")
         ),
     )
 
@@ -373,9 +376,11 @@ def test_meta_connect_pages_rejects_invalid_workspace_when_user_has_multiple_wor
     monkeypatch.setattr("app.main._meta_pages_redirect_uri", lambda: "https://backend.example.com/callback")
     monkeypatch.setattr(
         "app.main.oauth_connect_pages_url",
-        lambda state, redirect_uri=None, auth_type=None: (
+        lambda state, redirect_uri=None, auth_type=None, scope=None, integration_type=None: (
             f"https://facebook.example.com/oauth?state={state}&redirect_uri={redirect_uri}"
             + (f"&auth_type={auth_type}" if auth_type else "")
+            + (f"&scope={scope}" if scope else "")
+            + (f"&integration_type={integration_type}" if integration_type else "")
         ),
     )
 
@@ -412,14 +417,19 @@ def test_meta_oauth_connect_pages_url_uses_backend_callback_for_both_flows(monke
     monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
     monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
 
-    default_url = meta_ads.oauth_connect_pages_url("default-state")
-    instagram_url = meta_ads.oauth_connect_pages_url("instagram-state")
+    default_url = meta_ads.oauth_connect_pages_url("default-state", integration_type="facebook_pages")
+    instagram_url = meta_ads.oauth_connect_pages_url("instagram-state", integration_type="instagram_business")
 
     expected_redirect_uri = "https://api.measurableapp.com/integrations/meta/callback-pages"
-    for auth_url in (default_url, instagram_url):
-        parsed = urlparse(auth_url)
-        query = parse_qs(parsed.query)
-        assert query["redirect_uri"] == [expected_redirect_uri]
+    parsed_default = urlparse(default_url)
+    query_default = parse_qs(parsed_default.query)
+    assert query_default["redirect_uri"] == [expected_redirect_uri]
+    assert query_default["scope"] == [meta_ads.FACEBOOK_PAGES_OAUTH_SCOPE]
+
+    parsed_instagram = urlparse(instagram_url)
+    query_instagram = parse_qs(parsed_instagram.query)
+    assert query_instagram["redirect_uri"] == [expected_redirect_uri]
+    assert query_instagram["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
 
 
 def test_meta_connect_pages_preserves_integration_type_and_backend_callback(client, monkeypatch):
@@ -451,7 +461,7 @@ def test_meta_connect_pages_preserves_integration_type_and_backend_callback(clie
     monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
 
     response = client.get(
-        f"/integrations/meta/connect-pages?workspace_id={workspace_id}&integration_type=instagram_accounts",
+        f"/integrations/meta/connect-pages?workspace_id={workspace_id}&integration_type=instagram_business",
         headers=_auth_headers_for("meta-instagram@example.com"),
     )
 
@@ -461,7 +471,9 @@ def test_meta_connect_pages_preserves_integration_type_and_backend_callback(clie
     query = parse_qs(parsed.query)
     state_payload = meta_ads.decode_state(query["state"][0])
     assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/meta/callback-pages"]
-    assert state_payload["integration_type"] == "instagram_accounts"
+    assert query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
+    assert query["auth_type"] == ["rerequest"]
+    assert state_payload["integration_type"] == "instagram_business"
     assert state_payload["callback_route"] == "/integrations/meta/callback-pages"
 
 
@@ -504,6 +516,7 @@ def test_meta_connect_pages_reconnect_uses_rerequest_and_preserves_state(client,
     query = parse_qs(parsed.query)
     state_payload = meta_ads.decode_state(query["state"][0])
     assert query["auth_type"] == ["rerequest"]
+    assert query["scope"] == [meta_ads.FACEBOOK_PAGES_OAUTH_SCOPE]
     assert state_payload["reconnect"] is True
     assert state_payload["integration_type"] == "facebook_pages"
 
@@ -535,6 +548,104 @@ def test_meta_exchange_pages_code_uses_same_backend_callback(monkeypatch):
 
     assert payload["access_token"] == "token-value"
     assert captured["params"]["redirect_uri"] == "https://api.measurableapp.com/integrations/meta/callback-pages"
+
+
+def test_instagram_business_auth_url_uses_instagram_oauth_endpoint(monkeypatch):
+    monkeypatch.setattr(instagram_business.settings, "instagram_app_id", "instagram-app-id")
+    monkeypatch.setattr(instagram_business.settings, "instagram_app_secret", "instagram-app-secret")
+    monkeypatch.setattr(instagram_business.settings, "instagram_redirect_uri", "https://app.measurableapp.com/integrations/instagram-business/callback")
+    monkeypatch.setattr(instagram_business.settings, "api_base_url", "https://api.measurableapp.com")
+    monkeypatch.setattr(instagram_business.settings, "instagram_oauth_authorize_url", "https://api.instagram.com/oauth/authorize")
+
+    auth_url = instagram_business.build_instagram_business_auth_url("ig-state")
+
+    parsed = urlparse(auth_url)
+    query = parse_qs(parsed.query)
+    assert parsed.netloc == "api.instagram.com"
+    assert parsed.path == "/oauth/authorize"
+    assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/instagram-business/callback"]
+    assert query["scope"] == [instagram_business.INSTAGRAM_BUSINESS_OAUTH_SCOPE]
+    assert query["response_type"] == ["code"]
+
+
+def test_instagram_business_connect_returns_independent_scope(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="instagram-business@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Instagram Business",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace = Workspace(name="Instagram Business Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="free", status="active"))
+        db.commit()
+        workspace_id = workspace.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr(instagram_business.settings, "instagram_app_id", "instagram-app-id")
+    monkeypatch.setattr(instagram_business.settings, "instagram_app_secret", "instagram-app-secret")
+    monkeypatch.setattr(instagram_business.settings, "instagram_redirect_uri", "https://app.measurableapp.com/integrations/instagram-business/callback")
+    monkeypatch.setattr(instagram_business.settings, "api_base_url", "https://api.measurableapp.com")
+    monkeypatch.setattr(instagram_business.settings, "instagram_oauth_authorize_url", "https://api.instagram.com/oauth/authorize")
+
+    response = client.get(
+        f"/integrations/instagram-business/connect?workspace_id={workspace_id}",
+        headers=_auth_headers_for("instagram-business@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    parsed = urlparse(payload["auth_url"])
+    query = parse_qs(parsed.query)
+    state_payload = instagram_business.decode_instagram_business_state(query["state"][0])
+    assert payload["scope"] == instagram_business.INSTAGRAM_BUSINESS_OAUTH_SCOPE
+    assert query["scope"] == [instagram_business.INSTAGRAM_BUSINESS_OAUTH_SCOPE]
+    assert state_payload["integration_type"] == "instagram_business"
+    assert state_payload["callback_route"] == "/integrations/instagram-business/callback"
+
+
+def test_instagram_business_connect_returns_controlled_error_when_not_configured(client):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="instagram-missing-config@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Instagram Missing Config",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace = Workspace(name="Instagram Missing Config Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="free", status="active"))
+        db.commit()
+        workspace_id = workspace.id
+    finally:
+        db.close()
+
+    response = client.get(
+        f"/integrations/instagram-business/connect?workspace_id={workspace_id}",
+        headers=_auth_headers_for("instagram-missing-config@example.com"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "error": "instagram_business_not_configured",
+        "missing": ["INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET", "INSTAGRAM_REDIRECT_URI"],
+    }
 
 
 def test_meta_callback_pages_returns_clean_html_when_query_params_are_missing(client):

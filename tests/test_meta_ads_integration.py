@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,6 +25,7 @@ os.environ.setdefault("META_REDIRECT_URI", "http://localhost:8000/integrations/m
 
 from app.db import Base, SessionLocal, engine
 from app.deps import get_db
+from app.integrations import meta_ads as meta_ads_module
 from app.integrations.meta_ads import META_ADS_OAUTH_SCOPE, encode_state
 import app.main as main_module
 from app.main import app
@@ -140,6 +142,14 @@ class _FakeS3Client:
 
 def test_meta_ads_connect_creates_separate_integration(client):
     refs = _seed_workspace()
+    for key, value in (
+        ("meta_app_id", "meta-app-id"),
+        ("meta_app_secret", "meta-app-secret"),
+        ("meta_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
+        ("api_base_url", "http://localhost:8000"),
+    ):
+        setattr(main_module.settings, key, value)
+        setattr(meta_ads_module.settings, key, value)
 
     response = client.get(
         "/integrations/meta-ads/connect",
@@ -150,8 +160,13 @@ def test_meta_ads_connect_creates_separate_integration(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["scope"] == META_ADS_OAUTH_SCOPE
+    assert payload["scope"] == "public_profile,ads_read"
     assert "ads_read" in payload["auth_url"]
+    assert "pages_show_list" not in payload["auth_url"]
     assert "ads_management" not in payload["auth_url"]
+    query = parse_qs(urlparse(payload["auth_url"]).query)
+    assert query["scope"] == [META_ADS_OAUTH_SCOPE]
+    assert query["auth_type"] == ["rerequest"]
 
     db = SessionLocal()
     try:
@@ -168,6 +183,14 @@ def test_meta_ads_connect_creates_separate_integration(client):
 def test_meta_ads_callback_stores_token(client, monkeypatch):
     refs = _seed_workspace()
     integration_id = _create_meta_ads_integration(workspace_id=refs["workspace_id"], status="disconnected")
+    for key, value in (
+        ("meta_app_id", "meta-app-id"),
+        ("meta_app_secret", "meta-app-secret"),
+        ("meta_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
+        ("api_base_url", "http://localhost:8000"),
+    ):
+        setattr(main_module.settings, key, value)
+        setattr(meta_ads_module.settings, key, value)
     state = encode_state(
         {
             "workspace_id": refs["workspace_id"],
@@ -179,6 +202,14 @@ def test_meta_ads_callback_stores_token(client, monkeypatch):
     monkeypatch.setattr(
         "app.main.exchange_code_for_token",
         lambda code, redirect_uri=None: {"access_token": f"token-for-{code}"},
+    )
+    monkeypatch.setattr(
+        "app.main.debug_token",
+        lambda _access_token: {"data": {"is_valid": True, "scopes": [META_ADS_OAUTH_SCOPE]}},
+    )
+    monkeypatch.setattr(
+        "app.main.list_ad_accounts",
+        lambda _access_token: [{"id": "act_123", "account_id": "123", "name": "Primary Ads Account"}],
     )
 
     response = client.get(
@@ -366,4 +397,3 @@ def test_meta_ads_accounts_select_sync_and_disconnect(client, monkeypatch):
     assert disconnect_payload["cleared_accounts"] == 1
     assert disconnect_payload["cleared_rows"] == 2
     assert disconnect_payload["token_revoked"] is True
-
