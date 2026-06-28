@@ -18786,6 +18786,22 @@ def list_integrations(
         .order_by(Integration.updated_at.desc(), Integration.id.desc())
         .all()
     )
+    for integration in integrations:
+        logger.info(
+            "INTEGRATION_STATUS_RESOLVED %s",
+            json.dumps(
+                {
+                    "integration_id": integration.id,
+                    "workspace_id": integration.workspace_id,
+                    "provider": integration.provider,
+                    "status": integration.status,
+                    "connected": str(integration.status or "").strip().lower() == "connected",
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
     return integrations
 
 
@@ -20598,6 +20614,7 @@ def meta_connect(
 @app.get("/integrations/meta/connect-pages")
 def meta_connect_pages(
     workspace_id: int | None = Query(default=None),
+    source: str | None = Query(default=None),
     integration_type: str | None = Query(default=None),
     reconnect: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
@@ -20617,8 +20634,32 @@ def meta_connect_pages(
             "resolved_workspace_id": resolved_workspace_id,
         },
     )
-    integration = _get_or_create_meta_integration_for_workspace(db, resolved_workspace_id)
     selected_integration_type = normalize_meta_oauth_integration_type(integration_type)
+    source_value = str(source or "").strip() or None
+    if selected_integration_type == "instagram_business" or source_value == "instagram_business":
+        logger.info(
+            "INSTAGRAM_BUSINESS_CONNECT_FAILED %s",
+            json.dumps(
+                {
+                    "stage": "wrong_connector_route",
+                    "workspace_id": resolved_workspace_id,
+                    "user_id": current_user.id,
+                    "source": source_value,
+                    "integration_type": selected_integration_type,
+                    "attempted_endpoint": "/integrations/meta/connect-pages",
+                    "expected_endpoint": "/integrations/instagram-business/connect",
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        raise http_error(
+            400,
+            "instagram_business_wrong_connector",
+            "Instagram Business must connect through /integrations/instagram-business/connect.",
+        )
+    integration = _get_or_create_meta_integration_for_workspace(db, resolved_workspace_id)
     selected_scope = _meta_oauth_expected_scope_string(selected_integration_type)
     state = encode_state(
         {
@@ -20688,6 +20729,20 @@ def instagram_business_connect(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    logger.info(
+        "INSTAGRAM_BUSINESS_CONNECT_REQUESTED %s",
+        json.dumps(
+            {
+                "workspace_id": workspace_id,
+                "user_id": current_user.id,
+                "reconnect_requested": reconnect,
+                "endpoint": "/integrations/instagram-business/connect",
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
     missing_config = get_missing_instagram_business_config_fields()
     if missing_config:
         logger.info(
@@ -20724,6 +20779,22 @@ def instagram_business_connect(
         }
     )
     auth_url = build_instagram_business_auth_url(state)
+    logger.info(
+        "INSTAGRAM_BUSINESS_AUTH_URL_CREATED %s",
+        json.dumps(
+            {
+                "workspace_id": resolved_workspace_id,
+                "user_id": current_user.id,
+                "integration_id": integration.id,
+                "scope": INSTAGRAM_BUSINESS_OAUTH_SCOPE,
+                "callback_route": INSTAGRAM_BUSINESS_CALLBACK_PATH,
+                "uses_instagram_oauth": auth_url.startswith("https://api.instagram.com/"),
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
     return {
         "auth_url": auth_url,
         "integration_id": integration.id,
@@ -21032,6 +21103,21 @@ def instagram_business_callback(
                     "instagram_user_id": instagram_user_id,
                     "username": username,
                     "account_type": account_type,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        logger.info(
+            "INSTAGRAM_BUSINESS_CONNECTED %s",
+            json.dumps(
+                {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "integration_id": integration_id,
+                    "provider": "instagram_business",
+                    "connected": True,
                 },
                 ensure_ascii=False,
                 default=str,

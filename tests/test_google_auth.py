@@ -432,7 +432,7 @@ def test_meta_oauth_connect_pages_url_uses_backend_callback_for_both_flows(monke
     assert query_instagram["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
 
 
-def test_meta_connect_pages_preserves_integration_type_and_backend_callback(client, monkeypatch):
+def test_instagram_business_connect_uses_independent_backend_callback(client, monkeypatch):
     db = SessionLocal()
     try:
         user = User(
@@ -455,13 +455,14 @@ def test_meta_connect_pages_preserves_integration_type_and_backend_callback(clie
     finally:
         db.close()
 
-    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
-    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
-    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
-    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+    monkeypatch.setattr(instagram_business.settings, "instagram_app_id", "instagram-app-id")
+    monkeypatch.setattr(instagram_business.settings, "instagram_app_secret", "instagram-app-secret")
+    monkeypatch.setattr(instagram_business.settings, "instagram_redirect_uri", "https://app.measurableapp.com/integrations/instagram-business/callback")
+    monkeypatch.setattr(instagram_business.settings, "api_base_url", "https://api.measurableapp.com")
+    monkeypatch.setattr(instagram_business.settings, "instagram_oauth_authorize_url", "https://api.instagram.com/oauth/authorize")
 
     response = client.get(
-        f"/integrations/meta/connect-pages?workspace_id={workspace_id}&integration_type=instagram_business",
+        f"/integrations/instagram-business/connect?workspace_id={workspace_id}",
         headers=_auth_headers_for("meta-instagram@example.com"),
     )
 
@@ -469,12 +470,49 @@ def test_meta_connect_pages_preserves_integration_type_and_backend_callback(clie
     payload = response.json()
     parsed = urlparse(payload["auth_url"])
     query = parse_qs(parsed.query)
-    state_payload = meta_ads.decode_state(query["state"][0])
-    assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/meta/callback-pages"]
-    assert query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
-    assert query["auth_type"] == ["rerequest"]
+    state_payload = instagram_business.decode_instagram_business_state(query["state"][0])
+    assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/instagram-business/callback"]
+    assert query["scope"] == [instagram_business.INSTAGRAM_BUSINESS_OAUTH_SCOPE]
+    assert "auth_type" not in query
     assert state_payload["integration_type"] == "instagram_business"
-    assert state_payload["callback_route"] == "/integrations/meta/callback-pages"
+    assert state_payload["callback_route"] == "/integrations/instagram-business/callback"
+
+
+def test_meta_connect_pages_rejects_instagram_business_alias(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="meta-instagram-wrong-route@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Meta Instagram Wrong Route",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace = Workspace(name="Meta Instagram Wrong Route Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="free", status="active"))
+        db.commit()
+        workspace_id = workspace.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+
+    response = client.get(
+        f"/integrations/meta/connect-pages?workspace_id={workspace_id}&source=instagram_business&integration_type=instagram_business",
+        headers=_auth_headers_for("meta-instagram-wrong-route@example.com"),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "instagram_business_wrong_connector"
 
 
 def test_meta_connect_pages_reconnect_uses_rerequest_and_preserves_state(client, monkeypatch):
