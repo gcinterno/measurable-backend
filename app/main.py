@@ -66,6 +66,8 @@ from .integrations.meta_ads import (
     fetch_page_posts,
     fetch_post_metrics,
     exchange_pages_code_for_token,
+    get_meta_ads_config_key_family,
+    get_meta_ads_config_snapshot,
     get_missing_meta_ads_config_fields,
     get_meta_ads_redirect_uri,
     get_meta_pages_redirect_uri,
@@ -9257,6 +9259,8 @@ def _meta_oauth_frontend_callback_url(
     source: str | None = None,
     integration_id: int | None = None,
     error: str | None = None,
+    message: str | None = None,
+    provider: str | None = None,
     callback_path: str = "/integrations/meta/callback",
 ) -> str:
     params: dict[str, str | int] = {"status": status}
@@ -9266,6 +9270,10 @@ def _meta_oauth_frontend_callback_url(
         params["source"] = source
     if error:
         params["error"] = error
+    if provider:
+        params["provider"] = provider
+    if message:
+        params["message"] = message
     return f"{_meta_frontend_base_url()}{callback_path}?{urlencode(params)}"
 
 
@@ -9275,6 +9283,8 @@ def _meta_oauth_frontend_redirect_response(
     source: str | None = None,
     integration_id: int | None = None,
     error: str | None = None,
+    message: str | None = None,
+    provider: str | None = None,
     callback_path: str = "/integrations/meta/callback",
 ) -> RedirectResponse:
     target_url = _meta_oauth_frontend_callback_url(
@@ -9282,6 +9292,8 @@ def _meta_oauth_frontend_redirect_response(
         source=source,
         integration_id=integration_id,
         error=error,
+        message=message,
+        provider=provider,
         callback_path=callback_path,
     )
     logger.warning(
@@ -9310,6 +9322,8 @@ def _meta_oauth_popup_response(
         source=source,
         integration_id=integration_id,
         error=error,
+        message=message,
+        provider=provider,
         callback_path=callback_path,
     )
     frontend_origin = _meta_frontend_origin()
@@ -19109,6 +19123,22 @@ def meta_ads_connect(
                 "user_id": current_user.id,
                 "reconnect_requested": reconnect,
                 "endpoint": "/integrations/meta-ads/connect",
+                "config_key_family": get_meta_ads_config_key_family(),
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
+    config_snapshot = get_meta_ads_config_snapshot()
+    logger.info(
+        "META_ADS_CONFIG_CHECK %s",
+        json.dumps(
+            {
+                "app_id_present": config_snapshot["app_id_present"],
+                "app_secret_present": config_snapshot["app_secret_present"],
+                "redirect_uri_present": config_snapshot["redirect_uri_present"],
+                "resolved_source": config_snapshot["resolved_source"],
             },
             ensure_ascii=False,
             default=str,
@@ -19122,6 +19152,7 @@ def meta_ads_connect(
             json.dumps(
                 {
                     "missing": missing_config,
+                    "config_key_family": get_meta_ads_config_key_family(),
                 },
                 ensure_ascii=False,
                 default=str,
@@ -19172,6 +19203,7 @@ def meta_ads_connect(
                     "integration_id": integration.id,
                     "scope": META_ADS_OAUTH_SCOPE,
                     "callback_route": "/integrations/meta-ads/callback",
+                    "config_key_family": get_meta_ads_config_key_family(),
                 },
                 ensure_ascii=False,
                 default=str,
@@ -20787,6 +20819,7 @@ def meta_connect_pages(
     workspace_id: int | None = Query(default=None),
     source: str | None = Query(default=None),
     integration_type: str | None = Query(default=None),
+    include_linked_instagram: bool = Query(default=False),
     reconnect: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -20797,13 +20830,22 @@ def meta_connect_pages(
         requested_workspace_id=workspace_id,
     )
     logger.info(
-        "meta_connect_pages_workspace_resolved",
-        extra={
-            "user_id": current_user.id,
-            "workspace_id_received": workspace_id,
-            "workspace_ids_available": _workspace_ids_for_user(db, current_user.id),
-            "resolved_workspace_id": resolved_workspace_id,
-        },
+        "FACEBOOK_PAGES_CONNECT_REQUESTED %s",
+        json.dumps(
+            {
+                "user_id": current_user.id,
+                "workspace_id_received": workspace_id,
+                "workspace_ids_available": _workspace_ids_for_user(db, current_user.id),
+                "resolved_workspace_id": resolved_workspace_id,
+                "source": source,
+                "integration_type": integration_type,
+                "include_linked_instagram": include_linked_instagram,
+                "reconnect_requested": reconnect,
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
     )
     selected_integration_type = normalize_meta_oauth_integration_type(integration_type)
     source_value = str(source or "").strip() or None
@@ -20830,16 +20872,36 @@ def meta_connect_pages(
             "instagram_business_wrong_connector",
             "Instagram Business must connect through /integrations/instagram-business/connect.",
         )
+    selected_source = (
+        "facebook_pages_with_instagram"
+        if include_linked_instagram or source_value == "facebook_pages_with_instagram"
+        else "facebook_pages"
+    )
+    logger.info(
+        "FACEBOOK_PAGES_CONNECT_OPTION_SELECTED %s",
+        json.dumps(
+            {
+                "workspace_id": resolved_workspace_id,
+                "user_id": current_user.id,
+                "selected_source": selected_source,
+                "include_linked_instagram": include_linked_instagram,
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
     integration = _get_or_create_meta_integration_for_workspace(db, resolved_workspace_id)
-    selected_scope = _meta_oauth_expected_scope_string(selected_integration_type)
+    selected_scope = _meta_oauth_expected_scope_string("facebook_pages")
     state = encode_state(
         {
             "workspace_id": resolved_workspace_id,
             "user_id": current_user.id,
             "integration_id": integration.id,
-            "integration_type": selected_integration_type,
+            "integration_type": "facebook_pages",
             "reconnect": reconnect,
-            "source": "meta_pages_connect_pages",
+            "source": selected_source,
+            "include_linked_instagram": include_linked_instagram,
             "callback_route": "/integrations/meta/callback-pages",
         }
     )
@@ -20850,29 +20912,32 @@ def meta_connect_pages(
         workspace_id=resolved_workspace_id,
         user_id=current_user.id,
         integration_id=integration.id,
-        integration_type=selected_integration_type,
+        integration_type="facebook_pages",
         reconnect_requested=reconnect,
         callback_route="/integrations/meta/callback-pages",
         redirect_uri=redirect_uri,
-        scopes_requested=_meta_oauth_expected_scopes(selected_integration_type),
+        scopes_requested=_meta_oauth_expected_scopes("facebook_pages"),
         scope=selected_scope,
+        source=selected_source,
+        include_linked_instagram=include_linked_instagram,
     )
     url = oauth_connect_pages_url(
         state,
         redirect_uri=redirect_uri,
         auth_type="rerequest",
         scope=selected_scope,
-        integration_type=selected_integration_type,
+        integration_type="facebook_pages",
     )
     return {
         "auth_url": url,
         "integration_id": integration.id,
         "scope": selected_scope,
         "message": (
-            "Connect Meta for Instagram Business insights."
-            if selected_integration_type == "instagram_business"
+            "Connect Meta for Facebook Pages and discover linked Instagram accounts."
+            if selected_source == "facebook_pages_with_instagram"
             else "Connect Meta for Facebook Pages insights."
         ),
+        "source": selected_source,
     }
 
 
@@ -21053,7 +21118,41 @@ def instagram_business_callback(
     error_description: str | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
+    def _instagram_business_oauth_error(
+        error_code: str | None,
+        reason: str | None,
+        description: str | None,
+    ) -> tuple[str, str]:
+        combined = " ".join(
+            [
+                str(error_code or "").strip(),
+                str(reason or "").strip(),
+                str(description or "").strip(),
+            ]
+        ).strip()
+        normalized = combined.lower()
+        if "developer role" in normalized:
+            return (
+                "insufficient_developer_role",
+                "Instagram could not be connected because this Instagram account is not added as a tester/developer for the Instagram Business Login app yet. Add the account in Meta Developers > Instagram > API setup with Instagram login > Add account, accept the invite, or wait until the app review is approved/live.",
+            )
+        if "invalid_scope" in normalized:
+            return (
+                "invalid_scope",
+                "Instagram Business could not be connected because the requested Instagram permissions are not available for this app yet.",
+            )
+        if "access_denied" in normalized:
+            return (
+                "access_denied",
+                "Instagram Business connection was canceled before authorization completed.",
+            )
+        return (
+            str(reason or error_code).strip() or "oauth_error",
+            str(description or reason or "Instagram returned an OAuth error.").strip(),
+        )
+
     if error:
+        resolved_error, resolved_message = _instagram_business_oauth_error(error, error_reason, error_description)
         logger.info(
             "INSTAGRAM_BUSINESS_CALLBACK_RECEIVED %s",
             json.dumps(
@@ -21063,6 +21162,7 @@ def instagram_business_callback(
                     "state_received": bool(state),
                     "error": str(error or "").strip() or None,
                     "error_reason": str(error_reason or "").strip() or None,
+                    "resolved_error": resolved_error,
                 },
                 ensure_ascii=False,
                 default=str,
@@ -21071,8 +21171,8 @@ def instagram_business_callback(
         )
         return _meta_oauth_popup_response(
             status="error",
-            error=str(error_reason or error).strip() or "oauth_error",
-            message=str(error_description or error_reason or "Instagram returned an OAuth error.").strip(),
+            error=resolved_error,
+            message=resolved_message,
             callback_path="/integrations/instagram-business/callback",
             provider="instagram_business",
         )

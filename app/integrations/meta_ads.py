@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -125,24 +126,93 @@ def _raise_meta_api_error(resp: requests.Response) -> None:
 
 
 def _require_meta_config() -> None:
-    if not settings.meta_app_id or not settings.meta_app_secret or not settings.meta_redirect_uri:
+    snapshot = get_meta_ads_config_snapshot()
+    if snapshot["missing"]:
         raise RuntimeError("META config missing")
+
+def _meta_ads_env_or_setting(
+    preferred_env: str,
+    fallback_env: str,
+    preferred_attr: str,
+    fallback_attr: str,
+) -> tuple[str | None, str | None]:
+    preferred_env_value = str(os.getenv(preferred_env) or "").strip()
+    if preferred_env_value:
+        return preferred_env_value, "META_ADS"
+
+    fallback_env_value = str(os.getenv(fallback_env) or "").strip()
+    if fallback_env_value:
+        return fallback_env_value, "META_FALLBACK"
+
+    preferred_setting_value = str(getattr(settings, preferred_attr, None) or "").strip()
+    fallback_setting_value = str(getattr(settings, fallback_attr, None) or "").strip()
+    if preferred_setting_value and preferred_setting_value != fallback_setting_value:
+        return preferred_setting_value, "META_ADS"
+    if preferred_setting_value and not fallback_setting_value:
+        return preferred_setting_value, "META_ADS"
+    if fallback_setting_value:
+        return fallback_setting_value, "META_FALLBACK"
+    if preferred_setting_value:
+        return preferred_setting_value, "META_ADS"
+    return None, None
+
+
+def get_meta_ads_config_snapshot() -> dict[str, Any]:
+    app_id, app_id_source = _meta_ads_env_or_setting(
+        "META_ADS_APP_ID",
+        "META_APP_ID",
+        "meta_ads_app_id",
+        "meta_app_id",
+    )
+    app_secret, app_secret_source = _meta_ads_env_or_setting(
+        "META_ADS_APP_SECRET",
+        "META_APP_SECRET",
+        "meta_ads_app_secret",
+        "meta_app_secret",
+    )
+    redirect_uri, redirect_source = _meta_ads_env_or_setting(
+        "META_ADS_REDIRECT_URI",
+        "META_REDIRECT_URI",
+        "meta_ads_redirect_uri",
+        "meta_redirect_uri",
+    )
+
+    missing_fields: list[str] = []
+    if not app_id:
+        missing_fields.extend(["META_ADS_APP_ID", "META_APP_ID"])
+    if not app_secret:
+        missing_fields.extend(["META_ADS_APP_SECRET", "META_APP_SECRET"])
+    if not redirect_uri:
+        missing_fields.extend(["META_ADS_REDIRECT_URI", "META_REDIRECT_URI"])
+
+    resolved_sources = [source for source in (app_id_source, app_secret_source, redirect_source) if source]
+    resolved_source = "META_ADS" if resolved_sources and all(source == "META_ADS" for source in resolved_sources) else "META_FALLBACK"
+
+    return {
+        "app_id": app_id,
+        "app_secret": app_secret,
+        "redirect_uri": redirect_uri,
+        "app_id_present": bool(app_id),
+        "app_secret_present": bool(app_secret),
+        "redirect_uri_present": bool(redirect_uri),
+        "missing": missing_fields,
+        "resolved_source": resolved_source,
+    }
 
 
 def get_missing_meta_ads_config_fields() -> list[str]:
-    missing_fields: list[str] = []
-    if not settings.meta_app_id:
-        missing_fields.append("META_APP_ID")
-    if not settings.meta_app_secret:
-        missing_fields.append("META_APP_SECRET")
-    if not settings.meta_redirect_uri:
-        missing_fields.append("META_REDIRECT_URI")
-    return missing_fields
+    return list(get_meta_ads_config_snapshot()["missing"])
+
+
+def get_meta_ads_config_key_family() -> str:
+    return str(get_meta_ads_config_snapshot()["resolved_source"]).lower()
 
 
 def get_meta_ads_redirect_uri() -> str:
-    _require_meta_config()
-    configured_redirect_uri = str(settings.meta_redirect_uri or "").strip()
+    snapshot = get_meta_ads_config_snapshot()
+    if snapshot["missing"]:
+        _require_meta_config()
+    configured_redirect_uri = str(snapshot["redirect_uri"] or "").strip()
     api_base_url = str(settings.api_base_url or "").strip().rstrip("/")
     if api_base_url:
         return f"{api_base_url}{META_ADS_CALLBACK_PATH}"
@@ -152,7 +222,7 @@ def get_meta_ads_redirect_uri() -> str:
         raise http_error(
             status_code=500,
             code="meta_ads_config_invalid",
-            message="META_REDIRECT_URI must be an absolute URL.",
+            message="META_ADS_REDIRECT_URI must be an absolute URL.",
         )
     return urlunparse((parsed.scheme, parsed.netloc, META_ADS_CALLBACK_PATH, "", "", ""))
 
@@ -262,9 +332,10 @@ def oauth_connect_url(
     base = f"https://www.facebook.com/{settings.meta_api_version}/dialog/oauth"
     normalized_integration_type = normalize_meta_oauth_integration_type(integration_type)
     final_scope = scope or meta_oauth_scope_string_for_integration_type(normalized_integration_type)
-    final_redirect_uri = redirect_uri or settings.meta_redirect_uri
+    snapshot = get_meta_ads_config_snapshot()
+    final_redirect_uri = redirect_uri or snapshot["redirect_uri"]
     params = {
-        "client_id": settings.meta_app_id,
+        "client_id": snapshot["app_id"],
         "redirect_uri": final_redirect_uri,
         "state": state,
         "scope": final_scope,
@@ -278,7 +349,7 @@ def oauth_connect_url(
             {
                 "provider": "meta_ads",
                 "integration_type": normalized_integration_type,
-                "client_id_loaded": bool(settings.meta_app_id),
+                "client_id_loaded": bool(snapshot["app_id"]),
                 "redirect_uri": final_redirect_uri,
                 "response_type": "code",
                 "auth_type": auth_type,
@@ -294,11 +365,12 @@ def oauth_connect_url(
 
 def exchange_code_for_token(code: str, *, redirect_uri: str | None = None) -> dict[str, Any]:
     _require_meta_config()
+    snapshot = get_meta_ads_config_snapshot()
     url = f"https://graph.facebook.com/{settings.meta_api_version}/oauth/access_token"
     params = {
-        "client_id": settings.meta_app_id,
-        "client_secret": settings.meta_app_secret,
-        "redirect_uri": redirect_uri or settings.meta_redirect_uri,
+        "client_id": snapshot["app_id"],
+        "client_secret": snapshot["app_secret"],
+        "redirect_uri": redirect_uri or snapshot["redirect_uri"],
         "code": code,
     }
     resp = requests.get(url, params=params, timeout=30)

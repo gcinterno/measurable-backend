@@ -147,7 +147,23 @@ def test_instagram_business_status_endpoint_never_returns_404(client):
 
 def test_meta_ads_connect_without_config_returns_controlled_error(client, monkeypatch):
     refs = _seed_workspace_with_legacy_meta()
-    for key in ("meta_app_id", "meta_app_secret", "meta_redirect_uri"):
+    for key in (
+        "META_ADS_APP_ID",
+        "META_ADS_APP_SECRET",
+        "META_ADS_REDIRECT_URI",
+        "META_APP_ID",
+        "META_APP_SECRET",
+        "META_REDIRECT_URI",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for key in (
+        "meta_ads_app_id",
+        "meta_ads_app_secret",
+        "meta_ads_redirect_uri",
+        "meta_app_id",
+        "meta_app_secret",
+        "meta_redirect_uri",
+    ):
         monkeypatch.setattr(main_module.settings, key, None)
         monkeypatch.setattr(meta_ads_module.settings, key, None)
 
@@ -160,7 +176,14 @@ def test_meta_ads_connect_without_config_returns_controlled_error(client, monkey
     assert response.status_code == 409
     assert response.json() == {
         "error": "meta_ads_not_configured",
-        "missing": ["META_APP_ID", "META_APP_SECRET", "META_REDIRECT_URI"],
+        "missing": [
+            "META_ADS_APP_ID",
+            "META_APP_ID",
+            "META_ADS_APP_SECRET",
+            "META_APP_SECRET",
+            "META_ADS_REDIRECT_URI",
+            "META_REDIRECT_URI",
+        ],
         "message": "Meta Ads OAuth is not fully configured.",
     }
 
@@ -181,6 +204,19 @@ def test_integrations_returns_independent_provider_states(client):
     assert provider_map["facebook_pages"]["status"] == "connected"
     assert provider_map["instagram_business"]["status"] == "disconnected"
     assert provider_map["meta_ads"]["status"] == "disconnected"
+
+
+def test_linked_instagram_discovery_does_not_mark_instagram_business_connected(client):
+    refs = _seed_workspace_with_legacy_meta()
+
+    response = client.get(
+        "/integrations/instagram-business/status",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["connected"] is False
 
 
 def test_instagram_business_connect_without_env_returns_409(client, monkeypatch):

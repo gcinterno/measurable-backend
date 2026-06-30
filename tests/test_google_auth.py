@@ -559,6 +559,51 @@ def test_meta_connect_pages_reconnect_uses_rerequest_and_preserves_state(client,
     assert state_payload["integration_type"] == "facebook_pages"
 
 
+def test_meta_connect_pages_with_linked_instagram_keeps_facebook_oauth_scopes(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="meta-linked-instagram@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Meta Linked Instagram",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace = Workspace(name="Meta Linked Instagram Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="free", status="active"))
+        db.commit()
+        workspace_id = workspace.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+
+    response = client.get(
+        f"/integrations/meta/connect-pages?workspace_id={workspace_id}&source=facebook_pages_with_instagram&include_linked_instagram=true",
+        headers=_auth_headers_for("meta-linked-instagram@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    parsed = urlparse(payload["auth_url"])
+    query = parse_qs(parsed.query)
+    state_payload = meta_ads.decode_state(query["state"][0])
+    assert parsed.netloc != "api.instagram.com"
+    assert query["scope"] == [meta_ads.FACEBOOK_PAGES_OAUTH_SCOPE]
+    assert state_payload["integration_type"] == "facebook_pages"
+    assert state_payload["source"] == "facebook_pages_with_instagram"
+    assert payload["source"] == "facebook_pages_with_instagram"
+
+
 def test_meta_exchange_pages_code_uses_same_backend_callback(monkeypatch):
     monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
     monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
@@ -684,6 +729,24 @@ def test_instagram_business_connect_returns_controlled_error_when_not_configured
         "error": "instagram_business_not_configured",
         "missing": ["INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET", "INSTAGRAM_REDIRECT_URI"],
     }
+
+
+def test_instagram_business_callback_maps_insufficient_developer_role_to_friendly_message(client):
+    response = client.get(
+        "/integrations/instagram-business/callback",
+        params={
+            "error": "access_denied",
+            "error_reason": "Insufficient Developer Role",
+            "error_description": "Insufficient Developer Role",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    body = response.text
+    assert "\"provider\": \"instagram_business\"" in body
+    assert "\"error\": \"insufficient_developer_role\"" in body
+    assert "Instagram could not be connected because this Instagram account is not added as a tester/developer" in body
 
 
 def test_meta_callback_pages_returns_clean_html_when_query_params_are_missing(client):

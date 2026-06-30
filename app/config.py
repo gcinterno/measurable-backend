@@ -71,6 +71,18 @@ class Settings(BaseSettings):
     meta_app_id: str | None = Field(default=None, validation_alias="META_APP_ID")
     meta_app_secret: str | None = Field(default=None, validation_alias="META_APP_SECRET")
     meta_redirect_uri: str | None = Field(default=None, validation_alias="META_REDIRECT_URI")
+    meta_ads_app_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("META_ADS_APP_ID", "META_APP_ID"),
+    )
+    meta_ads_app_secret: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("META_ADS_APP_SECRET", "META_APP_SECRET"),
+    )
+    meta_ads_redirect_uri: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("META_ADS_REDIRECT_URI", "META_REDIRECT_URI"),
+    )
     meta_pages_app_id: str | None = Field(
         default=None,
         validation_alias=AliasChoices("META_PAGES_APP_ID", "META_APP_ID"),

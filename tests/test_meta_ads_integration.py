@@ -22,6 +22,9 @@ os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
 os.environ.setdefault("META_APP_ID", "meta-app-id")
 os.environ.setdefault("META_APP_SECRET", "meta-app-secret")
 os.environ.setdefault("META_REDIRECT_URI", "http://localhost:8000/integrations/meta-ads/callback")
+os.environ.setdefault("META_ADS_APP_ID", "meta-app-id")
+os.environ.setdefault("META_ADS_APP_SECRET", "meta-app-secret")
+os.environ.setdefault("META_ADS_REDIRECT_URI", "http://localhost:8000/integrations/meta-ads/callback")
 
 from app.db import Base, SessionLocal, engine
 from app.deps import get_db
@@ -143,11 +146,12 @@ class _FakeS3Client:
 def test_meta_ads_connect_creates_separate_integration(client):
     refs = _seed_workspace()
     for key, value in (
-        ("meta_app_id", "meta-app-id"),
-        ("meta_app_secret", "meta-app-secret"),
-        ("meta_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
-        ("api_base_url", "http://localhost:8000"),
+        ("META_ADS_APP_ID", "meta-app-id"),
+        ("META_ADS_APP_SECRET", "meta-app-secret"),
+        ("META_ADS_REDIRECT_URI", "http://localhost:8000/integrations/meta-ads/callback"),
     ):
+        os.environ[key] = value
+    for key, value in (("api_base_url", "http://localhost:8000"),):
         setattr(main_module.settings, key, value)
         setattr(meta_ads_module.settings, key, value)
 
@@ -167,6 +171,7 @@ def test_meta_ads_connect_creates_separate_integration(client):
     query = parse_qs(urlparse(payload["auth_url"]).query)
     assert query["scope"] == [META_ADS_OAUTH_SCOPE]
     assert query["auth_type"] == ["rerequest"]
+    assert query["redirect_uri"] == ["http://localhost:8000/integrations/meta-ads/callback"]
 
     db = SessionLocal()
     try:
@@ -184,13 +189,14 @@ def test_meta_ads_callback_stores_token(client, monkeypatch):
     refs = _seed_workspace()
     integration_id = _create_meta_ads_integration(workspace_id=refs["workspace_id"], status="disconnected")
     for key, value in (
-        ("meta_app_id", "meta-app-id"),
-        ("meta_app_secret", "meta-app-secret"),
-        ("meta_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
+        ("meta_ads_app_id", "meta-app-id"),
+        ("meta_ads_app_secret", "meta-app-secret"),
+        ("meta_ads_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
         ("api_base_url", "http://localhost:8000"),
     ):
         setattr(main_module.settings, key, value)
         setattr(meta_ads_module.settings, key, value)
+
     state = encode_state(
         {
             "workspace_id": refs["workspace_id"],
@@ -238,6 +244,48 @@ def test_meta_ads_callback_stores_token(client, monkeypatch):
         assert token.access_token == "token-for-oauth-code"
     finally:
         db.close()
+
+
+def test_meta_ads_connect_accepts_preferred_env_family(client, monkeypatch):
+    refs = _seed_workspace()
+    monkeypatch.setenv("META_ADS_APP_ID", "meta-app-id")
+    monkeypatch.setenv("META_ADS_APP_SECRET", "meta-app-secret")
+    monkeypatch.setenv("META_ADS_REDIRECT_URI", "http://localhost:8000/integrations/meta-ads/callback")
+    monkeypatch.setattr(main_module.settings, "api_base_url", "http://localhost:8000")
+    monkeypatch.setattr(meta_ads_module.settings, "api_base_url", "http://localhost:8000")
+
+    response = client.get(
+        "/integrations/meta-ads/connect",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["scope"] == META_ADS_OAUTH_SCOPE
+
+
+def test_meta_ads_connect_accepts_legacy_fallback_env_family(client, monkeypatch):
+    refs = _seed_workspace()
+    monkeypatch.delenv("META_ADS_APP_ID", raising=False)
+    monkeypatch.delenv("META_ADS_APP_SECRET", raising=False)
+    monkeypatch.delenv("META_ADS_REDIRECT_URI", raising=False)
+    monkeypatch.setenv("META_APP_ID", "legacy-meta-app-id")
+    monkeypatch.setenv("META_APP_SECRET", "legacy-meta-app-secret")
+    monkeypatch.setenv("META_REDIRECT_URI", "http://localhost:8000/integrations/meta-ads/callback")
+    monkeypatch.setattr(main_module.settings, "api_base_url", "http://localhost:8000")
+    monkeypatch.setattr(meta_ads_module.settings, "api_base_url", "http://localhost:8000")
+
+    response = client.get(
+        "/integrations/meta-ads/connect",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    query = parse_qs(urlparse(payload["auth_url"]).query)
+    assert query["scope"] == [META_ADS_OAUTH_SCOPE]
+    assert query["redirect_uri"] == ["http://localhost:8000/integrations/meta-ads/callback"]
 
 
 def test_meta_ads_accounts_select_sync_and_disconnect(client, monkeypatch):
