@@ -22,13 +22,14 @@ from app.db import Base, SessionLocal, engine
 from app.deps import get_db
 from app.integrations import instagram_business as instagram_business_module
 from app.integrations import meta_ads as meta_ads_module
+import app.meta_data_catalog as meta_data_catalog_module
 import app.main as main_module
 from app.main import (
     META_RECORD_TYPE_FACEBOOK_PAGE,
     META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
     app,
 )
-from app.models import Integration, MetaPage, Subscription, User, Workspace, WorkspaceMember
+from app.models import Integration, IntegrationAccount, IntegrationToken, MetaAdAccount, MetaPage, Subscription, User, Workspace, WorkspaceMember
 from app.security import create_access_token, hash_password
 
 
@@ -43,6 +44,9 @@ INTEGRATION_STATUS_TABLES = [
     WorkspaceMember.__table__,
     Subscription.__table__,
     Integration.__table__,
+    IntegrationAccount.__table__,
+    IntegrationToken.__table__,
+    MetaAdAccount.__table__,
     MetaPage.__table__,
 ]
 
@@ -126,6 +130,109 @@ def _seed_workspace_with_legacy_meta() -> dict[str, int]:
         return {"user_id": user.id, "workspace_id": workspace.id}
     finally:
         db.close()
+
+
+def _seed_admin_workspace_with_tokens() -> dict[str, int]:
+    db = SessionLocal()
+    try:
+        user = User(
+            email="admin@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Admin User",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+            is_admin=True,
+        )
+        workspace = Workspace(name="Admin Workspace")
+        db.add_all([user, workspace])
+        db.flush()
+        db.add_all(
+            [
+                WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"),
+                Subscription(workspace_id=workspace.id, plan="core", status="active"),
+            ]
+        )
+        fb_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta",
+            name="Meta Pages",
+            status="connected",
+        )
+        ads_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta_ads",
+            name="Meta Ads",
+            status="connected",
+        )
+        db.add_all([fb_integration, ads_integration])
+        db.flush()
+
+        db.add(
+            MetaPage(
+                integration_id=fb_integration.id,
+                user_id=user.id,
+                record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
+                page_id="fb-1",
+                name="Botanero FB",
+                page_access_token="page-token",
+            )
+        )
+        db.add(
+            MetaPage(
+                integration_id=fb_integration.id,
+                user_id=user.id,
+                record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+                page_id="ig-1",
+                parent_page_id="fb-1",
+                name="Botanero IG",
+                instagram_username="botaneroig",
+            )
+        )
+        fb_token_account = IntegrationAccount(
+            integration_id=fb_integration.id,
+            workspace_id=workspace.id,
+            external_account_id=f"__meta_token__:{fb_integration.id}",
+            display_name="Meta token store",
+        )
+        ads_token_account = IntegrationAccount(
+            integration_id=ads_integration.id,
+            workspace_id=workspace.id,
+            external_account_id=f"__meta_token__:{ads_integration.id}",
+            display_name="Meta Ads token store",
+        )
+        db.add_all([fb_token_account, ads_token_account])
+        db.flush()
+        db.add_all(
+            [
+                IntegrationToken(
+                    account_id=fb_token_account.id,
+                    workspace_id=workspace.id,
+                    token_type="access_token",
+                    access_token="fb-token",
+                ),
+                IntegrationToken(
+                    account_id=ads_token_account.id,
+                    workspace_id=workspace.id,
+                    token_type="access_token",
+                    access_token="ads-token",
+                ),
+            ]
+        )
+        db.commit()
+        return {"user_id": user.id, "workspace_id": workspace.id}
+    finally:
+        db.close()
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict[str, object]):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload)
+
+    def json(self):
+        return self._payload
 
 
 def test_instagram_business_status_endpoint_never_returns_404(client):
@@ -236,3 +343,73 @@ def test_instagram_business_connect_without_env_returns_409(client, monkeypatch)
         "error": "instagram_business_not_configured",
         "missing": ["INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET", "INSTAGRAM_REDIRECT_URI"],
     }
+
+
+def test_admin_meta_data_catalog_returns_actionable_details(client, monkeypatch):
+    refs = _seed_admin_workspace_with_tokens()
+    for key in ("INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET", "INSTAGRAM_REDIRECT_URI"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in (
+        ("META_ADS_APP_ID", "meta-ads-app-id"),
+        ("META_ADS_APP_SECRET", "meta-ads-app-secret"),
+        ("META_ADS_REDIRECT_URI", "http://localhost:8000/integrations/meta-ads/callback"),
+    ):
+        monkeypatch.setenv(key, value)
+
+    def fake_get(url, params=None, timeout=30):
+        if url.endswith("/fb-1") and params and params.get("fields") == "followers_count,fan_count":
+            return _FakeResponse(200, {"followers_count": 321, "fan_count": 123})
+        if url.endswith("/fb-1/insights"):
+            metric = params.get("metric")
+            if metric == "page_posts_impressions_organic":
+                return _FakeResponse(200, {"data": [{"name": metric, "values": [{"value": 10187}]}]})
+            if metric == "page_post_engagements":
+                return _FakeResponse(400, {"error": {"code": 100, "message": "Invalid metric"}})
+            if metric == "page_actions_post_reactions_total":
+                return _FakeResponse(403, {"error": {"code": 10, "message": "Permissions error"}})
+            if metric == "page_views_total":
+                return _FakeResponse(200, {"data": [{"name": metric, "values": [{"value": 42}]}]})
+        if url.endswith("/me/adaccounts"):
+            return _FakeResponse(200, {"data": []})
+        return _FakeResponse(404, {"error": {"code": 404, "message": "Not found"}})
+
+    monkeypatch.setattr(meta_data_catalog_module.requests, "get", fake_get)
+
+    response = client.get(
+        "/admin/meta-data-catalog",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "details" in payload
+    assert "rows_preview" in payload
+
+    facebook_rows = payload["details"]["facebook_pages"]
+    assert any(row["db_provider"] == "meta" for row in facebook_rows)
+    assert any(row["record_type"] == "facebook_page" for row in facebook_rows)
+    assert any(
+        row["metric_name"] == "page_posts_impressions_organic"
+        and row["availability_status"] == "available"
+        and row["sample_value"] == 10187
+        for row in facebook_rows
+    )
+    assert any(
+        row["metric_name"] == "page_post_engagements"
+        and row["availability_status"] == "invalid_metric"
+        for row in facebook_rows
+    )
+    assert any(
+        row["metric_name"] == "page_actions_post_reactions_total"
+        and row["availability_status"] == "missing_permission"
+        for row in facebook_rows
+    )
+    assert "page_posts_impressions_organic" in payload["provider_summary"]["facebook_pages"]["recommended_report_metrics"]
+
+    instagram_rows = payload["details"]["instagram_business"]
+    assert any(row["availability_status"] == "config_missing" for row in instagram_rows)
+    assert any("INSTAGRAM_APP_ID" in row["missing"] for row in instagram_rows if row["availability_status"] == "config_missing")
+
+    meta_ads_rows = payload["details"]["meta_ads"]
+    assert any(row["availability_status"] == "no_assets" for row in meta_ads_rows)

@@ -6872,6 +6872,8 @@ def admin_meta_data_catalog(
         "csv_path": result["csv_path"],
         "summary": result["summary"],
         "provider_summary": result["provider_summary"],
+        "details": result["details"],
+        "rows_preview": result["rows_preview"],
     }
 
 
