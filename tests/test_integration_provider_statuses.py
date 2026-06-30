@@ -295,6 +295,35 @@ def test_meta_ads_connect_without_config_returns_controlled_error(client, monkey
     }
 
 
+def test_meta_ads_status_does_not_crash_when_reporting_tables_are_missing(client, monkeypatch):
+    refs = _seed_workspace_with_legacy_meta()
+    db = SessionLocal()
+    try:
+        integration = Integration(
+            workspace_id=refs["workspace_id"],
+            provider="meta_ads",
+            name="Meta Ads",
+            status="connected",
+        )
+        db.add(integration)
+        db.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: False)
+
+    response = client.get(
+        "/integrations/meta-ads/status",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["connected"] is False
+    assert response.json()["accounts_count"] == 0
+    assert "database tables are not available yet" in response.json()["message"]
+
+
 def test_integrations_returns_independent_provider_states(client):
     refs = _seed_workspace_with_legacy_meta()
 

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from .crypto import decrypt_secret
 from .integrations.instagram_business import get_missing_instagram_business_config_fields
 from .integrations.meta_ads import get_meta_ads_config_snapshot
+from .db import engine
 from .models import Integration, IntegrationAccount, IntegrationToken, MetaAdAccount, MetaPage
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,16 @@ def _latest_token_for_account(db: Session, account_id: int) -> IntegrationToken 
         .order_by(IntegrationToken.updated_at.desc(), IntegrationToken.id.desc())
         .first()
     )
+
+
+def _table_available(table_name: str) -> bool:
+    from sqlalchemy import inspect
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        return table_name in set(inspect(engine).get_table_names())
+    except SQLAlchemyError:
+        return False
 
 
 def _time_window() -> tuple[str, str]:
@@ -761,6 +772,25 @@ def _meta_ads_rows(db: Session, workspace_id: int) -> list[dict[str, Any]]:
                 metric_name=None,
                 availability_status="config_missing",
                 missing=missing,
+            )
+        )
+        return rows
+
+    if not _table_available("meta_ad_accounts"):
+        rows.append(
+            _base_row(
+                provider=provider,
+                integration=integrations[0] if integrations else None,
+                record_type=None,
+                token_present=False,
+                token_decrypt_ok=False,
+                asset_count=0,
+                asset_ids=[],
+                asset_names=[],
+                endpoint_type="schema",
+                metric_name=None,
+                availability_status="unexpected_error",
+                error_message="Meta Ads database tables are not available yet. Apply database migrations.",
             )
         )
         return rows

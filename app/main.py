@@ -6640,6 +6640,12 @@ def _upsert_meta_ads_account(
     account_payload: dict[str, Any],
     is_selected: bool | None = None,
 ) -> MetaAdAccount:
+    if not _table_available("meta_ad_accounts"):
+        raise http_error(
+            503,
+            "meta_ads_schema_missing",
+            "Meta Ads database tables are not available yet. Apply database migrations.",
+        )
     raw_account_id = str(account_payload.get("account_id") or account_payload.get("id") or "").strip()
     normalized_account_id = _normalize_meta_ad_account_id(raw_account_id)
     if not normalized_account_id:
@@ -6683,6 +6689,12 @@ def _save_meta_ads_selected_account(
     integration: Integration,
     account_payload: dict[str, Any],
 ) -> MetaAdAccount:
+    if not _table_available("meta_ad_accounts"):
+        raise http_error(
+            503,
+            "meta_ads_schema_missing",
+            "Meta Ads database tables are not available yet. Apply database migrations.",
+        )
     existing_accounts = (
         db.query(MetaAdAccount)
         .filter(MetaAdAccount.integration_id == integration.id)
@@ -6703,6 +6715,8 @@ def _save_meta_ads_selected_account(
 
 
 def _get_selected_meta_ads_account(db: Session, integration_id: int) -> MetaAdAccount | None:
+    if not _table_available("meta_ad_accounts"):
+        return None
     return (
         db.query(MetaAdAccount)
         .filter(
@@ -6734,6 +6748,10 @@ def _meta_ads_status_message(*, status: str, connected: bool, accounts_count: in
     if accounts_count == 0:
         return "No ad accounts found for this Meta Ads connection."
     return None
+
+
+def _meta_ads_reporting_tables_available() -> bool:
+    return _table_available("meta_ad_accounts") and _table_available("meta_ads_insights_daily")
 
 
 def _normalized_provider_status(raw_status: str | None) -> str:
@@ -6819,13 +6837,17 @@ def _disconnect_meta_ads_integration(
 ) -> MetaAdsDisconnectOut:
     token_account = _get_meta_ads_token_account(db, integration.id)
     token = _get_latest_integration_token(db, token_account.id) if token_account is not None else None
-    accounts = db.query(MetaAdAccount).filter(MetaAdAccount.integration_id == integration.id).all()
+    accounts: list[MetaAdAccount] = []
+    rows: list[MetaAdsInsightDaily] = []
+    if _table_available("meta_ad_accounts"):
+        accounts = db.query(MetaAdAccount).filter(MetaAdAccount.integration_id == integration.id).all()
     account_ids = [account.id for account in accounts]
-    rows = (
-        db.query(MetaAdsInsightDaily)
-        .filter(MetaAdsInsightDaily.integration_id == integration.id)
-        .all()
-    )
+    if _table_available("meta_ads_insights_daily"):
+        rows = (
+            db.query(MetaAdsInsightDaily)
+            .filter(MetaAdsInsightDaily.integration_id == integration.id)
+            .all()
+        )
     cleared_accounts = len(accounts)
     cleared_rows = len(rows)
 
@@ -19498,6 +19520,20 @@ def meta_ads_status(
         integration_id=integration_id,
         workspace_id=workspace_id,
     )
+    if not _meta_ads_reporting_tables_available():
+        return MetaAdsStatusOut(
+            integration_id=integration.id,
+            workspace_id=integration.workspace_id,
+            connected=False,
+            status="disconnected",
+            scope=META_ADS_OAUTH_SCOPE,
+            selected_account=None,
+            accounts_count=0,
+            last_synced_at=None,
+            reconnect_required=False,
+            permission_missing=False,
+            message="Meta Ads database tables are not available yet. Apply database migrations.",
+        )
     accounts = (
         db.query(MetaAdAccount)
         .filter(MetaAdAccount.integration_id == integration.id)
@@ -19532,6 +19568,8 @@ def meta_ads_accounts(
     db: Session = Depends(get_db),
 ) -> list[MetaAdsAccountOut]:
     integration = _get_meta_ads_integration(db, current_user, integration_id)
+    if not _meta_ads_reporting_tables_available():
+        return []
     access_token = _get_meta_ads_access_token(db, integration)
     try:
         accounts = list_ad_accounts(access_token)
@@ -19578,6 +19616,12 @@ def meta_ads_select_account(
     db: Session = Depends(get_db),
 ) -> MetaAdsAccountOut:
     integration = _get_meta_ads_integration(db, current_user, payload.integration_id)
+    if not _meta_ads_reporting_tables_available():
+        raise http_error(
+            503,
+            "meta_ads_schema_missing",
+            "Meta Ads database tables are not available yet. Apply database migrations.",
+        )
     access_token = _get_meta_ads_access_token(db, integration)
     accounts = list_ad_accounts(access_token)
     account_payload = _meta_ads_find_account_payload(accounts, payload.ad_account_id)
@@ -19602,6 +19646,12 @@ def meta_ads_sync(
     db: Session = Depends(get_db),
 ) -> MetaAdsSyncOut:
     integration = _get_meta_ads_integration(db, current_user, payload.integration_id)
+    if not _meta_ads_reporting_tables_available():
+        raise http_error(
+            503,
+            "meta_ads_schema_missing",
+            "Meta Ads database tables are not available yet. Apply database migrations.",
+        )
     account = None
     if payload.ad_account_id:
         account = (
