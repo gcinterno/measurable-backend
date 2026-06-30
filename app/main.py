@@ -66,6 +66,7 @@ from .integrations.meta_ads import (
     fetch_page_posts,
     fetch_post_metrics,
     exchange_pages_code_for_token,
+    get_business_ad_accounts,
     get_meta_ads_config_key_family,
     get_meta_ads_config_snapshot,
     get_missing_meta_ads_config_fields,
@@ -6741,6 +6742,14 @@ def _meta_ads_find_account_payload(accounts: list[dict[str, Any]], ad_account_id
 
 
 def _meta_ads_status_message(*, status: str, connected: bool, accounts_count: int) -> str | None:
+    if status == "config_missing":
+        return "Meta Ads OAuth is not fully configured."
+    if status == "no_token":
+        return "Connect Meta Ads to authorize a read-only access token."
+    if status == "needs_permission":
+        return "Meta Ads connected, but Business Manager asset access is required to discover ad accounts."
+    if status == "connected_no_assets":
+        return "Meta Ads connected, but no authorized ad accounts were returned."
     if not connected:
         return "Connect Meta Ads to load ad accounts and sync reporting data."
     if status == "reauthorization_required":
@@ -6748,6 +6757,76 @@ def _meta_ads_status_message(*, status: str, connected: bool, accounts_count: in
     if accounts_count == 0:
         return "No ad accounts found for this Meta Ads connection."
     return None
+
+
+def _meta_ads_required_scopes() -> list[str]:
+    return ["ads_read", "business_management"]
+
+
+def _meta_ads_missing_scopes(received_scopes: list[str]) -> list[str]:
+    normalized = {str(scope).strip() for scope in received_scopes if str(scope).strip()}
+    return [scope for scope in _meta_ads_required_scopes() if scope not in normalized]
+
+
+def _meta_ads_discovery_requires_business_management(exc: HTTPException) -> bool:
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    if detail.get("code") != "meta_api_error":
+        return False
+    meta_error = detail.get("meta_error") if isinstance(detail.get("meta_error"), dict) else {}
+    error_code = meta_error.get("code")
+    message = str(meta_error.get("message") or detail.get("message") or "").lower()
+    return error_code == 100 and "business_management" in message
+
+
+def _dedupe_meta_ads_accounts(accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        key = _normalize_meta_ad_account_id(str(account.get("account_id") or account.get("id") or "").strip())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(account)
+    return deduped
+
+
+def _persist_meta_ads_accounts(
+    db: Session,
+    *,
+    integration: Integration,
+    accounts: list[dict[str, Any]],
+) -> list[MetaAdAccount]:
+    if not _meta_ads_reporting_tables_available():
+        return []
+    existing_accounts = (
+        db.query(MetaAdAccount)
+        .filter(MetaAdAccount.integration_id == integration.id)
+        .all()
+    )
+    discovered_ids = {
+        _normalize_meta_ad_account_id(str(account.get("account_id") or account.get("id") or "").strip())
+        for account in accounts
+    }
+    for record in existing_accounts:
+        if record.account_id not in discovered_ids:
+            record.is_selected = False
+            db.add(record)
+    persisted: list[MetaAdAccount] = []
+    for index, account in enumerate(accounts):
+        persisted.append(
+            _upsert_meta_ads_account(
+                db,
+                integration=integration,
+                account_payload=account,
+                is_selected=index == 0 and not any(item.is_selected for item in existing_accounts),
+            )
+        )
+    db.commit()
+    for record in persisted:
+        db.refresh(record)
+    return persisted
 
 
 def _meta_ads_reporting_tables_available() -> bool:
@@ -19425,7 +19504,7 @@ def meta_ads_callback(
         if str(scope).strip()
     ]
     _meta_oauth_log(
-        "META_OAUTH_TOKEN_SCOPES_RECEIVED",
+        "META_ADS_TOKEN_SCOPES_RECEIVED",
         provider="meta_ads",
         integration_type=selected_integration_type,
         integration_id=integration.id,
@@ -19435,18 +19514,6 @@ def meta_ads_callback(
         requested_scopes=requested_scopes,
         token_valid=debug_token_summary["is_valid"],
     )
-    missing_scopes = [scope for scope in requested_scopes if scope not in received_scopes]
-    if missing_scopes:
-        _meta_oauth_log(
-            "META_PERMISSION_MISSING",
-            provider="meta_ads",
-            integration_type=selected_integration_type,
-            integration_id=integration.id,
-            workspace_id=integration.workspace_id,
-            missing_scopes=missing_scopes,
-            scopes_received=received_scopes,
-        )
-
     token_account = _ensure_meta_ads_token_account(db, integration)
     _replace_integration_token(
         db,
@@ -19454,42 +19521,124 @@ def meta_ads_callback(
         workspace_id=integration.workspace_id,
         access_token=access_token,
     )
-    accounts_discovered: list[dict[str, Any]] = []
-    try:
-        for account in list_ad_accounts(access_token):
-            account_id = str(account.get("account_id") or account.get("id") or "").strip()
-            if not account_id:
-                continue
-            accounts_discovered.append(
-                {
-                    "account_id": account_id,
-                    "name": str(account.get("name") or "").strip() or None,
-                }
-            )
-    except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, dict) else {}
+
+    missing_scopes = _meta_ads_missing_scopes(received_scopes)
+    if missing_scopes:
         _meta_oauth_log(
-            "META_PERMISSION_MISSING",
+            "META_ADS_PERMISSION_MISSING",
             provider="meta_ads",
             integration_type=selected_integration_type,
             integration_id=integration.id,
             workspace_id=integration.workspace_id,
             missing_scopes=missing_scopes,
-            asset_discovery_error=str(detail.get("message") or exc.detail or "").strip() or None,
+            scopes_received=received_scopes,
         )
+        _set_meta_integration_status(db, integration, status="needs_permission")
+        message = "Meta Ads connected, but required reporting permissions are missing."
+        if "business_management" in missing_scopes:
+            message = "Meta Ads connected, but Business Manager asset access is required to discover ad accounts."
+        return _meta_oauth_popup_response(
+            status="error",
+            error="missing_scopes",
+            message=message,
+            integration_id=integration.id,
+            callback_path="/integrations/meta-ads/callback",
+            provider="meta_ads",
+        )
+
     _meta_oauth_log(
-        "META_CONNECTED_ASSETS_DISCOVERED",
+        "META_ADS_AD_ACCOUNTS_DISCOVERY_STARTED",
+        provider="meta_ads",
+        integration_type=selected_integration_type,
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+    )
+    accounts_discovered: list[dict[str, Any]] = []
+    discovery_error_message: str | None = None
+    try:
+        accounts_discovered = list_ad_accounts(access_token)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        discovery_error_message = str(detail.get("message") or exc.detail or "").strip() or None
+        if _meta_ads_discovery_requires_business_management(exc):
+            _meta_oauth_log(
+                "META_ADS_PERMISSION_MISSING",
+                provider="meta_ads",
+                integration_type=selected_integration_type,
+                integration_id=integration.id,
+                workspace_id=integration.workspace_id,
+                missing_scopes=["business_management"],
+                asset_discovery_error=discovery_error_message,
+            )
+            _set_meta_integration_status(db, integration, status="needs_permission")
+            return _meta_oauth_popup_response(
+                status="error",
+                error="missing_scopes",
+                message="Meta Ads connected, but Business Manager asset access is required to discover ad accounts.",
+                integration_id=integration.id,
+                callback_path="/integrations/meta-ads/callback",
+                provider="meta_ads",
+            )
+        raise
+
+    if not accounts_discovered and "business_management" not in missing_scopes:
+        try:
+            accounts_discovered = get_business_ad_accounts(access_token)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            discovery_error_message = str(detail.get("message") or exc.detail or "").strip() or discovery_error_message
+            if _meta_ads_discovery_requires_business_management(exc):
+                _meta_oauth_log(
+                    "META_ADS_PERMISSION_MISSING",
+                    provider="meta_ads",
+                    integration_type=selected_integration_type,
+                    integration_id=integration.id,
+                    workspace_id=integration.workspace_id,
+                    missing_scopes=["business_management"],
+                    asset_discovery_error=discovery_error_message,
+                )
+                _set_meta_integration_status(db, integration, status="needs_permission")
+                return _meta_oauth_popup_response(
+                    status="error",
+                    error="missing_scopes",
+                    message="Meta Ads connected, but Business Manager asset access is required to discover ad accounts.",
+                    integration_id=integration.id,
+                    callback_path="/integrations/meta-ads/callback",
+                    provider="meta_ads",
+                )
+            raise
+
+    accounts_discovered = _dedupe_meta_ads_accounts(accounts_discovered)
+    persisted_accounts = _persist_meta_ads_accounts(
+        db,
+        integration=integration,
+        accounts=accounts_discovered,
+    )
+    _meta_oauth_log(
+        "META_ADS_AD_ACCOUNTS_DISCOVERED",
         provider="meta_ads",
         integration_type=selected_integration_type,
         integration_id=integration.id,
         workspace_id=integration.workspace_id,
         assets_count=len(accounts_discovered),
-        assets=accounts_discovered,
+        account_names=[
+            str(account.get("name") or "").strip()
+            for account in accounts_discovered
+            if str(account.get("name") or "").strip()
+        ],
     )
     if not accounts_discovered:
-        _set_meta_integration_status(db, integration, status="disconnected")
+        _meta_oauth_log(
+            "META_ADS_CONNECTED_NO_ASSETS",
+            provider="meta_ads",
+            integration_type=selected_integration_type,
+            integration_id=integration.id,
+            workspace_id=integration.workspace_id,
+            asset_discovery_error=discovery_error_message,
+        )
+        _set_meta_integration_status(db, integration, status="connected_no_assets")
         return _meta_oauth_popup_response(
-            status="error",
+            status="connected_no_assets",
             error="no_authorized_assets",
             message="Meta Ads connected, but no authorized ad accounts were returned.",
             integration_id=integration.id,
@@ -19497,6 +19646,14 @@ def meta_ads_callback(
             provider="meta_ads",
         )
     _set_meta_integration_status(db, integration, status="connected")
+    _meta_oauth_log(
+        "META_ADS_CONNECT_SUCCESS",
+        provider="meta_ads",
+        integration_type=selected_integration_type,
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+        assets_count=len(persisted_accounts),
+    )
     return _meta_oauth_popup_response(
         status="connected",
         source="meta_ads",
@@ -19520,6 +19677,30 @@ def meta_ads_status(
         integration_id=integration_id,
         workspace_id=workspace_id,
     )
+    config_snapshot = get_meta_ads_config_snapshot()
+    if config_snapshot["missing"]:
+        return MetaAdsStatusOut(
+            integration_id=integration.id,
+            workspace_id=integration.workspace_id,
+            connected=False,
+            status="config_missing",
+            scope=META_ADS_OAUTH_SCOPE,
+            selected_account=None,
+            accounts_count=0,
+            asset_count=0,
+            account_names=[],
+            missing_scopes=[],
+            last_synced_at=None,
+            reconnect_required=False,
+            permission_missing=False,
+            message="Meta Ads OAuth is not fully configured.",
+        )
+    token_present = True
+    try:
+        access_token = _get_meta_ads_access_token(db, integration)
+    except HTTPException:
+        token_present = False
+        access_token = ""
     if not _meta_ads_reporting_tables_available():
         return MetaAdsStatusOut(
             integration_id=integration.id,
@@ -19529,6 +19710,9 @@ def meta_ads_status(
             scope=META_ADS_OAUTH_SCOPE,
             selected_account=None,
             accounts_count=0,
+            asset_count=0,
+            account_names=[],
+            missing_scopes=[],
             last_synced_at=None,
             reconnect_required=False,
             permission_missing=False,
@@ -19541,20 +19725,44 @@ def meta_ads_status(
         .all()
     )
     selected_account = next((account for account in accounts if account.is_selected), None)
-    connected = integration.status == "connected"
+    missing_scopes: list[str] = []
+    status = str(integration.status or "disconnected").strip() or "disconnected"
+    if token_present:
+        try:
+            debug_token_summary = _extract_debug_token_summary(debug_token(access_token))
+        except Exception:
+            debug_token_summary = {"scopes": [], "is_valid": None, "granular_target_ids": []}
+        received_scopes = [
+            str(scope).strip()
+            for scope in debug_token_summary["scopes"]
+            if str(scope).strip()
+        ]
+        if received_scopes:
+            missing_scopes = _meta_ads_missing_scopes(received_scopes)
+            if missing_scopes:
+                status = "needs_permission"
+    else:
+        status = "no_token"
+    if status == "connected" and not accounts:
+        status = "connected_no_assets"
+    connected = status in {"connected", "connected_no_assets", "needs_permission"}
+    account_names = [account.account_name for account in accounts if str(account.account_name or "").strip()]
     return MetaAdsStatusOut(
         integration_id=integration.id,
         workspace_id=integration.workspace_id,
         connected=connected,
-        status=integration.status,
+        status=status,
         scope=META_ADS_OAUTH_SCOPE,
         selected_account=_meta_ads_account_out(selected_account, source="cache") if selected_account else None,
         accounts_count=len(accounts),
+        asset_count=len(accounts),
+        account_names=account_names,
+        missing_scopes=missing_scopes,
         last_synced_at=selected_account.last_synced_at if selected_account is not None else None,
-        reconnect_required=integration.status == "reauthorization_required",
-        permission_missing=integration.status == "reauthorization_required",
+        reconnect_required=status in {"needs_permission", "reauthorization_required"},
+        permission_missing=status == "needs_permission",
         message=_meta_ads_status_message(
-            status=integration.status,
+            status=status,
             connected=connected,
             accounts_count=len(accounts),
         ),

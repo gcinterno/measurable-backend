@@ -310,6 +310,13 @@ def test_meta_ads_status_does_not_crash_when_reporting_tables_are_missing(client
     finally:
         db.close()
 
+    for key, value in (
+        ("meta_ads_app_id", "meta-app-id"),
+        ("meta_ads_app_secret", "meta-app-secret"),
+        ("meta_ads_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
+    ):
+        monkeypatch.setattr(main_module.settings, key, value)
+        monkeypatch.setattr(meta_ads_module.settings, key, value)
     monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: False)
 
     response = client.get(
@@ -322,6 +329,91 @@ def test_meta_ads_status_does_not_crash_when_reporting_tables_are_missing(client
     assert response.json()["connected"] is False
     assert response.json()["accounts_count"] == 0
     assert "database tables are not available yet" in response.json()["message"]
+
+
+def test_meta_ads_status_returns_needs_permission_when_business_management_missing(client, monkeypatch):
+    refs = _seed_admin_workspace_with_tokens()
+    db = SessionLocal()
+    try:
+        integration = (
+            db.query(Integration)
+            .filter(Integration.workspace_id == refs["workspace_id"], Integration.provider == "meta_ads")
+            .one()
+        )
+        integration_id = integration.id
+    finally:
+        db.close()
+
+    for key, value in (
+        ("meta_ads_app_id", "meta-app-id"),
+        ("meta_ads_app_secret", "meta-app-secret"),
+        ("meta_ads_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
+    ):
+        monkeypatch.setattr(main_module.settings, key, value)
+        monkeypatch.setattr(meta_ads_module.settings, key, value)
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {"data": {"is_valid": True, "scopes": ["public_profile", "ads_read"]}},
+    )
+
+    response = client.get(
+        "/integrations/meta-ads/status",
+        headers=_auth_headers(refs["user_id"]),
+        params={"integration_id": integration_id},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "needs_permission"
+    assert payload["connected"] is True
+    assert payload["missing_scopes"] == ["business_management"]
+    assert payload["permission_missing"] is True
+
+
+def test_meta_ads_status_returns_connected_no_assets_when_token_has_permissions(client, monkeypatch):
+    refs = _seed_admin_workspace_with_tokens()
+    db = SessionLocal()
+    try:
+        integration = (
+            db.query(Integration)
+            .filter(Integration.workspace_id == refs["workspace_id"], Integration.provider == "meta_ads")
+            .one()
+        )
+        integration_id = integration.id
+    finally:
+        db.close()
+
+    for key, value in (
+        ("meta_ads_app_id", "meta-app-id"),
+        ("meta_ads_app_secret", "meta-app-secret"),
+        ("meta_ads_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
+    ):
+        monkeypatch.setattr(main_module.settings, key, value)
+        monkeypatch.setattr(meta_ads_module.settings, key, value)
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {
+            "data": {
+                "is_valid": True,
+                "scopes": ["public_profile", "ads_read", "business_management"],
+            }
+        },
+    )
+
+    response = client.get(
+        "/integrations/meta-ads/status",
+        headers=_auth_headers(refs["user_id"]),
+        params={"integration_id": integration_id},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "connected_no_assets"
+    assert payload["connected"] is True
+    assert payload["asset_count"] == 0
+    assert payload["account_names"] == []
 
 
 def test_integrations_returns_independent_provider_states(client):

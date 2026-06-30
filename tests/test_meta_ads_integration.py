@@ -164,8 +164,9 @@ def test_meta_ads_connect_creates_separate_integration(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["scope"] == META_ADS_OAUTH_SCOPE
-    assert payload["scope"] == "public_profile,ads_read"
+    assert payload["scope"] == "public_profile,ads_read,business_management"
     assert "ads_read" in payload["auth_url"]
+    assert "business_management" in payload["auth_url"]
     assert "pages_show_list" not in payload["auth_url"]
     assert "ads_management" not in payload["auth_url"]
     query = parse_qs(urlparse(payload["auth_url"]).query)
@@ -185,7 +186,7 @@ def test_meta_ads_connect_creates_separate_integration(client):
         db.close()
 
 
-def test_meta_ads_callback_stores_token(client, monkeypatch):
+def test_meta_ads_callback_without_business_management_sets_needs_permission(client, monkeypatch):
     refs = _seed_workspace()
     integration_id = _create_meta_ads_integration(workspace_id=refs["workspace_id"], status="disconnected")
     for key, value in (
@@ -211,7 +212,122 @@ def test_meta_ads_callback_stores_token(client, monkeypatch):
     )
     monkeypatch.setattr(
         "app.main.debug_token",
-        lambda _access_token: {"data": {"is_valid": True, "scopes": [META_ADS_OAUTH_SCOPE]}},
+        lambda _access_token: {"data": {"is_valid": True, "scopes": ["public_profile", "ads_read"]}},
+    )
+
+    response = client.get(
+        "/integrations/meta-ads/callback",
+        params={"code": "oauth-code", "state": state},
+    )
+
+    assert response.status_code == 200
+    assert "Business Manager asset access is required" in response.text
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, integration_id)
+        assert integration is not None
+        assert integration.status == "needs_permission"
+        token_account = (
+            db.query(IntegrationAccount)
+            .filter(IntegrationAccount.integration_id == integration_id)
+            .one()
+        )
+        token = (
+            db.query(IntegrationToken)
+            .filter(IntegrationToken.account_id == token_account.id)
+            .one()
+        )
+        assert token.access_token == "token-for-oauth-code"
+    finally:
+        db.close()
+
+
+def test_meta_ads_callback_without_accounts_sets_connected_no_assets(client, monkeypatch):
+    refs = _seed_workspace()
+    integration_id = _create_meta_ads_integration(workspace_id=refs["workspace_id"], status="disconnected")
+    for key, value in (
+        ("meta_ads_app_id", "meta-app-id"),
+        ("meta_ads_app_secret", "meta-app-secret"),
+        ("meta_ads_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
+        ("api_base_url", "http://localhost:8000"),
+    ):
+        setattr(main_module.settings, key, value)
+        setattr(meta_ads_module.settings, key, value)
+
+    state = encode_state(
+        {
+            "workspace_id": refs["workspace_id"],
+            "user_id": refs["user_id"],
+            "integration_id": integration_id,
+            "provider": "meta_ads",
+        }
+    )
+    monkeypatch.setattr(
+        "app.main.exchange_code_for_token",
+        lambda code, redirect_uri=None: {"access_token": f"token-for-{code}"},
+    )
+    monkeypatch.setattr(
+        "app.main.debug_token",
+        lambda _access_token: {
+            "data": {
+                "is_valid": True,
+                "scopes": ["public_profile", "ads_read", "business_management"],
+            }
+        },
+    )
+    monkeypatch.setattr("app.main.list_ad_accounts", lambda _access_token: [])
+    monkeypatch.setattr("app.main.get_business_ad_accounts", lambda _access_token: [])
+
+    response = client.get(
+        "/integrations/meta-ads/callback",
+        params={"code": "oauth-code", "state": state},
+    )
+
+    assert response.status_code == 200
+    assert "no authorized ad accounts were returned" in response.text
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, integration_id)
+        assert integration is not None
+        assert integration.status == "connected_no_assets"
+    finally:
+        db.close()
+
+
+def test_meta_ads_callback_persists_accounts_when_available(client, monkeypatch):
+    refs = _seed_workspace()
+    integration_id = _create_meta_ads_integration(workspace_id=refs["workspace_id"], status="disconnected")
+    for key, value in (
+        ("meta_ads_app_id", "meta-app-id"),
+        ("meta_ads_app_secret", "meta-app-secret"),
+        ("meta_ads_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
+        ("api_base_url", "http://localhost:8000"),
+    ):
+        setattr(main_module.settings, key, value)
+        setattr(meta_ads_module.settings, key, value)
+
+    state = encode_state(
+        {
+            "workspace_id": refs["workspace_id"],
+            "user_id": refs["user_id"],
+            "integration_id": integration_id,
+            "provider": "meta_ads",
+        }
+    )
+    monkeypatch.setattr(
+        "app.main.exchange_code_for_token",
+        lambda code, redirect_uri=None: {"access_token": f"token-for-{code}"},
+    )
+    monkeypatch.setattr(
+        "app.main.debug_token",
+        lambda _access_token: {
+            "data": {
+                "is_valid": True,
+                "scopes": ["public_profile", "ads_read", "business_management"],
+            }
+        },
     )
     monkeypatch.setattr(
         "app.main.list_ad_accounts",
@@ -231,17 +347,13 @@ def test_meta_ads_callback_stores_token(client, monkeypatch):
         integration = db.get(Integration, integration_id)
         assert integration is not None
         assert integration.status == "connected"
-        token_account = (
-            db.query(IntegrationAccount)
-            .filter(IntegrationAccount.integration_id == integration_id)
+        account = (
+            db.query(MetaAdAccount)
+            .filter(MetaAdAccount.integration_id == integration_id)
             .one()
         )
-        token = (
-            db.query(IntegrationToken)
-            .filter(IntegrationToken.account_id == token_account.id)
-            .one()
-        )
-        assert token.access_token == "token-for-oauth-code"
+        assert account.account_id == "123"
+        assert account.account_name == "Primary Ads Account"
     finally:
         db.close()
 
@@ -329,6 +441,15 @@ def test_meta_ads_accounts_select_sync_and_disconnect(client, monkeypatch):
                 "business": {"id": "biz-1", "name": "Measurable Business"},
             }
         ],
+    )
+    monkeypatch.setattr(
+        "app.main.debug_token",
+        lambda _access_token: {
+            "data": {
+                "is_valid": True,
+                "scopes": ["public_profile", "ads_read", "business_management"],
+            }
+        },
     )
     monkeypatch.setattr("app.main.boto3.client", lambda *_args, **_kwargs: _FakeS3Client())
     monkeypatch.setattr(

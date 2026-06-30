@@ -34,6 +34,7 @@ INSTAGRAM_BUSINESS_SCOPES_LEGACY_FACEBOOK_LOGIN = [
 META_ADS_SCOPES = [
     "public_profile",
     "ads_read",
+    "business_management",
 ]
 FACEBOOK_PAGES_OAUTH_SCOPE = ",".join(FACEBOOK_PAGES_SCOPES)
 INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN = ",".join(
@@ -478,6 +479,39 @@ def get_owned_ad_accounts(access_token: str, business_id: str) -> list[dict[str,
     _raise_meta_api_error(resp)
     data = resp.json()
     return data.get("data", [])
+
+
+def get_client_ad_accounts(access_token: str, business_id: str) -> list[dict[str, Any]]:
+    url = f"https://graph.facebook.com/{settings.meta_api_version}/{business_id}/client_ad_accounts"
+    params = {
+        "fields": "id,account_id,name,currency,timezone_name,account_status,business{id,name}",
+        "limit": 200,
+        "access_token": access_token,
+    }
+    resp = requests.get(url, params=params, timeout=30)
+    _raise_meta_api_error(resp)
+    data = resp.json()
+    return data.get("data", [])
+
+
+def get_business_ad_accounts(access_token: str) -> list[dict[str, Any]]:
+    discovered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for business in get_user_businesses(access_token):
+        if not isinstance(business, dict):
+            continue
+        business_id = str(business.get("id") or "").strip()
+        if not business_id:
+            continue
+        for account in get_owned_ad_accounts(access_token, business_id) + get_client_ad_accounts(access_token, business_id):
+            if not isinstance(account, dict):
+                continue
+            dedupe_key = str(account.get("account_id") or account.get("id") or "").strip()
+            if not dedupe_key or dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            discovered.append(account)
+    return discovered
 
 
 def debug_ads_permissions(access_token: str) -> dict[str, Any]:

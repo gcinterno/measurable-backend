@@ -921,6 +921,9 @@ class MetaAdsStatusOut(BaseModel):
     scope: str
     selected_account: Optional[MetaAdsAccountOut] = None
     accounts_count: int = 0
+    asset_count: int = 0
+    account_names: list[str] = Field(default_factory=list)
+    missing_scopes: list[str] = Field(default_factory=list)
     last_synced_at: Optional[datetime] = None
     reconnect_required: bool = False
     permission_missing: bool = False
