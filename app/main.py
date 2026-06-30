@@ -6851,6 +6851,30 @@ def _disconnect_meta_ads_integration(
     )
 
 
+@app.get("/admin/meta-data-catalog", response_model=None)
+def admin_meta_data_catalog(
+    workspace_id: int = Query(...),
+    providers: list[str] | None = Query(default=None),
+    current_user: User = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from .meta_data_catalog import run_meta_data_catalog_audit
+
+    result = run_meta_data_catalog_audit(
+        db,
+        workspace_id=workspace_id,
+        providers=providers,
+        output_dir="tmp",
+    )
+    return {
+        "workspace_id": result["workspace_id"],
+        "json_path": result["json_path"],
+        "csv_path": result["csv_path"],
+        "summary": result["summary"],
+        "provider_summary": result["provider_summary"],
+    }
+
+
 def _resolve_meta_pages_exchange_redirect_uri(redirect_uri: str | None) -> str:
     configured_redirect_uri = _meta_pages_redirect_uri()
     if redirect_uri is None:
