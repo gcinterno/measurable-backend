@@ -19,6 +19,7 @@ FACEBOOK_PAGES_SCOPES = [
     "pages_read_engagement",
     "read_insights",
     "pages_read_user_content",
+    "business_management",
 ]
 INSTAGRAM_BUSINESS_SCOPES_LEGACY_FACEBOOK_LOGIN = [
     "public_profile",
@@ -614,6 +615,14 @@ def get_business_pages(business_id: str, access_token: str) -> list[dict[str, An
     return _get_business_page_nodes(business_id, access_token, "owned_pages") + _get_business_page_nodes(
         business_id, access_token, "client_pages"
     )
+
+
+def get_owned_business_pages(business_id: str, access_token: str) -> list[dict[str, Any]]:
+    return _get_business_page_nodes(business_id, access_token, "owned_pages")
+
+
+def get_client_business_pages(business_id: str, access_token: str) -> list[dict[str, Any]]:
+    return _get_business_page_nodes(business_id, access_token, "client_pages")
 
 
 def fetch_page_info(

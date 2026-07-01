@@ -1168,6 +1168,11 @@ class MetaPageCatalogOut(BaseModel):
     data: list[MetaPageOut]
     source: str
     count: int
+    direct_pages_count: int = 0
+    business_pages_count: int = 0
+    total_pages_count: int = 0
+    business_management_scope_present: bool = False
+    business_discovery_status: str = "skipped_missing_scope"
     has_cached_data: bool
     status: str = "connected"
     connected: bool = True
@@ -1189,6 +1194,11 @@ class MetaPagesRefreshOut(BaseModel):
     message: Optional[str] = None
     facebook_pages_count: int = 0
     instagram_accounts_count: int = 0
+    direct_pages_count: int = 0
+    business_pages_count: int = 0
+    total_pages_count: int = 0
+    business_management_scope_present: bool = False
+    business_discovery_status: str = "skipped_missing_scope"
     duration_ms: float = 0.0
 
 

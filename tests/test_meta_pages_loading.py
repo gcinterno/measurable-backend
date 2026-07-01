@@ -21,6 +21,8 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 
 from app.db import Base, SessionLocal, engine
 from app.deps import get_db
+from app.integrations import meta_ads as meta_ads_module
+import app.main as main_module
 from app.main import (
     META_PAGES_CACHE_TTL,
     META_RECORD_TYPE_FACEBOOK_PAGE,
@@ -329,3 +331,188 @@ def test_refresh_logs_do_not_include_access_token(client, monkeypatch, caplog):
 
     assert response.status_code == 200
     assert "super-secret-token-value" not in caplog.text
+
+
+def test_facebook_pages_scopes_include_business_management_only(client):
+    assert "business_management" in meta_ads_module.FACEBOOK_PAGES_SCOPES
+    assert "instagram_business_basic" not in meta_ads_module.FACEBOOK_PAGES_SCOPES
+    assert "instagram_business_manage_insights" not in meta_ads_module.FACEBOOK_PAGES_SCOPES
+    assert "ads_read" not in meta_ads_module.FACEBOOK_PAGES_SCOPES
+
+
+def test_refresh_pages_keeps_direct_pages_when_business_management_is_missing(client, monkeypatch):
+    refs = _seed_meta_fixture()
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, refs["integration_id"])
+        assert integration is not None
+    finally:
+        db.close()
+
+    monkeypatch.setattr(main_module, "list_pages", lambda *_args, **_kwargs: [{"id": "fb-1", "name": "Direct Page"}])
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {"data": {"is_valid": True, "scopes": ["public_profile", "pages_show_list"]}},
+    )
+    monkeypatch.setattr(main_module, "_fetch_instagram_business_account_for_page", lambda **_kwargs: None)
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, refs["integration_id"])
+        assert integration is not None
+        cached_pages, diagnostics, facebook_pages = main_module._refresh_meta_pages_from_live_graph(
+            db,
+            integration,
+            access_token="meta-token",
+            user_id=refs["user_id"],
+            selected_integration_type="facebook_pages",
+            context="test_direct_only",
+        )
+        summary = next(item for item in diagnostics if item.get("_facebook_pages_discovery_summary") is True)
+        assert len(facebook_pages) == 1
+        assert len(cached_pages) == 1
+        assert facebook_pages[0].page_id == "fb-1"
+        assert facebook_pages[0].business_name is None
+        assert summary["business_management_scope_present"] is False
+        assert summary["business_discovery_status"] == "skipped_missing_scope"
+        assert summary["direct_pages_count"] == 1
+        assert summary["business_pages_count"] == 0
+    finally:
+        db.close()
+
+
+def test_refresh_pages_discovers_business_portfolio_pages_and_dedupes(client, monkeypatch):
+    refs = _seed_meta_fixture()
+
+    monkeypatch.setattr(main_module, "list_pages", lambda *_args, **_kwargs: [{"id": "fb-1", "name": "Direct Page", "access_token": "page-1"}])
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {
+            "data": {
+                "is_valid": True,
+                "scopes": [
+                    "public_profile",
+                    "pages_show_list",
+                    "pages_read_engagement",
+                    "read_insights",
+                    "pages_read_user_content",
+                    "business_management",
+                ],
+            }
+        },
+    )
+    monkeypatch.setattr(main_module, "get_businesses", lambda _token: [{"id": "biz-1", "name": "Biz One"}])
+    monkeypatch.setattr(
+        main_module,
+        "get_owned_business_pages",
+        lambda _business_id, _token: [
+            {"id": "fb-1", "name": "Direct Page"},
+            {"id": "fb-2", "name": "Business Page 2"},
+        ],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_client_business_pages",
+        lambda _business_id, _token: [
+            {"id": "fb-2", "name": "Business Page 2"},
+            {"id": "fb-3", "name": "Business Page 3"},
+        ],
+    )
+
+    def fake_fetch_page_info(_token, page_id, *, fields="id,name"):
+        return {
+            "id": page_id,
+            "name": f"Enriched {page_id}",
+            "access_token": f"page-token-{page_id}",
+            "tasks": ["ANALYZE"],
+            "category": "Brand",
+        }
+
+    monkeypatch.setattr(main_module, "fetch_page_info", fake_fetch_page_info)
+    monkeypatch.setattr(main_module, "_fetch_instagram_business_account_for_page", lambda **_kwargs: None)
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, refs["integration_id"])
+        assert integration is not None
+        cached_pages, diagnostics, facebook_pages = main_module._refresh_meta_pages_from_live_graph(
+            db,
+            integration,
+            access_token="meta-token",
+            user_id=refs["user_id"],
+            selected_integration_type="facebook_pages",
+            context="test_business_portfolios",
+        )
+        summary = next(item for item in diagnostics if item.get("_facebook_pages_discovery_summary") is True)
+        assert {page.page_id for page in facebook_pages} == {"fb-1", "fb-2", "fb-3"}
+        assert len(facebook_pages) == 3
+        assert len(cached_pages) == 3
+        business_pages = {page.page_id: page for page in facebook_pages if page.business_name}
+        assert set(business_pages) == {"fb-2", "fb-3"}
+        assert business_pages["fb-2"].business_name == "Biz One"
+        assert business_pages["fb-3"].business_name == "Biz One"
+        direct_page = next(page for page in facebook_pages if page.page_id == "fb-1")
+        assert direct_page.business_name is None
+        assert summary["business_management_scope_present"] is True
+        assert summary["business_discovery_status"] == "available"
+        assert summary["direct_pages_count"] == 1
+        assert summary["business_pages_count"] == 2
+        assert summary["total_pages_count"] == 3
+    finally:
+        db.close()
+
+
+def test_pages_catalog_exposes_business_discovery_summary(client, monkeypatch):
+    refs = _seed_meta_fixture()
+    db = SessionLocal()
+    try:
+        db.add(
+            _create_meta_page(
+                integration_id=refs["integration_id"],
+                user_id=refs["user_id"],
+                record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
+                page_id="fb-direct",
+                name="Direct Page",
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        business_page = _create_meta_page(
+            integration_id=refs["integration_id"],
+            user_id=refs["user_id"],
+            record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
+            page_id="fb-business",
+            name="Business Page",
+            updated_at=datetime.now(timezone.utc),
+        )
+        business_page.business_name = "Biz One"
+        db.add(business_page)
+        db.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(main_module, "_get_meta_access_token", lambda *_args, **_kwargs: "meta-token")
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {"data": {"is_valid": True, "scopes": ["public_profile", "business_management"]}},
+    )
+    monkeypatch.setattr(
+        "app.main._refresh_meta_pages_from_live_graph",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("live refresh should not run")),
+    )
+
+    response = client.get(
+        "/integrations/meta/pages/catalog",
+        headers=_auth_headers(refs["user_id"]),
+        params={"integration_id": refs["integration_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["direct_pages_count"] == 1
+    assert payload["business_pages_count"] == 1
+    assert payload["total_pages_count"] == 2
+    assert payload["business_management_scope_present"] is True
+    assert payload["business_discovery_status"] == "available"

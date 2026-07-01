@@ -67,12 +67,14 @@ from .integrations.meta_ads import (
     fetch_post_metrics,
     exchange_pages_code_for_token,
     get_business_ad_accounts,
+    get_client_business_pages,
     get_meta_ads_config_key_family,
     get_meta_ads_config_snapshot,
     get_missing_meta_ads_config_fields,
     get_meta_ads_redirect_uri,
     get_meta_pages_redirect_uri,
     get_businesses,
+    get_owned_business_pages,
     get_owned_ad_accounts,
     list_ad_accounts,
     list_pages,
@@ -6862,7 +6864,11 @@ def _facebook_pages_connected(db: Session, integration: Integration) -> bool:
         .scalar()
         or 0
     )
-    return int(pages_count) > 0
+    if int(pages_count) > 0:
+        return True
+    token_account = _get_meta_token_account(db, integration.id)
+    latest_token = _get_latest_integration_token(db, token_account.id) if token_account else None
+    return bool(latest_token and str(latest_token.access_token or "").strip())
 
 
 def _integration_schema_payload(
@@ -7356,6 +7362,105 @@ def _fetch_instagram_business_account_for_page(
     return instagram_account
 
 
+def _facebook_pages_discovery_summary_row(
+    *,
+    direct_pages_count: int,
+    business_pages_count: int,
+    total_pages_count: int,
+    business_management_scope_present: bool,
+    business_discovery_status: str,
+) -> dict[str, Any]:
+    return {
+        "_facebook_pages_discovery_summary": True,
+        "direct_pages_count": direct_pages_count,
+        "business_pages_count": business_pages_count,
+        "total_pages_count": total_pages_count,
+        "business_management_scope_present": business_management_scope_present,
+        "business_discovery_status": business_discovery_status,
+    }
+
+
+def _facebook_pages_discovery_summary_from_diagnostics(
+    diagnostics: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    for item in diagnostics:
+        if isinstance(item, dict) and item.get("_facebook_pages_discovery_summary") is True:
+            return item
+    return None
+
+
+def _facebook_pages_cached_discovery_summary(
+    records: list[MetaPage],
+    *,
+    business_management_scope_present: bool,
+    business_discovery_status: str,
+) -> dict[str, Any]:
+    facebook_pages = _filter_meta_records(records, record_type=META_RECORD_TYPE_FACEBOOK_PAGE)
+    business_pages_count = sum(1 for page in facebook_pages if str(page.business_name or "").strip())
+    direct_pages_count = max(len(facebook_pages) - business_pages_count, 0)
+    return {
+        "direct_pages_count": direct_pages_count,
+        "business_pages_count": business_pages_count,
+        "total_pages_count": len(facebook_pages),
+        "business_management_scope_present": business_management_scope_present,
+        "business_discovery_status": business_discovery_status,
+    }
+
+
+def _facebook_pages_scope_presence(access_token: str) -> tuple[bool, list[str]]:
+    debug_token_summary = _extract_debug_token_summary(debug_token(access_token))
+    received_scopes = [
+        str(scope).strip()
+        for scope in debug_token_summary["scopes"]
+        if str(scope).strip()
+    ]
+    return "business_management" in set(received_scopes), received_scopes
+
+
+def _enrich_business_portfolio_page(
+    *,
+    access_token: str,
+    page: dict[str, Any],
+    business: dict[str, Any],
+    integration_id: int,
+    user_id: int | None,
+    context: str,
+) -> dict[str, Any]:
+    page_id = str(page.get("id") or page.get("page_id") or "").strip()
+    if not page_id:
+        return page
+    business_name = str(business.get("name") or "").strip() or None
+    enriched = dict(page)
+    try:
+        page_info = fetch_page_info(
+            access_token,
+            page_id,
+            fields="id,name,access_token,tasks,picture{url},instagram_business_account{id,username,name,profile_picture_url},category",
+        )
+    except HTTPException as exc:
+        if not _is_meta_api_error(exc):
+            raise
+        _meta_oauth_log(
+            "FACEBOOK_PAGES_DISCOVERY_ERROR",
+            integration_id=integration_id,
+            user_id=user_id,
+            context=context,
+            page_id=page_id,
+            business_id=str(business.get("id") or "").strip() or None,
+            business_name=business_name,
+            error=str(exc.detail),
+        )
+        page_info = {}
+    if isinstance(page_info, dict):
+        enriched.update(page_info)
+    enriched["business"] = {
+        "id": str(business.get("id") or "").strip() or None,
+        "name": business_name,
+    }
+    enriched["business_name"] = business_name
+    return enriched
+
+
 def _extract_meta_debug_token_target_ids(debug_token_payload: dict[str, Any]) -> list[str]:
     data = debug_token_payload.get("data")
     if not isinstance(data, dict):
@@ -7635,6 +7740,12 @@ def _collect_meta_instagram_diagnostics(
     user_id: int | None = None,
     context: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    _meta_oauth_log(
+        "FACEBOOK_PAGES_DISCOVERY_STARTED",
+        integration_id=integration_id,
+        user_id=user_id,
+        context=context,
+    )
     me_accounts_pages = list_pages(
         access_token,
         context=context,
@@ -7642,13 +7753,17 @@ def _collect_meta_instagram_diagnostics(
         user_id=user_id,
         token_received=bool(access_token),
     )
-    logger.warning(
-        "Meta pages discovery start context=%s integration_id=%s user_id=%s me_accounts_status=%s me_accounts_count=%s",
-        context,
-        integration_id,
-        user_id,
-        200,
-        len(me_accounts_pages),
+    _meta_oauth_log(
+        "FACEBOOK_PAGES_DIRECT_PAGES_FOUND",
+        integration_id=integration_id,
+        user_id=user_id,
+        context=context,
+        direct_pages_count=len(me_accounts_pages),
+        direct_page_names=[
+            str(page.get("name") or "").strip()
+            for page in me_accounts_pages
+            if str(page.get("name") or "").strip()
+        ],
     )
     direct_pages = me_accounts_pages
     debug_token_granular_target_ids: list[str] = []
@@ -7667,6 +7782,158 @@ def _collect_meta_instagram_diagnostics(
             for record in prebuilt_fallback_records
             if record.get("record_type") == META_RECORD_TYPE_FACEBOOK_PAGE
         ]
+    business_management_scope_present = False
+    received_scopes: list[str] = []
+    try:
+        business_management_scope_present, received_scopes = _facebook_pages_scope_presence(access_token)
+    except HTTPException:
+        business_management_scope_present = False
+        received_scopes = []
+    except Exception:
+        business_management_scope_present = False
+        received_scopes = []
+
+    direct_page_ids = {
+        str(page.get("id") or page.get("page_id") or "").strip()
+        for page in direct_pages
+        if str(page.get("id") or page.get("page_id") or "").strip()
+    }
+    business_pages_candidates: list[dict[str, Any]] = []
+    business_pages_seen_ids: set[str] = set()
+    business_pages_count = 0
+    business_discovery_status = "skipped_missing_scope"
+    business_discovery_errors = 0
+    if not business_management_scope_present:
+        _meta_oauth_log(
+            "FACEBOOK_PAGES_BUSINESS_DISCOVERY_SKIPPED",
+            integration_id=integration_id,
+            user_id=user_id,
+            context=context,
+            reason="missing_business_management",
+            scopes_received=received_scopes,
+        )
+    else:
+        try:
+            businesses = get_businesses(access_token)
+        except HTTPException as exc:
+            business_discovery_status = "error"
+            business_discovery_errors += 1
+            _meta_oauth_log(
+                "FACEBOOK_PAGES_DISCOVERY_ERROR",
+                integration_id=integration_id,
+                user_id=user_id,
+                context=context,
+                stage="businesses",
+                error=str(exc.detail),
+            )
+            businesses = []
+        _meta_oauth_log(
+            "FACEBOOK_PAGES_BUSINESSES_FOUND",
+            integration_id=integration_id,
+            user_id=user_id,
+            context=context,
+            businesses_count=len(businesses),
+            business_names=[
+                str(business.get("name") or "").strip()
+                for business in businesses
+                if isinstance(business, dict) and str(business.get("name") or "").strip()
+            ],
+        )
+        if not businesses:
+            business_discovery_status = "error" if business_discovery_errors else "no_businesses_found"
+        else:
+            business_discovery_status = "available"
+        for business in businesses:
+            if not isinstance(business, dict):
+                continue
+            business_id = str(business.get("id") or "").strip()
+            business_name = str(business.get("name") or "").strip() or None
+            if not business_id:
+                continue
+            try:
+                owned_pages = get_owned_business_pages(business_id, access_token)
+            except HTTPException as exc:
+                business_discovery_errors += 1
+                owned_pages = []
+                _meta_oauth_log(
+                    "FACEBOOK_PAGES_DISCOVERY_ERROR",
+                    integration_id=integration_id,
+                    user_id=user_id,
+                    context=context,
+                    stage="owned_pages",
+                    business_id=business_id,
+                    business_name=business_name,
+                    error=str(exc.detail),
+                )
+            _meta_oauth_log(
+                "FACEBOOK_PAGES_BUSINESS_OWNED_PAGES_FOUND",
+                integration_id=integration_id,
+                user_id=user_id,
+                context=context,
+                business_id=business_id,
+                business_name=business_name,
+                owned_pages_count=len(owned_pages),
+            )
+            try:
+                client_pages = get_client_business_pages(business_id, access_token)
+            except HTTPException as exc:
+                business_discovery_errors += 1
+                client_pages = []
+                _meta_oauth_log(
+                    "FACEBOOK_PAGES_DISCOVERY_ERROR",
+                    integration_id=integration_id,
+                    user_id=user_id,
+                    context=context,
+                    stage="client_pages",
+                    business_id=business_id,
+                    business_name=business_name,
+                    error=str(exc.detail),
+                )
+            _meta_oauth_log(
+                "FACEBOOK_PAGES_BUSINESS_CLIENT_PAGES_FOUND",
+                integration_id=integration_id,
+                user_id=user_id,
+                context=context,
+                business_id=business_id,
+                business_name=business_name,
+                client_pages_count=len(client_pages),
+            )
+            for page in owned_pages + client_pages:
+                if not isinstance(page, dict):
+                    continue
+                page_id = str(page.get("id") or page.get("page_id") or "").strip()
+                if not page_id or page_id in business_pages_seen_ids:
+                    continue
+                business_pages_seen_ids.add(page_id)
+                business_pages_count += 1
+                business_pages_candidates.append(
+                    _enrich_business_portfolio_page(
+                        access_token=access_token,
+                        page=page,
+                        business=business,
+                        integration_id=integration_id,
+                        user_id=user_id,
+                        context=context,
+                    )
+                )
+        if business_discovery_errors and not business_pages_candidates:
+            business_discovery_status = "error"
+
+    merged_pages_by_id: dict[str, dict[str, Any]] = {}
+    for page in direct_pages:
+        page_id = str(page.get("id") or page.get("page_id") or "").strip()
+        if not page_id:
+            continue
+        merged_pages_by_id[page_id] = dict(page)
+
+    for page in business_pages_candidates:
+        page_id = str(page.get("id") or page.get("page_id") or "").strip()
+        if not page_id:
+            continue
+        if page_id in merged_pages_by_id:
+            continue
+        merged_pages_by_id[page_id] = dict(page)
+
     authorized_records: dict[tuple[str, str], dict[str, Any]] = {}
     diagnostics: list[dict[str, Any]] = []
 
@@ -7681,7 +7948,7 @@ def _collect_meta_instagram_diagnostics(
             if not key.startswith("_")
         }
 
-    for page in direct_pages:
+    for page in merged_pages_by_id.values():
         page_id = str(page.get("id") or page.get("page_id") or "")
         if not page_id:
             continue
@@ -7690,6 +7957,12 @@ def _collect_meta_instagram_diagnostics(
         has_page_access_token = bool(page_access_token)
         tasks = page.get("tasks")
         perms = page.get("perms")
+        discovered_via_business_portfolio = page_id in business_pages_seen_ids and page_id not in direct_page_ids
+        business_name = (
+            str((page.get("business") or {}).get("name") or "").strip() or None
+            if isinstance(page.get("business"), dict)
+            else str(page.get("business_name") or "").strip() or None
+        )
 
         authorized_records[_meta_record_key(META_RECORD_TYPE_FACEBOOK_PAGE, page_id)] = {
             "record_type": META_RECORD_TYPE_FACEBOOK_PAGE,
@@ -7702,11 +7975,7 @@ def _collect_meta_instagram_diagnostics(
             "tasks": tasks if isinstance(tasks, list) else None,
             "perms": perms if isinstance(perms, list) else [],
             "category": str(page.get("category") or "") or None,
-            "business_name": (
-                str((page.get("business") or {}).get("name") or "") or None
-                if isinstance(page.get("business"), dict)
-                else str(page.get("business_name") or "") or None
-            ),
+            "business_name": business_name if discovered_via_business_portfolio else None,
         }
 
         me_accounts_instagram = _normalize_instagram_business_account_node(
@@ -7765,6 +8034,8 @@ def _collect_meta_instagram_diagnostics(
                 "page_name": page_name,
                 "has_page_access_token": has_page_access_token,
                 "discovered_via_fallback_target_ids": page_id in fallback_target_ids_used,
+                "discovered_via_business_portfolio": discovered_via_business_portfolio,
+                "business_name": business_name,
                 "instagram_business_account_from_me_accounts": me_accounts_instagram,
                 "instagram_business_account_from_page_lookup": page_lookup_instagram,
                 "instagram_user_details": instagram_details,
@@ -7776,21 +8047,51 @@ def _collect_meta_instagram_diagnostics(
             }
         )
 
-    logger.warning(
-        "Meta pages discovery completed context=%s integration_id=%s user_id=%s me_accounts_count=%s debug_token_granular_target_ids=%s fallback_target_ids_used=%s pages_discovered_final=%s",
-        context,
-        integration_id,
-        user_id,
-        len(me_accounts_pages),
-        debug_token_granular_target_ids,
-        fallback_target_ids_used,
-        len(
+    diagnostics.append(
+        _facebook_pages_discovery_summary_row(
+            direct_pages_count=len(direct_page_ids),
+            business_pages_count=len(
+                [
+                    page_id
+                    for page_id in business_pages_seen_ids
+                    if page_id not in direct_page_ids
+                ]
+            ),
+            total_pages_count=len(
+                [
+                    record
+                    for record in authorized_records.values()
+                    if record.get("record_type") == META_RECORD_TYPE_FACEBOOK_PAGE
+                ]
+            ),
+            business_management_scope_present=business_management_scope_present,
+            business_discovery_status=business_discovery_status,
+        )
+    )
+    _meta_oauth_log(
+        "FACEBOOK_PAGES_DISCOVERY_COMPLETED",
+        integration_id=integration_id,
+        user_id=user_id,
+        context=context,
+        direct_pages_count=len(direct_page_ids),
+        business_pages_count=len(
+            [
+                page_id
+                for page_id in business_pages_seen_ids
+                if page_id not in direct_page_ids
+            ]
+        ),
+        total_pages_count=len(
             [
                 record
                 for record in authorized_records.values()
                 if record.get("record_type") == META_RECORD_TYPE_FACEBOOK_PAGE
             ]
         ),
+        business_management_scope_present=business_management_scope_present,
+        business_discovery_status=business_discovery_status,
+        debug_token_granular_target_ids=debug_token_granular_target_ids,
+        fallback_target_ids_used=fallback_target_ids_used,
     )
     return list(authorized_records.values()), diagnostics
 
@@ -7806,8 +8107,12 @@ def _refresh_meta_pages_from_live_graph(
     return_empty_on_error: bool = False,
     preserve_existing_on_empty: bool = True,
 ) -> tuple[list[MetaPage], list[dict[str, Any]], list[dict[str, Any]]]:
-    token_account = _get_meta_token_account(db, integration.id)
-    latest_token = _get_latest_integration_token(db, token_account.id) if token_account else None
+    try:
+        token_account = _get_meta_token_account(db, integration.id)
+        latest_token = _get_latest_integration_token(db, token_account.id) if token_account else None
+    except (OperationalError, ProgrammingError, SQLAlchemyError):
+        token_account = None
+        latest_token = None
     _log_meta_token_context(
         integration_id=integration.id,
         workspace_id=integration.workspace_id,
@@ -10066,6 +10371,41 @@ def _fetch_meta_pages_catalog(
     return list(authorized_records)
 
 
+def _meta_pages_discovery_summary_payload(
+    *,
+    records: list[MetaPage],
+    access_token: str | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    summary = _facebook_pages_discovery_summary_from_diagnostics(diagnostics or [])
+    if summary is not None:
+        return {
+            "direct_pages_count": int(summary.get("direct_pages_count") or 0),
+            "business_pages_count": int(summary.get("business_pages_count") or 0),
+            "total_pages_count": int(summary.get("total_pages_count") or 0),
+            "business_management_scope_present": bool(summary.get("business_management_scope_present")),
+            "business_discovery_status": str(summary.get("business_discovery_status") or "skipped_missing_scope"),
+        }
+    business_management_scope_present = False
+    if access_token:
+        try:
+            business_management_scope_present, _received_scopes = _facebook_pages_scope_presence(access_token)
+        except Exception:
+            business_management_scope_present = False
+    return _facebook_pages_cached_discovery_summary(
+        records,
+        business_management_scope_present=business_management_scope_present,
+        business_discovery_status=(
+            "available"
+            if any(
+                str(record.business_name or "").strip()
+                for record in _filter_meta_records(records, record_type=META_RECORD_TYPE_FACEBOOK_PAGE)
+            )
+            else "no_businesses_found" if business_management_scope_present else "skipped_missing_scope"
+        ),
+    )
+
+
 def _get_stored_meta_records(
     db: Session,
     integration_id: int,
@@ -10223,14 +10563,17 @@ def _clear_selected_meta_page_if_unauthorized(
     integration: Integration,
     authorized_page_ids: set[str],
 ) -> None:
-    selected_pages = (
-        db.query(IntegrationAccount)
-        .filter(
-            IntegrationAccount.integration_id == integration.id,
-            IntegrationAccount.external_account_id.like(f"{META_PAGE_ACCOUNT_PREFIX}%"),
+    try:
+        selected_pages = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id.like(f"{META_PAGE_ACCOUNT_PREFIX}%"),
+            )
+            .all()
         )
-        .all()
-    )
+    except (OperationalError, ProgrammingError, SQLAlchemyError):
+        return
 
     cleared_any = False
     for selected_page in selected_pages:
@@ -22326,6 +22669,8 @@ def _get_meta_records_catalog_response(
     message: str | None = None
     refresh_recommended = response_source == "cached_stale"
     meta_duration_ms: float | None = None
+    diagnostics: list[dict[str, Any]] = []
+    access_token_for_summary: str | None = None
 
     if not stored_pages_before:
         response_source = "empty_cache"
@@ -22342,6 +22687,7 @@ def _get_meta_records_catalog_response(
             message = "No cached pages found. Refresh required."
             returned_records = []
         else:
+            access_token_for_summary = access_token
             live_started_at = perf_counter()
             live_refresh_triggered = True
             cached_pages, diagnostics, facebook_pages = _refresh_meta_pages_from_live_graph(
@@ -22389,6 +22735,11 @@ def _get_meta_records_catalog_response(
                 response_source,
                 meta_duration_ms,
             )
+    else:
+        try:
+            access_token_for_summary = _get_meta_access_token(db, integration)
+        except (HTTPException, OperationalError, ProgrammingError, SQLAlchemyError):
+            access_token_for_summary = None
 
     filtered_records = _filter_meta_records(
         returned_records,
@@ -22426,10 +22777,20 @@ def _get_meta_records_catalog_response(
         offset,
         round((perf_counter() - started_at) * 1000, 2),
     )
+    discovery_summary = _meta_pages_discovery_summary_payload(
+        records=returned_records,
+        access_token=access_token_for_summary,
+        diagnostics=diagnostics,
+    )
     return MetaPageCatalogOut(
         data=[_meta_page_out_with_cache_status(page, cache_status=response_source) for page in paginated_records],
         source=response_source,
         count=len(searched_records),
+        direct_pages_count=int(discovery_summary["direct_pages_count"]),
+        business_pages_count=int(discovery_summary["business_pages_count"]),
+        total_pages_count=int(discovery_summary["total_pages_count"]),
+        business_management_scope_present=bool(discovery_summary["business_management_scope_present"]),
+        business_discovery_status=str(discovery_summary["business_discovery_status"]),
         has_cached_data=bool(stored_pages_before),
         refresh_available=True,
         refresh_recommended=refresh_recommended,
@@ -22580,6 +22941,11 @@ def meta_refresh_pages(
         cached_pages,
         record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
     )
+    discovery_summary = _meta_pages_discovery_summary_payload(
+        records=cached_pages,
+        access_token=access_token,
+        diagnostics=diagnostics,
+    )
     duration_ms = round((perf_counter() - started_at) * 1000, 2)
     logger.warning(
         "Meta refresh pages completed integration_id=%s workspace_id=%s user_id=%s live_refresh_triggered=%s total_pages_from_meta=%s facebook_pages_count=%s instagram_accounts_count=%s meta_duration_ms=%s response_source=%s endpoint_duration_ms=%s",
@@ -22598,6 +22964,11 @@ def meta_refresh_pages(
         success=True,
         facebook_pages_count=len(facebook_pages),
         instagram_accounts_count=len(instagram_accounts),
+        direct_pages_count=int(discovery_summary["direct_pages_count"]),
+        business_pages_count=int(discovery_summary["business_pages_count"]),
+        total_pages_count=int(discovery_summary["total_pages_count"]),
+        business_management_scope_present=bool(discovery_summary["business_management_scope_present"]),
+        business_discovery_status=str(discovery_summary["business_discovery_status"]),
         duration_ms=duration_ms,
         message="Pages refreshed successfully.",
     )
@@ -22621,6 +22992,15 @@ def debug_meta_pages_state(
         .all()
     )
     page_names = [page.name for page in stored_pages]
+    try:
+        access_token = _get_meta_access_token(db, integration)
+    except (HTTPException, OperationalError, ProgrammingError, SQLAlchemyError):
+        access_token = None
+    discovery_summary = _meta_pages_discovery_summary_payload(
+        records=stored_pages,
+        access_token=access_token,
+        diagnostics=[],
+    )
     return {
         "integration": {
             "id": integration.id,
@@ -22636,6 +23016,11 @@ def debug_meta_pages_state(
         ),
         "token_updated_at": latest_token.updated_at.isoformat() if latest_token and latest_token.updated_at else None,
         "stored_pages_count": len(stored_pages),
+        "direct_pages_count": int(discovery_summary["direct_pages_count"]),
+        "business_pages_count": int(discovery_summary["business_pages_count"]),
+        "total_pages_count": int(discovery_summary["total_pages_count"]),
+        "business_management_scope_present": bool(discovery_summary["business_management_scope_present"]),
+        "business_discovery_status": str(discovery_summary["business_discovery_status"]),
         "stored_page_names": page_names,
         "stored_pages": [
             {
