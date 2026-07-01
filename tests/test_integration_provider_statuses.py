@@ -24,6 +24,17 @@ from app.integrations import instagram_business as instagram_business_module
 from app.integrations import meta_ads as meta_ads_module
 import app.meta_data_catalog as meta_data_catalog_module
 import app.main as main_module
+from app.report_metric_catalog import (
+    FACEBOOK_PAGES_PROVIDER,
+    INSTAGRAM_BUSINESS_PROVIDER,
+    META_ADS_PROVIDER,
+    explain_metric_availability,
+    get_available_report_metrics,
+    get_metric_catalog,
+    get_recommended_report_metrics,
+    is_metric_available,
+    normalize_metric_key,
+)
 from app.main import (
     META_RECORD_TYPE_FACEBOOK_PAGE,
     META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
@@ -351,6 +362,7 @@ def test_meta_ads_status_returns_needs_permission_when_business_management_missi
     ):
         monkeypatch.setattr(main_module.settings, key, value)
         monkeypatch.setattr(meta_ads_module.settings, key, value)
+    monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: True)
     monkeypatch.setattr(
         main_module,
         "debug_token",
@@ -391,6 +403,7 @@ def test_meta_ads_status_returns_connected_no_assets_when_token_has_permissions(
     ):
         monkeypatch.setattr(main_module.settings, key, value)
         monkeypatch.setattr(meta_ads_module.settings, key, value)
+    monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: True)
     monkeypatch.setattr(
         main_module,
         "debug_token",
@@ -534,3 +547,58 @@ def test_admin_meta_data_catalog_returns_actionable_details(client, monkeypatch)
 
     meta_ads_rows = payload["details"]["meta_ads"]
     assert any(row["availability_status"] == "no_assets" for row in meta_ads_rows)
+
+
+def test_report_metric_catalog_normalizes_facebook_pages_metrics_without_alias_collisions():
+    assert normalize_metric_key(FACEBOOK_PAGES_PROVIDER, "page_posts_impressions_organic") == "organic_impressions"
+    assert normalize_metric_key(FACEBOOK_PAGES_PROVIDER, "page_post_engagements") == "engagement"
+    assert normalize_metric_key(FACEBOOK_PAGES_PROVIDER, "page_views_total") == "page_views"
+    assert normalize_metric_key(FACEBOOK_PAGES_PROVIDER, "followers_count") == "followers"
+    assert normalize_metric_key(FACEBOOK_PAGES_PROVIDER, "fan_count") == "fans"
+    assert normalize_metric_key(FACEBOOK_PAGES_PROVIDER, "page_views_total") != "impressions"
+    assert normalize_metric_key(FACEBOOK_PAGES_PROVIDER, "page_impressions_unique") != "reach"
+    assert is_metric_available(FACEBOOK_PAGES_PROVIDER, "page_impressions_unique") is False
+    assert "must not be aliased" in explain_metric_availability(FACEBOOK_PAGES_PROVIDER, "page_impressions_unique")
+
+
+def test_report_metric_catalog_keeps_provider_namespaces_isolated():
+    facebook_catalog = get_metric_catalog(FACEBOOK_PAGES_PROVIDER)
+    instagram_catalog = get_metric_catalog(INSTAGRAM_BUSINESS_PROVIDER)
+    meta_ads_catalog = get_metric_catalog(META_ADS_PROVIDER)
+
+    assert any(entry["real_metric_name"] == "page_posts_impressions_organic" for entry in facebook_catalog)
+    assert all(entry["provider"] == FACEBOOK_PAGES_PROVIDER for entry in facebook_catalog)
+
+    assert any(entry["real_metric_name"] == "reach" for entry in instagram_catalog)
+    assert all(entry["status"] in {"pending_config", "pending_permission"} for entry in instagram_catalog)
+    assert all(entry["provider"] == INSTAGRAM_BUSINESS_PROVIDER for entry in instagram_catalog)
+    assert normalize_metric_key(INSTAGRAM_BUSINESS_PROVIDER, "page_views_total") is None
+
+    assert any(entry["real_metric_name"] == "spend" for entry in meta_ads_catalog)
+    assert any(entry["real_metric_name"] == "reach" for entry in meta_ads_catalog)
+    assert all(entry["provider"] == META_ADS_PROVIDER for entry in meta_ads_catalog)
+
+
+def test_report_metric_catalog_exposes_recommended_and_available_metrics_by_provider():
+    facebook_available = get_available_report_metrics(FACEBOOK_PAGES_PROVIDER)
+    facebook_recommended = get_recommended_report_metrics(FACEBOOK_PAGES_PROVIDER)
+    instagram_recommended = get_recommended_report_metrics(INSTAGRAM_BUSINESS_PROVIDER)
+    meta_ads_recommended = get_recommended_report_metrics(META_ADS_PROVIDER)
+
+    assert {entry["real_metric_name"] for entry in facebook_available} >= {
+        "page_posts_impressions_organic",
+        "page_post_engagements",
+        "page_views_total",
+        "followers_count",
+        "fan_count",
+    }
+    assert {entry["real_metric_name"] for entry in facebook_recommended} >= {
+        "page_posts_impressions_organic",
+        "page_post_engagements",
+        "page_views_total",
+        "page_actions_post_reactions_total",
+        "followers_count",
+        "fan_count",
+    }
+    assert any(entry["real_metric_name"] == "followers_count" for entry in instagram_recommended)
+    assert any(entry["real_metric_name"] == "spend" for entry in meta_ads_recommended)

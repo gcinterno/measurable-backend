@@ -122,6 +122,12 @@ from .integrations.instagram_business import (
     get_missing_instagram_business_config_fields,
     get_instagram_business_redirect_uri,
 )
+from .report_metric_catalog import (
+    FACEBOOK_PAGES_PROVIDER,
+    MetricCatalogEntry,
+    get_available_report_metrics,
+    get_metric_catalog_entries,
+)
 from .models import (
     AccountDeletionFeedback,
     AuditLog,
@@ -11852,6 +11858,11 @@ def _build_summary_metric_card(metric_key: str, payload: dict[str, Any]) -> dict
         "value": simple_value,
         "formatted_value": _format_metric_summary_value(simple_value),
         "is_available": is_available,
+        "raw_metric_name": payload.get("raw_metric_name"),
+        "normalized_field": payload.get("normalized_field"),
+        "provider": payload.get("provider"),
+        "availability_status": payload.get("availability_status"),
+        "source_metrics_used": payload.get("source_metrics_used") if isinstance(payload.get("source_metrics_used"), list) else [],
         "description": (
             _metric_summary_description(effective_metric_key)
             if is_available
@@ -11877,6 +11888,50 @@ def _facebook_metric_audit_reason(context: dict[str, Any], metric_key: str) -> s
         return reason
     fallback = str(_meta_metric_unavailable_reason(context, metric_key) or "").strip()
     return fallback or None
+
+
+@lru_cache(maxsize=1)
+def _facebook_pages_available_metric_catalog_by_key() -> dict[str, MetricCatalogEntry]:
+    catalog: dict[str, MetricCatalogEntry] = {}
+    for entry in get_metric_catalog_entries(FACEBOOK_PAGES_PROVIDER):
+        if isinstance(entry, MetricCatalogEntry) and entry.status == "available":
+            catalog[entry.measurable_key] = entry
+    return catalog
+
+
+def _facebook_pages_catalog_entry(metric_key: str) -> MetricCatalogEntry | None:
+    normalized_metric_key = str(metric_key or "").strip().lower()
+    return _facebook_pages_available_metric_catalog_by_key().get(normalized_metric_key)
+
+
+def _facebook_pages_is_catalog_managed_context(context: dict[str, Any]) -> bool:
+    return _meta_integration_type(context) in {"facebook_pages", "meta_pages"}
+
+
+def _log_report_product_event(
+    event_name: str,
+    *,
+    context: dict[str, Any],
+    slide_type: str,
+    raw_metric_name: str | None = None,
+    normalized_field: str | None = None,
+    availability_status: str | None = None,
+    source_metrics_used: list[str] | None = None,
+) -> None:
+    _log_json_event(
+        event_name,
+        {
+            "provider": FACEBOOK_PAGES_PROVIDER if _facebook_pages_is_catalog_managed_context(context) else _meta_integration_type(context),
+            "report_id": context.get("report_id"),
+            "dataset_id": context.get("dataset_id"),
+            "page_name": context.get("page_name"),
+            "slide_type": slide_type,
+            "raw_metric_name": raw_metric_name,
+            "normalized_field": normalized_field,
+            "availability_status": availability_status,
+            "source_metrics_used": source_metrics_used or ([raw_metric_name] if raw_metric_name else []),
+        },
+    )
 
 
 def _facebook_metric_slide_unavailable_message(metric_key: str) -> str:
@@ -11913,6 +11968,56 @@ def _facebook_pages_metric_details(context: dict[str, Any], metric_key: str) -> 
             if normalized is not None:
                 return normalized
         return None
+
+    catalog_entry = _facebook_pages_catalog_entry(metric_key) if _facebook_pages_is_catalog_managed_context(context) else None
+    if catalog_entry is not None:
+        total_key = str(catalog_entry.total_key or "").strip() or None
+        daily_key = str(catalog_entry.daily_key or "").strip() or None
+        daily_candidates = []
+        if daily_key:
+            daily_candidates.extend(
+                [
+                    report_inputs.get(daily_key),
+                    normalized_metrics.get(daily_key),
+                    context.get(daily_key),
+                ]
+            )
+        total_candidates = []
+        if total_key:
+            total_candidates.extend(
+                [
+                    report_inputs.get(total_key),
+                    normalized_metrics.get(total_key),
+                    context.get(total_key),
+                ]
+            )
+        source_metric = catalog_entry.real_metric_name
+        daily_series: list[dict[str, Any]] = []
+        for candidate in daily_candidates:
+            points = _extract_series_candidate(candidate)
+            if points:
+                daily_series = _normalize_daily_series_result(points)
+                if daily_series:
+                    break
+        total = _candidate_total(total_candidates)
+        if total is None and daily_series and catalog_entry.has_daily_series:
+            total = _meta_metric_total_for_series(metric_key, daily_series)
+        unavailable_reason = _facebook_metric_audit_reason(context, metric_key)
+        availability_status = "available" if total is not None or bool(daily_series) else "unavailable"
+        unavailable_message = _facebook_metric_slide_unavailable_message(metric_key) if availability_status != "available" else None
+        return {
+            "total": total,
+            "daily_series": daily_series,
+            "source_metric": source_metric,
+            "raw_metric_name": catalog_entry.real_metric_name,
+            "normalized_field": total_key or metric_key,
+            "provider": FACEBOOK_PAGES_PROVIDER,
+            "availability_status": availability_status,
+            "source_metrics_used": [catalog_entry.real_metric_name],
+            "recommended_slide": catalog_entry.recommended_slide,
+            "unavailable_reason": unavailable_reason,
+            "unavailable_message": unavailable_message,
+        }
 
     if metric_key == "organic_impressions":
         daily_candidates = [
@@ -12089,6 +12194,12 @@ def _facebook_pages_metric_details(context: dict[str, Any], metric_key: str) -> 
         "total": total,
         "daily_series": daily_series,
         "source_metric": source_metric,
+        "raw_metric_name": source_metric,
+        "normalized_field": metric_key,
+        "provider": _meta_integration_type(context),
+        "availability_status": "available" if total is not None or bool(daily_series) else "unavailable",
+        "source_metrics_used": [source_metric] if source_metric else [],
+        "recommended_slide": None,
         "unavailable_reason": unavailable_reason,
         "unavailable_message": unavailable_message,
     }
@@ -12133,18 +12244,36 @@ def _build_facebook_pages_metric_slide_payload(
     label: str,
     semantic_name: str,
 ) -> dict[str, Any]:
+    catalog_entry = _facebook_pages_catalog_entry(metric_key)
+    _log_report_product_event(
+        "REPORT_PRODUCT_RESOLVER_STARTED",
+        context=context,
+        slide_type=semantic_name,
+        raw_metric_name=(
+            catalog_entry.real_metric_name
+            if catalog_entry is not None
+            else metric_key
+        ),
+        normalized_field=(
+            catalog_entry.total_key
+            if catalog_entry is not None
+            else metric_key
+        ),
+    )
     payload = buildMetricSlidePayload(context, metric_key=metric_key, metric_label=title)
     strict = _facebook_pages_metric_details(context, metric_key)
     daily_series = strict["daily_series"] if isinstance(strict.get("daily_series"), list) else []
     total = strict.get("total")
     is_available = total is not None or bool(daily_series)
+    availability_status = str(strict.get("availability_status") or ("available" if is_available else "unavailable"))
     customized = dict(payload)
     customized.update(
         {
+            "slide_type": semantic_name,
             "metric_key": metric_key,
-            "metric_label": title,
-            "metric_label_en": title,
-            "metric_label_es": METRIC_LABELS_ES.get(metric_key, title),
+            "metric_label": catalog_entry.display_name_en if catalog_entry is not None else title,
+            "metric_label_en": catalog_entry.display_name_en if catalog_entry is not None else title,
+            "metric_label_es": catalog_entry.display_name_es if catalog_entry is not None else METRIC_LABELS_ES.get(metric_key, title),
             "title": title,
             "label": label,
             "semantic_name": semantic_name,
@@ -12155,6 +12284,11 @@ def _build_facebook_pages_metric_slide_payload(
             "formatted_total": _format_metric_summary_value(total if total is not None else None),
             "is_available": is_available,
             "metric_source": strict.get("source_metric") if is_available else "not_available",
+            "raw_metric_name": strict.get("raw_metric_name"),
+            "normalized_field": strict.get("normalized_field"),
+            "provider": strict.get("provider") or FACEBOOK_PAGES_PROVIDER,
+            "availability_status": availability_status,
+            "source_metrics_used": strict.get("source_metrics_used") if isinstance(strict.get("source_metrics_used"), list) else [],
             "unavailable_reason": strict.get("unavailable_reason") if not is_available else None,
             "unavailable_message": strict.get("unavailable_message") if not is_available else None,
             "daily_series": daily_series,
@@ -12182,7 +12316,25 @@ def _build_facebook_pages_metric_slide_payload(
         customized["current_value"] = normalizeMetricValue(total)
     else:
         customized["current_value"] = normalizeMetricValue(total)
+    _log_report_product_event(
+        "REPORT_PRODUCT_METRIC_SELECTED" if is_available else "REPORT_PRODUCT_METRIC_UNAVAILABLE",
+        context=context,
+        slide_type=semantic_name,
+        raw_metric_name=str(customized.get("raw_metric_name") or strict.get("raw_metric_name") or metric_key),
+        normalized_field=str(customized.get("normalized_field") or strict.get("normalized_field") or metric_key),
+        availability_status=availability_status,
+        source_metrics_used=customized.get("source_metrics_used") if isinstance(customized.get("source_metrics_used"), list) else None,
+    )
     _log_facebook_pages_report_metric_payload(context, customized)
+    _log_report_product_event(
+        "REPORT_PRODUCT_SLIDE_CREATED",
+        context=context,
+        slide_type=semantic_name,
+        raw_metric_name=str(customized.get("raw_metric_name") or strict.get("raw_metric_name") or metric_key),
+        normalized_field=str(customized.get("normalized_field") or strict.get("normalized_field") or metric_key),
+        availability_status=availability_status,
+        source_metrics_used=customized.get("source_metrics_used") if isinstance(customized.get("source_metrics_used"), list) else None,
+    )
     return customized
 
 
@@ -12192,6 +12344,33 @@ def _build_context_metric_summary_card(
     metric_key: str,
     metric_label: str | None = None,
 ) -> dict[str, Any]:
+    if _facebook_pages_is_catalog_managed_context(context) and _facebook_pages_catalog_entry(metric_key) is not None:
+        details = _facebook_pages_metric_details(context, metric_key)
+        payload = {
+            "metric_key": metric_key,
+            "metric_label_en": metric_label or METRIC_LABELS.get(metric_key, metric_key.replace("_", " ").title()),
+            "metric_label": metric_label or METRIC_LABELS.get(metric_key, metric_key.replace("_", " ").title()),
+            "total": details.get("total"),
+            "is_available": str(details.get("availability_status") or "") == "available",
+            "unavailable_reason": details.get("unavailable_reason"),
+            "unavailable_message": details.get("unavailable_message"),
+            "raw_metric_name": details.get("raw_metric_name"),
+            "normalized_field": details.get("normalized_field"),
+            "provider": details.get("provider") or FACEBOOK_PAGES_PROVIDER,
+            "availability_status": details.get("availability_status"),
+            "source_metrics_used": details.get("source_metrics_used"),
+        }
+        card = _build_summary_metric_card(metric_key, payload)
+        card.update(
+            {
+                "raw_metric_name": payload.get("raw_metric_name"),
+                "normalized_field": payload.get("normalized_field"),
+                "provider": payload.get("provider"),
+                "availability_status": payload.get("availability_status"),
+                "source_metrics_used": payload.get("source_metrics_used") if isinstance(payload.get("source_metrics_used"), list) else [],
+            }
+        )
+        return card
     points = extractDailyMetricSeries(context, metric_key)
     total, _metric_source = _resolve_metric_total_details(context, metric_key, points)
     is_available = total is not None or bool(points)
@@ -12199,6 +12378,7 @@ def _build_context_metric_summary_card(
         total = _meta_metric_total_for_series(metric_key, points)
         is_available = total is not None
     payload = {
+        "metric_key": metric_key,
         "metric_label_en": metric_label or METRIC_LABELS.get(metric_key, metric_key.replace("_", " ").title()),
         "metric_label": metric_label or METRIC_LABELS.get(metric_key, metric_key.replace("_", " ").title()),
         "total": total if is_available else None,
@@ -13199,6 +13379,18 @@ def _build_five_slide_summary_payload(
     )
     ai_summary = final_insights["ai_summary"]
     recommendation = final_insights["recommendation"]
+    available_catalog_metric_keys = {
+        str(entry.get("measurable_key") or "").strip()
+        for entry in get_available_report_metrics(FACEBOOK_PAGES_PROVIDER)
+        if isinstance(entry, dict)
+    } if _facebook_pages_is_catalog_managed_context(context) else {
+        "organic_impressions",
+        "engagement",
+        "page_views",
+        "followers",
+        "fans",
+        "reactions",
+    }
     metrics_summary = {
         "organic_impressions": _build_summary_metric_card("organic_impressions", organic_impressions_payload),
         "engagement": _build_summary_metric_card("engagement", engagement_payload),
@@ -13206,6 +13398,11 @@ def _build_five_slide_summary_payload(
         "followers": followers_card,
         "fans": fans_card,
         "reactions": reactions_card,
+    }
+    metrics_summary = {
+        key: value
+        for key, value in metrics_summary.items()
+        if key in available_catalog_metric_keys
     }
     _log_json_event(
         "FACEBOOK_SUMMARY_METRICS_BUILT",
@@ -13222,9 +13419,22 @@ def _build_five_slide_summary_payload(
             "metrics_summary": metrics_summary,
         },
     )
+    _log_report_product_event(
+        "REPORT_PRODUCT_SLIDE_CREATED",
+        context=context,
+        slide_type="executive_summary",
+        raw_metric_name="summary_metrics",
+        normalized_field="metrics_summary",
+        availability_status="available",
+        source_metrics_used=[
+            str(card.get("raw_metric_name") or key)
+            for key, card in metrics_summary.items()
+            if isinstance(card, dict)
+        ],
+    )
     return {
         "slide_number": 5,
-        "slide_type": "summary",
+        "slide_type": "executive_summary",
         "title": "Resumen final",
         "title_en": "Final Summary",
         "branding": context.get("branding") if isinstance(context.get("branding"), dict) else {},
@@ -13235,6 +13445,13 @@ def _build_five_slide_summary_payload(
         "insight": ai_summary,
         "insight_short": ai_summary,
         "semantic_name": "executive_summary",
+        "provider": FACEBOOK_PAGES_PROVIDER if _facebook_pages_is_catalog_managed_context(context) else _meta_integration_type(context),
+        "availability_status": "available",
+        "source_metrics_used": [
+            str(card.get("raw_metric_name") or key)
+            for key, card in metrics_summary.items()
+            if isinstance(card, dict)
+        ],
         "timeframe": context.get("report_timeframe") or {},
     }
 
@@ -13867,7 +14084,7 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             metric_payload = _build_facebook_pages_metric_slide_payload(
                 context,
                 metric_key="organic_impressions",
-                title="ORGANIC IMPRESSIONS",
+                title="ORGANIC VISIBILITY",
                 label="TOTAL ORGANIC IMPRESSIONS",
                 semantic_name=semantic_name,
             )
@@ -13887,6 +14104,22 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
                 label="Total Impressions",
                 semantic_name=semantic_name,
             )
+        elif semantic_name in {"engagement_overview", "engagement"}:
+            metric_payload = _build_facebook_pages_metric_slide_payload(
+                context,
+                metric_key="engagement",
+                title="ENGAGEMENT",
+                label="TOTAL ENGAGEMENT",
+                semantic_name=semantic_name,
+            )
+        elif semantic_name in {"page_views_overview", "page_visits"}:
+            metric_payload = _build_facebook_pages_metric_slide_payload(
+                context,
+                metric_key="page_views",
+                title="PAGE VIEWS",
+                label="TOTAL PAGE VIEWS",
+                semantic_name=semantic_name,
+            )
         else:
             insight_source = (
                 str((context.get("impressions_slide_payload") or {}).get("insight_text") or "").strip()
@@ -13903,12 +14136,13 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
                 insight=insight_source,
             )
         data.update(metric_payload)
+    metric_semantic_names = {"reach", "impressions", "engagement", "page_visits", "reach_overview", "organic_impressions_overview", "impressions_overview", "impressions_trend", "engagement_overview", "page_views_overview"}
     chart = data.get("chart") if isinstance(data.get("chart"), dict) else _meta_chart_payload(context, metric, label)
-    if not chart.get("points"):
+    if not chart.get("points") and semantic_name not in metric_semantic_names:
         chart = _meta_chart_payload(context, metric, label)
     points = list(chart.get("points") or [])
     total = data.get("total", data.get("value"))
-    if total is None:
+    if total is None and semantic_name not in metric_semantic_names:
         total = _meta_metric_total(context, metric, points)
     change_payload = _meta_change_payload(
         context,
@@ -13927,7 +14161,7 @@ def _meta_enrich_existing_block(context: dict, block: dict) -> dict:
             if not points
             else f"Daily {label.lower()} is available for this period."
         )
-    if semantic_name in {"reach", "impressions", "engagement", "page_visits", "reach_overview", "organic_impressions_overview", "impressions_overview", "impressions_trend", "engagement_overview", "page_views_overview"}:
+    if semantic_name in metric_semantic_names:
         insight_short_value = str(data.get("insight_short") or data.get("insight") or insight)
         insight_full_value = str(data.get("insight_full") or data.get("insight") or insight_short_value)
     else:
@@ -14856,10 +15090,18 @@ def build_5_blocks(dataset: dict) -> list[dict]:
         preferred_branding=dataset.get("branding") if isinstance(dataset.get("branding"), dict) else None,
     )
     metric_context = {**dataset, "branding": resolved_branding}
+    _log_report_product_event(
+        "REPORT_PRODUCT_RESOLVER_STARTED",
+        context=metric_context,
+        slide_type="facebook_pages_5_slide_report",
+        raw_metric_name="catalog_bootstrap",
+        normalized_field="report_metric_catalog",
+        availability_status="started",
+    )
     organic_impressions_payload = _build_facebook_pages_metric_slide_payload(
         metric_context,
         metric_key="organic_impressions",
-        title="ORGANIC IMPRESSIONS",
+        title="ORGANIC VISIBILITY",
         label="TOTAL ORGANIC IMPRESSIONS",
         semantic_name="organic_impressions_overview",
     )
@@ -14944,6 +15186,9 @@ def build_5_blocks(dataset: dict) -> list[dict]:
                     "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
                     "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
                 },
+                "provider": FACEBOOK_PAGES_PROVIDER if _facebook_pages_is_catalog_managed_context(metric_context) else _meta_integration_type(metric_context),
+                "availability_status": "available",
+                "source_metrics_used": [],
                 "semantic_name": "cover",
             },
             ["text", "subtitle"],
@@ -15013,6 +15258,22 @@ def build_5_blocks(dataset: dict) -> list[dict]:
                 for block in final_blocks
             ],
         },
+    )
+    _log_report_product_event(
+        "REPORT_PRODUCT_COMPLETED",
+        context=metric_context,
+        slide_type="facebook_pages_5_slide_report",
+        raw_metric_name="catalog_complete",
+        normalized_field="report_blocks",
+        availability_status="available",
+        source_metrics_used=[
+            "page_posts_impressions_organic",
+            "page_post_engagements",
+            "page_views_total",
+            "page_actions_post_reactions_total",
+            "followers_count",
+            "fan_count",
+        ],
     )
     return final_blocks
 

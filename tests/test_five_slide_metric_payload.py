@@ -23,9 +23,6 @@ def _base_context(*, integration_type: str) -> dict:
         "plan": "core",
         "report_timeframe": {"label": "Last 28 days", "since": "2026-05-01", "until": "2026-05-28"},
         "page_name": "Acme Account",
-        "followers": 1200,
-        "engagement": 320,
-        "page_views": 5748,
         "organic_impressions_total": 10187,
         "summary": "Summary",
         "recent_posts_summary": "Posts summary",
@@ -37,20 +34,40 @@ def _base_context(*, integration_type: str) -> dict:
                 {"date": "2026-05-15", "value": 1234},
                 {"date": "2026-05-16", "value": 900},
             ],
-            "engagement_daily": [
+            "daily_engagement": [
                 {"date": "2026-05-15", "value": 80},
                 {"date": "2026-05-16", "value": 40},
             ],
-            "page_views_daily": [
+            "daily_page_views": [
                 {"date": "2026-05-15", "value": 3300},
                 {"date": "2026-05-16", "value": 2448},
             ],
-            "engagement": 320,
-            "page_views": 5748,
             "organic_impressions_total": 10187,
-            "followers": 1200,
+            "engagement_total": 320,
+            "page_views_total": 5748,
+            "followers_total": 1200,
             "fans_total": 1190,
             "reactions_total": 342,
+            "normalized_report_metrics": {
+                "organic_impressions_total": 10187,
+                "daily_organic_impressions": [
+                    {"date": "2026-05-15", "value": 1234},
+                    {"date": "2026-05-16", "value": 900},
+                ],
+                "engagement_total": 320,
+                "daily_engagement": [
+                    {"date": "2026-05-15", "value": 80},
+                    {"date": "2026-05-16", "value": 40},
+                ],
+                "page_views_total": 5748,
+                "daily_page_views": [
+                    {"date": "2026-05-15", "value": 3300},
+                    {"date": "2026-05-16", "value": 2448},
+                ],
+                "followers_total": 1200,
+                "fans_total": 1190,
+                "reactions_total": 342,
+            },
         },
         "branding": {},
         "requested_slides": 5,
@@ -157,31 +174,44 @@ def test_build_5_blocks_generates_new_metric_structure_for_facebook_pages():
     assert cover["platform"] == "Facebook Pages"
 
     assert organic_impressions["slide_number"] == 2
-    assert organic_impressions["slide_type"] == "metric"
+    assert organic_impressions["slide_type"] == "organic_impressions_overview"
     assert organic_impressions["metric_key"] == "organic_impressions"
-    assert organic_impressions["metric_label"] == "ORGANIC IMPRESSIONS"
+    assert organic_impressions["metric_label"] == "Organic Impressions"
     assert organic_impressions["metric_label_es"] == "Impresiones orgánicas"
+    assert organic_impressions["title"] == "ORGANIC VISIBILITY"
     assert organic_impressions["label"] == "TOTAL ORGANIC IMPRESSIONS"
     assert organic_impressions["formatted_total"] == "10,187"
     assert organic_impressions["is_available"] is True
+    assert organic_impressions["provider"] == "facebook_pages"
+    assert organic_impressions["raw_metric_name"] == "page_posts_impressions_organic"
+    assert organic_impressions["normalized_field"] == "organic_impressions_total"
+    assert organic_impressions["availability_status"] == "available"
+    assert organic_impressions["source_metrics_used"] == ["page_posts_impressions_organic"]
     assert organic_impressions["daily_series"][0]["date"] == "2026-05-15"
     assert organic_impressions["highest_day"]["value"] == 1234
     assert organic_impressions["lowest_day"]["value"] == 900
 
     assert engagement["slide_number"] == 3
+    assert engagement["slide_type"] == "engagement_overview"
     assert engagement["metric_key"] == "engagement"
-    assert engagement["metric_source"] == "direct_meta_metric"
+    assert engagement["metric_source"] == "page_post_engagements"
+    assert engagement["raw_metric_name"] == "page_post_engagements"
+    assert engagement["normalized_field"] == "engagement_total"
     assert engagement["label"] == "TOTAL ENGAGEMENT"
     assert engagement["daily_series"][0]["value"] == 80
     assert engagement["highest_day"]["value"] == 80
 
     assert page_views["slide_number"] == 4
+    assert page_views["slide_type"] == "page_views_overview"
     assert page_views["metric_key"] == "page_views"
+    assert page_views["metric_source"] == "page_views_total"
+    assert page_views["raw_metric_name"] == "page_views_total"
+    assert page_views["normalized_field"] == "page_views_total"
     assert page_views["label"] == "TOTAL PAGE VIEWS"
     assert page_views["formatted_total"] == "5,748"
 
     assert summary["slide_number"] == 5
-    assert summary["slide_type"] == "summary"
+    assert summary["slide_type"] == "executive_summary"
     assert set(summary["metrics_summary"].keys()) == {"organic_impressions", "engagement", "followers", "page_views", "fans", "reactions"}
     assert summary["metrics_summary"]["organic_impressions"]["value"] == 10187
     assert summary["metrics_summary"]["engagement"]["value"] == 320
@@ -189,6 +219,10 @@ def test_build_5_blocks_generates_new_metric_structure_for_facebook_pages():
     assert summary["metrics_summary"]["page_views"]["value"] == 5748
     assert summary["metrics_summary"]["fans"]["value"] == 1190
     assert summary["metrics_summary"]["reactions"]["value"] == 342
+    assert summary["metrics_summary"]["page_views"]["raw_metric_name"] == "page_views_total"
+    assert summary["metrics_summary"]["organic_impressions"]["raw_metric_name"] == "page_posts_impressions_organic"
+    assert summary["provider"] == "facebook_pages"
+    assert "reach_overview" not in [json.loads(block["data_json"]).get("slide_type") for block in blocks]
 
     for metric_slide in (organic_impressions, engagement, page_views):
         assert metric_slide["insight_tone"] == "executive_ai"
@@ -211,10 +245,16 @@ def test_build_5_blocks_instagram_business_can_return_na_without_breaking():
     context["organic_impressions_total"] = None
     context["report_inputs"]["organic_impressions_total"] = None
     context["report_inputs"]["daily_organic_impressions"] = []
-    context["report_inputs"]["engagement"] = None
-    context["report_inputs"]["page_views"] = None
-    context["report_inputs"]["engagement_daily"] = []
-    context["report_inputs"]["page_views_daily"] = []
+    context["report_inputs"]["engagement_total"] = None
+    context["report_inputs"]["page_views_total"] = None
+    context["report_inputs"]["daily_engagement"] = []
+    context["report_inputs"]["daily_page_views"] = []
+    context["report_inputs"]["normalized_report_metrics"]["organic_impressions_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["daily_organic_impressions"] = []
+    context["report_inputs"]["normalized_report_metrics"]["engagement_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["daily_engagement"] = []
+    context["report_inputs"]["normalized_report_metrics"]["page_views_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["daily_page_views"] = []
     context["report_inputs"]["unavailable_metrics"] = {
         "impressions": "not_returned_by_meta",
         "engagement": "missing_permission",
@@ -233,7 +273,7 @@ def test_build_5_blocks_instagram_business_can_return_na_without_breaking():
     assert engagement["total"] is None
     assert engagement["formatted_total"] == "N/A"
     assert engagement["is_available"] is False
-    assert engagement["unavailable_message"] == "Dato no disponible en este momento con los permisos actuales de Meta."
+    assert engagement["unavailable_message"] == "Meta did not return engagement for the selected period."
 
     assert summary["metrics_summary"]["page_views"]["value"] is None
     assert summary["metrics_summary"]["page_views"]["formatted_value"] == "N/A"
@@ -256,11 +296,13 @@ def test_build_5_blocks_engagement_uses_daily_series_when_available():
 def test_build_5_blocks_summary_uses_page_views_daily_when_available():
     context = _base_context(integration_type="facebook_pages")
     context["page_views"] = None
-    context["report_inputs"]["page_views"] = None
-    context["report_inputs"]["page_views_daily"] = [
+    context["report_inputs"]["page_views_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["page_views_total"] = None
+    context["report_inputs"]["daily_page_views"] = [
         {"date": "2026-05-15", "value": 10},
         {"date": "2026-05-16", "value": 20},
     ]
+    context["report_inputs"]["normalized_report_metrics"]["daily_page_views"] = context["report_inputs"]["daily_page_views"]
     blocks = build_5_blocks(context)
     summary = json.loads(blocks[4]["data_json"])
     assert summary["metrics_summary"]["page_views"]["value"] == 30
@@ -270,11 +312,13 @@ def test_build_5_blocks_summary_uses_page_views_daily_when_available():
 def test_build_5_blocks_summary_preserves_zero_page_views():
     context = _base_context(integration_type="facebook_pages")
     context["page_views"] = 0
-    context["report_inputs"]["page_views"] = 0
-    context["report_inputs"]["page_views_daily"] = [
+    context["report_inputs"]["page_views_total"] = 0
+    context["report_inputs"]["normalized_report_metrics"]["page_views_total"] = 0
+    context["report_inputs"]["daily_page_views"] = [
         {"date": "2026-05-15", "value": 0},
         {"date": "2026-05-16", "value": 0},
     ]
+    context["report_inputs"]["normalized_report_metrics"]["daily_page_views"] = context["report_inputs"]["daily_page_views"]
     blocks = build_5_blocks(context)
     summary = json.loads(blocks[4]["data_json"])
     assert summary["metrics_summary"]["page_views"]["is_available"] is True
@@ -285,24 +329,26 @@ def test_build_5_blocks_summary_preserves_zero_page_views():
 def test_build_5_blocks_engagement_can_be_calculated_from_components():
     context = _base_context(integration_type="facebook_pages")
     context["engagement"] = None
-    context["report_inputs"]["engagement"] = None
+    context["report_inputs"]["engagement_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["engagement_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["daily_engagement"] = []
     context["report_inputs"]["likes"] = 10
     context["report_inputs"]["comments"] = 5
     context["report_inputs"]["shares"] = 3
     context["report_inputs"]["saves"] = 2
     context["report_inputs"]["reactions"] = 8
     context["report_inputs"]["link_clicks"] = 4
-    context["report_inputs"]["engagement_daily"] = []
+    context["report_inputs"]["daily_engagement"] = []
     context["report_inputs"]["interactions_daily"] = [
         {"date": "2026-05-15", "value": 7},
         {"date": "2026-05-16", "value": 5},
     ]
     blocks = build_5_blocks(context)
     engagement = json.loads(blocks[2]["data_json"])
-    assert engagement["total"] == 32
-    assert engagement["formatted_total"] == "32"
-    assert engagement["metric_source"] == "calculated_from_components"
-    assert engagement["daily_series"][0]["value"] == 7
+    assert engagement["total"] is None
+    assert engagement["formatted_total"] == "N/A"
+    assert engagement["metric_source"] == "not_available"
+    assert engagement["daily_series"] == []
 
 
 def test_build_5_blocks_daily_series_preserves_last_period_date_when_present():
@@ -324,11 +370,16 @@ def test_build_5_blocks_summary_metrics_use_renderable_primitives():
     summary = json.loads(blocks[4]["data_json"])
     metrics_summary = summary["metrics_summary"]
     assert metrics_summary["organic_impressions"] == {
-        "label": "ORGANIC IMPRESSIONS",
+        "label": "Organic Impressions",
         "value": 10187,
         "formatted_value": "10,187",
         "is_available": True,
         "description": "Organic post impressions",
+        "raw_metric_name": None,
+        "normalized_field": "organic_impressions",
+        "provider": "instagram_business",
+        "availability_status": "available",
+        "source_metrics_used": [],
     }
     assert metrics_summary["engagement"]["value"] == 320
     assert metrics_summary["followers"]["value"] == 1200
@@ -378,16 +429,17 @@ def test_build_5_blocks_facebook_pages_uses_organic_impressions_on_own_slide():
     organic_impressions = json.loads(blocks[1]["data_json"])
     summary = json.loads(blocks[4]["data_json"])
 
-    assert organic_impressions["title"] == "ORGANIC IMPRESSIONS"
+    assert organic_impressions["title"] == "ORGANIC VISIBILITY"
     assert organic_impressions["label"] == "TOTAL ORGANIC IMPRESSIONS"
     assert organic_impressions["metric_key"] == "organic_impressions"
+    assert organic_impressions["raw_metric_name"] == "page_posts_impressions_organic"
     assert organic_impressions["formatted_total"] == "546"
     assert organic_impressions["is_available"] is True
     assert organic_impressions["chart"]["metric"] == "organic_impressions"
     assert organic_impressions["chart"]["label"] == "TOTAL ORGANIC IMPRESSIONS"
     assert organic_impressions["daily_series"][0]["date"] == "2026-05-19"
 
-    assert summary["metrics_summary"]["organic_impressions"]["label"] == "ORGANIC IMPRESSIONS"
+    assert summary["metrics_summary"]["organic_impressions"]["label"] == "Organic Impressions"
     assert summary["metrics_summary"]["organic_impressions"]["value"] == 546
     assert "Organic Impressions registró 546" in summary["ai_summary"]
     assert "unique reach for the selected period" in summary["ai_summary"]
@@ -406,7 +458,7 @@ def test_build_5_blocks_facebook_pages_shows_na_when_organic_impressions_missing
     blocks = build_5_blocks(context)
     organic_impressions = json.loads(blocks[1]["data_json"])
 
-    assert organic_impressions["title"] == "ORGANIC IMPRESSIONS"
+    assert organic_impressions["title"] == "ORGANIC VISIBILITY"
     assert organic_impressions["metric_key"] == "organic_impressions"
     assert organic_impressions["formatted_total"] == "N/A"
     assert organic_impressions["is_available"] is False
@@ -440,3 +492,45 @@ def test_build_5_blocks_branding_appears_on_all_slides():
         data = json.loads(block["data_json"])
         assert data["branding"]["resolved_brand_name"] == "Agency"
         assert data["branding"]["resolved_logo_url"] == "https://example.com/logo.png"
+
+
+def test_build_5_blocks_facebook_pages_exposes_exact_slide_sequence_without_reach():
+    blocks = build_5_blocks(_base_context(integration_type="facebook_pages"))
+    slide_types = [json.loads(block["data_json"])["slide_type"] for block in blocks]
+    assert slide_types == [
+        "cover",
+        "organic_impressions_overview",
+        "engagement_overview",
+        "page_views_overview",
+        "executive_summary",
+    ]
+    assert "reach_overview" not in slide_types
+    assert all("reach" not in str(json.loads(block["data_json"]).get("title") or "").lower() for block in blocks[1:4])
+    assert all("alcance" not in str(json.loads(block["data_json"]).get("title") or "").lower() for block in blocks[1:4])
+
+
+def test_build_5_blocks_facebook_pages_never_uses_invalid_or_cross_metric_aliases():
+    blocks = build_5_blocks(_base_context(integration_type="facebook_pages"))
+    slides = [json.loads(block["data_json"]) for block in blocks]
+    metric_slides = {slide["metric_key"]: slide for slide in slides if slide.get("metric_key")}
+
+    assert metric_slides["page_views"]["raw_metric_name"] == "page_views_total"
+    assert metric_slides["page_views"]["normalized_field"] == "page_views_total"
+    assert metric_slides["organic_impressions"]["raw_metric_name"] == "page_posts_impressions_organic"
+    assert metric_slides["organic_impressions"]["normalized_field"] == "organic_impressions_total"
+    assert metric_slides["page_views"]["raw_metric_name"] not in {
+        "page_impressions",
+        "page_impressions_unique",
+        "page_posts_impressions",
+        "page_posts_impressions_unique",
+        "page_fans",
+    }
+    assert metric_slides["organic_impressions"]["raw_metric_name"] not in {
+        "page_impressions",
+        "page_impressions_unique",
+        "page_posts_impressions",
+        "page_posts_impressions_unique",
+        "page_fans",
+    }
+    assert metric_slides["page_views"]["raw_metric_name"] != "page_posts_impressions_organic"
+    assert metric_slides["organic_impressions"]["raw_metric_name"] != "page_views_total"
