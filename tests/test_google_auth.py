@@ -432,6 +432,8 @@ def test_meta_oauth_connect_pages_url_uses_backend_callback_for_both_flows(monke
     query_instagram = parse_qs(parsed_instagram.query)
     assert query_instagram["redirect_uri"] == [expected_redirect_uri]
     assert query_instagram["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
+    assert "instagram_basic" in query_instagram["scope"][0]
+    assert "instagram_business_basic" not in query_instagram["scope"][0]
 
 
 def test_meta_oauth_connect_pages_url_uses_business_login_config_when_present(monkeypatch):
@@ -484,6 +486,7 @@ def test_meta_pages_business_config_does_not_affect_instagram_or_ads_oauth(monke
     ads_query = parse_qs(urlparse(ads_url).query)
     assert "config_id" not in instagram_query
     assert instagram_query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
+    assert "instagram_basic" in instagram_query["scope"][0]
     assert "instagram_business_basic" not in instagram_query["scope"][0]
     assert "instagram_business_manage_insights" not in instagram_query["scope"][0]
     assert "ads_read" not in instagram_query["scope"][0]
@@ -700,21 +703,23 @@ def test_meta_exchange_pages_code_uses_same_backend_callback(monkeypatch):
     assert captured["params"]["redirect_uri"] == "https://api.measurableapp.com/integrations/meta/callback-pages"
 
 
-def test_instagram_business_auth_url_uses_instagram_oauth_endpoint(monkeypatch):
-    monkeypatch.setattr(instagram_business.settings, "instagram_app_id", "instagram-app-id")
-    monkeypatch.setattr(instagram_business.settings, "instagram_app_secret", "instagram-app-secret")
-    monkeypatch.setattr(instagram_business.settings, "instagram_redirect_uri", "https://app.measurableapp.com/integrations/instagram-business/callback")
-    monkeypatch.setattr(instagram_business.settings, "api_base_url", "https://api.measurableapp.com")
-    monkeypatch.setattr(instagram_business.settings, "instagram_oauth_authorize_url", "https://api.instagram.com/oauth/authorize")
+def test_instagram_business_auth_url_uses_facebook_oauth(monkeypatch):
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_config_id", None)
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
 
     auth_url = instagram_business.build_instagram_business_auth_url("ig-state")
 
     parsed = urlparse(auth_url)
     query = parse_qs(parsed.query)
-    assert parsed.netloc == "api.instagram.com"
-    assert parsed.path == "/oauth/authorize"
-    assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/instagram-business/callback"]
+    assert parsed.netloc == "www.facebook.com"
+    assert parsed.path.endswith("/dialog/oauth")
+    assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/meta/callback-pages"]
     assert query["scope"] == [instagram_business.INSTAGRAM_BUSINESS_OAUTH_SCOPE]
+    assert "instagram_basic" in query["scope"][0]
+    assert "instagram_business_basic" not in query["scope"][0]
     assert query["response_type"] == ["code"]
 
 
@@ -761,6 +766,7 @@ def test_instagram_business_connect_returns_facebook_pages_scope(client, monkeyp
     assert "instagram.com" not in payload["auth_url"]
     assert payload["scope"] == meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN
     assert query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
+    assert "instagram_basic" in query["scope"][0]
     assert "instagram_business_basic" not in query["scope"][0]
     assert "instagram_business_manage_insights" not in query["scope"][0]
     assert "ads_read" not in query["scope"][0]
@@ -856,12 +862,6 @@ def test_instagram_business_facebook_callback_connects_linked_accounts(client, m
                 "profile_picture_url": "https://example.com/ig.jpg",
                 "followers_count": 123,
                 "media_count": 45,
-            },
-            "connected_instagram_account": {
-                "id": "ig-1",
-                "username": "brand",
-                "name": "Brand IG",
-                "profile_picture_url": "https://example.com/ig.jpg",
             },
         }
 
@@ -974,13 +974,27 @@ def test_instagram_business_facebook_callback_without_linked_accounts_does_not_c
         "list_pages",
         lambda *_args, **_kwargs: [{"id": "fb-page-1", "name": "Facebook Page"}],
     )
-    monkeypatch.setattr(main_module, "_fetch_instagram_business_account_for_page", lambda **_kwargs: None)
+    captured_page_lookup: dict[str, str] = {}
+
+    def fake_fetch_page_info(token, page_id, *, fields="id,name"):
+        captured_page_lookup["token"] = token
+        captured_page_lookup["page_id"] = page_id
+        captured_page_lookup["fields"] = fields
+        return {
+            "id": page_id,
+            "name": "Facebook Page",
+            "access_token": "page-token",
+            "_meta_http_status_code": 200,
+        }
+
+    monkeypatch.setattr(main_module, "fetch_page_info_with_metadata", fake_fetch_page_info)
 
     response = client.get(f"/integrations/meta/callback-pages?code=meta-code&state={state}")
 
     assert response.status_code == 200
     assert "needs_page_ig_link" in response.text
     assert "Facebook authorization succeeded, but no Instagram Business accounts linked to the selected Pages were found." in response.text
+    assert "connected_instagram_account" in captured_page_lookup["fields"]
     db = SessionLocal()
     try:
         integration = db.get(Integration, integration_id)

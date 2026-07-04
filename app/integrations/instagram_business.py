@@ -8,12 +8,17 @@ from jose import JWTError, jwt
 
 from ..config import settings
 from ..errors import http_error
+from .meta_ads import oauth_connect_pages_url
 
 logger = logging.getLogger(__name__)
 
 INSTAGRAM_BUSINESS_SCOPES = [
-    "instagram_business_basic",
-    "instagram_business_manage_insights",
+    "public_profile",
+    "pages_show_list",
+    "pages_read_engagement",
+    "read_insights",
+    "instagram_basic",
+    "business_management",
 ]
 INSTAGRAM_BUSINESS_OAUTH_SCOPE = ",".join(INSTAGRAM_BUSINESS_SCOPES)
 INSTAGRAM_BUSINESS_CALLBACK_PATH = "/integrations/instagram-business/callback"
@@ -103,37 +108,21 @@ def decode_instagram_business_state(state: str) -> dict[str, Any]:
 
 
 def build_instagram_business_auth_url(state: str) -> str:
-    _require_instagram_business_config()
-    base = str(settings.instagram_oauth_authorize_url or "").strip()
-    if not base:
-        raise http_error(
-            status_code=500,
-            code="instagram_business_config_missing",
-            message="Missing Instagram Business config: INSTAGRAM_OAUTH_AUTHORIZE_URL",
-        )
-    redirect_uri = get_instagram_business_redirect_uri()
-    params = {
-        "client_id": settings.instagram_app_id,
-        "redirect_uri": redirect_uri,
-        "scope": INSTAGRAM_BUSINESS_OAUTH_SCOPE,
-        "response_type": "code",
-        "state": state,
-    }
+    auth_url = oauth_connect_pages_url(state, integration_type="instagram_business")
     logger.info(
         _instagram_business_log_message(
-            "INSTAGRAM_BUSINESS_OAUTH_URL_CREATED",
+            "INSTAGRAM_BUSINESS_AUTH_URL_CREATED",
             {
-                "client_id_loaded": bool(settings.instagram_app_id),
-                "redirect_uri": redirect_uri,
-                "scope": INSTAGRAM_BUSINESS_OAUTH_SCOPE,
+                "auth_url": auth_url,
+                "provider": "instagram_business",
+                "uses_facebook_oauth": "facebook.com/" in auth_url,
+                "uses_instagram_oauth": "instagram.com/oauth" in auth_url,
                 "scopes_requested": INSTAGRAM_BUSINESS_SCOPES,
-                "response_type": "code",
                 "state_present": bool(state),
-                "oauth_authorize_url": base,
             },
         )
     )
-    return f"{base}?" + "&".join(f"{k}={requests.utils.quote(str(v))}" for k, v in params.items())
+    return auth_url
 
 
 def exchange_instagram_business_code_for_token(code: str) -> dict[str, Any]:

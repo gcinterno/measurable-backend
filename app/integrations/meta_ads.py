@@ -26,7 +26,7 @@ INSTAGRAM_BUSINESS_SCOPES_LEGACY_FACEBOOK_LOGIN = [
     "pages_show_list",
     "pages_read_engagement",
     "read_insights",
-    "pages_read_user_content",
+    "instagram_basic",
     "business_management",
 ]
 META_ADS_SCOPES = [
@@ -593,7 +593,11 @@ def list_pages(
 ) -> list[dict[str, Any]]:
     url = f"https://graph.facebook.com/{settings.meta_api_version}/me/accounts"
     params = {
-        "fields": "id,name,access_token,tasks,picture,instagram_business_account{id,username,profile_picture_url,name}",
+        "fields": (
+            "id,name,access_token,tasks,category,"
+            "instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count},"
+            "connected_instagram_account{id,username,name}"
+        ),
         "access_token": access_token,
     }
     resp = requests.get(url, params=params, timeout=30)
