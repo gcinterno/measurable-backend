@@ -494,6 +494,47 @@ def test_meta_pages_business_config_does_not_affect_instagram_or_ads_oauth(monke
     assert ads_query["scope"] == [meta_ads.META_ADS_OAUTH_SCOPE]
 
 
+def test_instagram_business_connect_prefers_instagram_specific_config_id(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="instagram-business-config@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Instagram Business Config",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace = Workspace(name="Instagram Business Config Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="free", status="active"))
+        db.commit()
+        workspace_id = workspace.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_config_id", "pages-config-id")
+    monkeypatch.setattr(meta_ads.settings, "instagram_business_config_id", "ig-business-config-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+
+    response = client.get(
+        f"/integrations/instagram-business/connect?workspace_id={workspace_id}",
+        headers=_auth_headers_for("instagram-business-config@example.com"),
+    )
+
+    assert response.status_code == 200
+    query = parse_qs(urlparse(response.json()["auth_url"]).query)
+    assert query["config_id"] == ["ig-business-config-id"]
+    assert "scope" not in query
+
+
 def test_instagram_business_connect_uses_facebook_oauth_with_dedicated_endpoint(client, monkeypatch):
     db = SessionLocal()
     try:
@@ -707,6 +748,7 @@ def test_instagram_business_auth_url_uses_facebook_oauth(monkeypatch):
     monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
     monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
     monkeypatch.setattr(meta_ads.settings, "meta_pages_config_id", None)
+    monkeypatch.setattr(meta_ads.settings, "instagram_business_config_id", None)
     monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
     monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
 
@@ -1113,7 +1155,7 @@ def test_instagram_business_facebook_callback_connected_instagram_account_withou
 
     assert response.status_code == 200
     assert "needs_business_or_creator_account" in response.text
-    assert "Instagram account found, but it is not available as an Instagram Business account for reporting yet." in response.text
+    assert "An Instagram account is linked to the Page, but it is not available as an Instagram Business or Creator account for reporting." in response.text
     assert "connected_instagram_account" in captured_page_lookup["fields"]
     db = SessionLocal()
     try:
@@ -1196,7 +1238,7 @@ def test_instagram_business_facebook_callback_missing_scopes_returns_needs_permi
 
     assert response.status_code == 200
     assert "needs_permission" in response.text
-    assert "pages_read_engagement" in response.text
+    assert "Instagram Business requires instagram_basic permission. Please reconnect and approve Instagram access." in response.text
     db = SessionLocal()
     try:
         integration = db.get(Integration, integration_id)
@@ -1204,6 +1246,126 @@ def test_instagram_business_facebook_callback_missing_scopes_returns_needs_permi
         assert integration.status == "needs_permission"
     finally:
         db.close()
+
+
+def test_admin_instagram_business_diagnostics_returns_safe_page_snapshot(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="admin-instagram-diagnostics@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Admin Instagram Diagnostics",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+            is_admin=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace = Workspace(name="Admin Instagram Diagnostics Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="free", status="active"))
+        integration = Integration(
+            workspace_id=workspace.id,
+            provider="instagram_business",
+            name="Instagram Business",
+            status="disconnected",
+        )
+        db.add(integration)
+        db.flush()
+        token_account = IntegrationAccount(
+            integration_id=integration.id,
+            workspace_id=workspace.id,
+            external_account_id=f"instagram_business_token_{integration.id}",
+            display_name="Instagram Business token store",
+        )
+        db.add(token_account)
+        db.flush()
+        db.add(
+            IntegrationToken(
+                account_id=token_account.id,
+                workspace_id=workspace.id,
+                token_type="access_token",
+                access_token="meta-token",
+                refresh_token=None,
+                expires_at=None,
+            )
+        )
+        db.commit()
+        workspace_id = workspace.id
+    finally:
+        db.close()
+
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {
+            "data": {
+                "is_valid": True,
+                "scopes": meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN.split(","),
+                "granular_scopes": [],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        main_module,
+        "list_pages",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "fb-page-1",
+                "name": "Facebook Page",
+                "access_token": "page-token",
+                "instagram_business_account": {
+                    "id": "ig-1",
+                    "username": "brand",
+                    "name": "Brand IG",
+                    "followers_count": 123,
+                    "media_count": 45,
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "fetch_page_info_with_metadata",
+        lambda *_args, **_kwargs: {
+            "id": "fb-page-1",
+            "name": "Facebook Page",
+            "_meta_http_status_code": 200,
+            "instagram_business_account": {
+                "id": "ig-1",
+                "username": "brand",
+                "name": "Brand IG",
+                "followers_count": 123,
+                "media_count": 45,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_fetch_instagram_user_details",
+        lambda **_kwargs: (
+            {"id": "ig-1", "username": "brand", "name": "Brand IG", "followers_count": 123, "media_count": 45},
+            None,
+        ),
+    )
+
+    response = client.get(
+        f"/admin/instagram-business-diagnostics?workspace_id={workspace_id}",
+        headers=_auth_headers_for("admin-instagram-diagnostics@example.com"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["token_present"] is True
+    assert payload["token_decrypt_ok"] is True
+    assert payload["pages_checked_count"] == 1
+    assert payload["pages_with_instagram_business_account_count"] == 1
+    assert payload["pages_with_connected_instagram_account_count"] == 0
+    assert payload["page_results"][0]["instagram_business_account_id"] == "ig-1"
+    assert "meta-token" not in response.text
 
 
 def test_instagram_business_connect_returns_controlled_error_when_meta_pages_not_configured(client, monkeypatch):

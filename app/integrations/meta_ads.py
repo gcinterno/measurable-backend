@@ -73,10 +73,19 @@ def meta_oauth_scope_string_for_integration_type(integration_type: str | None) -
     return ",".join(meta_oauth_scopes_for_integration_type(integration_type))
 
 
+def get_meta_oauth_config_id(integration_type: str | None = "facebook_pages") -> str | None:
+    normalized = normalize_meta_oauth_integration_type(integration_type)
+    if normalized == "instagram_business":
+        config_id = str(settings.instagram_business_config_id or "").strip()
+        return config_id or None
+    config_id = str(settings.meta_pages_config_id or "").strip()
+    return config_id or None
+
+
 def get_meta_pages_auth_mode(integration_type: str | None = "facebook_pages") -> str:
     normalized = normalize_meta_oauth_integration_type(integration_type)
-    config_id = str(settings.meta_pages_config_id or "").strip()
-    if normalized == "facebook_pages" and config_id:
+    config_id = get_meta_oauth_config_id(normalized)
+    if normalized in {"facebook_pages", "instagram_business"} and config_id:
         return META_PAGES_AUTH_MODE_BUSINESS_CONFIG
     return META_PAGES_AUTH_MODE_LEGACY_SCOPE
 
@@ -400,7 +409,7 @@ def oauth_connect_pages_url(
     final_redirect_uri = redirect_uri or get_meta_pages_redirect_uri()
     normalized_integration_type = normalize_meta_oauth_integration_type(integration_type)
     auth_mode = get_meta_pages_auth_mode(normalized_integration_type)
-    config_id = str(settings.meta_pages_config_id or "").strip()
+    config_id = str(get_meta_oauth_config_id(normalized_integration_type) or "").strip()
     final_scope = (
         None
         if auth_mode == META_PAGES_AUTH_MODE_BUSINESS_CONFIG
@@ -425,7 +434,7 @@ def oauth_connect_pages_url(
                 "auth_mode": auth_mode,
                 "config_id_present": bool(config_id),
                 "redirect_uri_present": bool(final_redirect_uri),
-                "integration_type": "facebook_pages",
+                "integration_type": normalized_integration_type,
             },
         )
     )
@@ -590,14 +599,18 @@ def list_pages(
     integration_id: int | None = None,
     user_id: int | None = None,
     token_received: bool | None = None,
+    include_instagram_business_diagnostics: bool = False,
 ) -> list[dict[str, Any]]:
     url = f"https://graph.facebook.com/{settings.meta_api_version}/me/accounts"
-    params = {
-        "fields": (
+    fields = "id,name,access_token,tasks,picture,instagram_business_account{id,username,profile_picture_url,name}"
+    if include_instagram_business_diagnostics:
+        fields = (
             "id,name,access_token,tasks,category,"
             "instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count},"
-            "connected_instagram_account{id,username,name}"
-        ),
+            "connected_instagram_account{id,username,name,profile_picture_url,followers_count,media_count}"
+        )
+    params = {
+        "fields": fields,
         "access_token": access_token,
     }
     resp = requests.get(url, params=params, timeout=30)
