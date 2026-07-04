@@ -414,6 +414,7 @@ def test_meta_callback_pages_returns_popup_close_html_for_invalid_state(client):
 def test_meta_oauth_connect_pages_url_uses_backend_callback_for_both_flows(monkeypatch):
     monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
     monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_config_id", None)
     monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
     monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
 
@@ -430,6 +431,63 @@ def test_meta_oauth_connect_pages_url_uses_backend_callback_for_both_flows(monke
     query_instagram = parse_qs(parsed_instagram.query)
     assert query_instagram["redirect_uri"] == [expected_redirect_uri]
     assert query_instagram["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
+
+
+def test_meta_oauth_connect_pages_url_uses_business_login_config_when_present(monkeypatch):
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_config_id", "pages-config-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+
+    auth_url = meta_ads.oauth_connect_pages_url("pages-state", integration_type="facebook_pages")
+
+    parsed = urlparse(auth_url)
+    query = parse_qs(parsed.query)
+    assert query["config_id"] == ["pages-config-id"]
+    assert query["response_type"] == ["code"]
+    assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/meta/callback-pages"]
+    assert "scope" not in query
+    assert meta_ads.get_meta_pages_auth_mode("facebook_pages") == "business_login_config_id"
+
+
+def test_meta_oauth_connect_pages_url_legacy_scope_without_config(monkeypatch):
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_config_id", None)
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+
+    auth_url = meta_ads.oauth_connect_pages_url("pages-state", integration_type="facebook_pages")
+
+    query = parse_qs(urlparse(auth_url).query)
+    assert query["scope"] == [meta_ads.FACEBOOK_PAGES_OAUTH_SCOPE]
+    assert "config_id" not in query
+    assert meta_ads.get_meta_pages_auth_mode("facebook_pages") == "legacy_scope"
+
+
+def test_meta_pages_business_config_does_not_affect_instagram_or_ads_oauth(monkeypatch):
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_config_id", "pages-config-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "meta_app_id", "meta-ads-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_app_secret", "meta-ads-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+
+    instagram_url = meta_ads.oauth_connect_pages_url("ig-state", integration_type="instagram_business")
+    ads_url = meta_ads.oauth_connect_url("ads-state", integration_type="meta_ads")
+
+    instagram_query = parse_qs(urlparse(instagram_url).query)
+    ads_query = parse_qs(urlparse(ads_url).query)
+    assert "config_id" not in instagram_query
+    assert instagram_query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
+    assert "instagram_business_basic" not in instagram_query["scope"][0]
+    assert "instagram_business_manage_insights" not in instagram_query["scope"][0]
+    assert "ads_read" not in instagram_query["scope"][0]
+    assert "config_id" not in ads_query
+    assert ads_query["scope"] == [meta_ads.META_ADS_OAUTH_SCOPE]
 
 
 def test_instagram_business_connect_uses_independent_backend_callback(client, monkeypatch):

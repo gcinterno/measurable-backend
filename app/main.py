@@ -74,6 +74,7 @@ from .integrations.meta_ads import (
     get_meta_pages_redirect_uri,
     get_businesses,
     get_owned_ad_accounts,
+    get_meta_pages_auth_mode,
     list_ad_accounts,
     list_pages,
     meta_oauth_scope_string_for_integration_type,
@@ -9749,6 +9750,7 @@ def _run_meta_pages_oauth_callback(
         state_integration_id = int(payload.get("integration_id", 0)) if payload.get("integration_id") else None
         selected_integration_type = normalize_meta_oauth_integration_type(payload.get("integration_type"))
         reconnect_requested = bool(payload.get("reconnect"))
+        requested_auth_mode = str(payload.get("requested_auth_mode") or "legacy_scope").strip() or "legacy_scope"
         state_source = str(payload.get("source") or "").strip() or None
         state_callback_route = str(payload.get("callback_route") or "").strip() or None
     except (TypeError, ValueError):
@@ -9788,6 +9790,7 @@ def _run_meta_pages_oauth_callback(
             state_integration_id=state_integration_id,
             redirect_uri_param=redirect_uri,
             integration_type=selected_integration_type,
+            requested_auth_mode=requested_auth_mode,
             reconnect_requested=reconnect_requested,
             state_callback_route=state_callback_route,
             state_payload=payload,
@@ -9924,7 +9927,11 @@ def _run_meta_pages_oauth_callback(
         )
         debug_token_payload = debug_token(access_token)
         debug_token_summary = _extract_debug_token_summary(debug_token_payload)
-        requested_scopes = _meta_oauth_expected_scopes(selected_integration_type)
+        requested_scopes = (
+            []
+            if requested_auth_mode == "business_login_config_id"
+            else _meta_oauth_expected_scopes(selected_integration_type)
+        )
         received_scopes = [
             str(scope).strip()
             for scope in debug_token_summary["scopes"]
@@ -9943,6 +9950,7 @@ def _run_meta_pages_oauth_callback(
             requested_scopes=requested_scopes,
             granular_target_ids=debug_token_summary["granular_target_ids"],
             reconnect_requested=reconnect_requested,
+            requested_auth_mode=requested_auth_mode,
         )
         missing_scopes = [scope for scope in requested_scopes if scope not in received_scopes]
         if missing_scopes:
@@ -10113,6 +10121,8 @@ def _run_meta_pages_oauth_callback(
             integration_id=integration.id,
             workspace_id=workspace_id,
             user_id=effective_user_id,
+            requested_auth_mode=requested_auth_mode,
+            scopes_received=received_scopes,
             pages_returned_from_graph=len(graph_page_names),
             pages_saved_final=len(page_payloads),
             pages_filtered_out=pages_filtered_out,
@@ -21658,12 +21668,14 @@ def meta_connect_pages(
     )
     integration = _get_or_create_meta_integration_for_workspace(db, resolved_workspace_id)
     selected_scope = _meta_oauth_expected_scope_string("facebook_pages")
+    requested_auth_mode = get_meta_pages_auth_mode("facebook_pages")
     state = encode_state(
         {
             "workspace_id": resolved_workspace_id,
             "user_id": current_user.id,
             "integration_id": integration.id,
             "integration_type": "facebook_pages",
+            "requested_auth_mode": requested_auth_mode,
             "reconnect": reconnect,
             "source": selected_source,
             "include_linked_instagram": include_linked_instagram,
@@ -21681,8 +21693,9 @@ def meta_connect_pages(
         reconnect_requested=reconnect,
         callback_route="/integrations/meta/callback-pages",
         redirect_uri=redirect_uri,
+        requested_auth_mode=requested_auth_mode,
         scopes_requested=_meta_oauth_expected_scopes("facebook_pages"),
-        scope=selected_scope,
+        scope=None if requested_auth_mode == "business_login_config_id" else selected_scope,
         source=selected_source,
         include_linked_instagram=include_linked_instagram,
     )
@@ -21690,13 +21703,14 @@ def meta_connect_pages(
         state,
         redirect_uri=redirect_uri,
         auth_type="rerequest",
-        scope=selected_scope,
+        scope=None if requested_auth_mode == "business_login_config_id" else selected_scope,
         integration_type="facebook_pages",
     )
     return {
         "auth_url": url,
         "integration_id": integration.id,
-        "scope": selected_scope,
+        "scope": None if requested_auth_mode == "business_login_config_id" else selected_scope,
+        "auth_mode": requested_auth_mode,
         "message": (
             "Connect Meta for Facebook Pages and discover linked Instagram accounts."
             if selected_source == "facebook_pages_with_instagram"

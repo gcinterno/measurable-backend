@@ -46,6 +46,8 @@ META_PAGES_OAUTH_SCOPE = FACEBOOK_PAGES_OAUTH_SCOPE
 META_PAGES_CALLBACK_PATH = "/integrations/meta/callback-pages"
 META_ADS_CALLBACK_PATH = "/integrations/meta-ads/callback"
 META_OAUTH_STATE_PURPOSE = "meta_pages_oauth"
+META_PAGES_AUTH_MODE_BUSINESS_CONFIG = "business_login_config_id"
+META_PAGES_AUTH_MODE_LEGACY_SCOPE = "legacy_scope"
 
 
 def _meta_oauth_log_message(event: str, payload: dict[str, Any]) -> str:
@@ -72,6 +74,14 @@ def meta_oauth_scopes_for_integration_type(integration_type: str | None) -> list
 
 def meta_oauth_scope_string_for_integration_type(integration_type: str | None) -> str:
     return ",".join(meta_oauth_scopes_for_integration_type(integration_type))
+
+
+def get_meta_pages_auth_mode(integration_type: str | None = "facebook_pages") -> str:
+    normalized = normalize_meta_oauth_integration_type(integration_type)
+    config_id = str(settings.meta_pages_config_id or "").strip()
+    if normalized == "facebook_pages" and config_id:
+        return META_PAGES_AUTH_MODE_BUSINESS_CONFIG
+    return META_PAGES_AUTH_MODE_LEGACY_SCOPE
 
 
 def _truncate_meta_log_value(value: Any, limit: int = 4000) -> str | None:
@@ -392,22 +402,44 @@ def oauth_connect_pages_url(
     base = f"https://www.facebook.com/{settings.meta_api_version}/dialog/oauth"
     final_redirect_uri = redirect_uri or get_meta_pages_redirect_uri()
     normalized_integration_type = normalize_meta_oauth_integration_type(integration_type)
-    final_scope = scope or meta_oauth_scope_string_for_integration_type(normalized_integration_type)
+    auth_mode = get_meta_pages_auth_mode(normalized_integration_type)
+    config_id = str(settings.meta_pages_config_id or "").strip()
+    final_scope = (
+        None
+        if auth_mode == META_PAGES_AUTH_MODE_BUSINESS_CONFIG
+        else scope or meta_oauth_scope_string_for_integration_type(normalized_integration_type)
+    )
     params = {
         "client_id": settings.meta_pages_app_id,
         "redirect_uri": final_redirect_uri,
         "state": state,
-        "scope": final_scope,
         "response_type": "code",
     }
+    if auth_mode == META_PAGES_AUTH_MODE_BUSINESS_CONFIG:
+        params["config_id"] = config_id
+    elif final_scope:
+        params["scope"] = final_scope
     if auth_type:
         params["auth_type"] = auth_type
+    logger.info(
+        _meta_oauth_log_message(
+            "FACEBOOK_PAGES_AUTH_MODE_SELECTED",
+            {
+                "auth_mode": auth_mode,
+                "config_id_present": bool(config_id),
+                "redirect_uri_present": bool(final_redirect_uri),
+                "integration_type": "facebook_pages",
+            },
+        )
+    )
     logger.info(
         _meta_oauth_log_message(
             "META_OAUTH_AUTH_URL_CREATED",
             {
                 "provider": "meta_pages",
                 "integration_type": normalized_integration_type,
+                "auth_mode": auth_mode,
+                "config_id_present": bool(config_id),
                 "client_id_loaded": bool(settings.meta_pages_app_id),
                 "redirect_uri": final_redirect_uri,
                 "response_type": "code",

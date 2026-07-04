@@ -91,6 +91,7 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("META_PAGES_APP_SECRET", "META_APP_SECRET"),
     )
+    meta_pages_config_id: str | None = Field(default=None, validation_alias="META_PAGES_CONFIG_ID")
     meta_pages_redirect_uri: str | None = Field(
         default=None,
         validation_alias=AliasChoices("META_PAGES_REDIRECT_URI", "META_REDIRECT_URI"),
