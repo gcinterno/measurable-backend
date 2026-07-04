@@ -835,14 +835,30 @@ def test_instagram_business_facebook_callback_connects_linked_accounts(client, m
                 "id": "fb-page-1",
                 "name": "Facebook Page",
                 "access_token": "page-token",
-                "instagram_business_account": {
-                    "id": "ig-1",
-                    "username": "brand",
-                    "name": "Brand IG",
-                },
             }
         ],
     )
+    captured_page_lookup: dict[str, str] = {}
+
+    def fake_fetch_page_info(token, page_id, *, fields="id,name"):
+        captured_page_lookup["token"] = token
+        captured_page_lookup["page_id"] = page_id
+        captured_page_lookup["fields"] = fields
+        return {
+            "id": page_id,
+            "name": "Facebook Page",
+            "access_token": "page-token",
+            "instagram_business_account": {
+                "id": "ig-1",
+                "username": "brand",
+                "name": "Brand IG",
+                "profile_picture_url": "https://example.com/ig.jpg",
+                "followers_count": 123,
+                "media_count": 45,
+            },
+        }
+
+    monkeypatch.setattr(main_module, "fetch_page_info", fake_fetch_page_info)
     monkeypatch.setattr(
         main_module,
         "_fetch_instagram_user_details",
@@ -857,6 +873,12 @@ def test_instagram_business_facebook_callback_connects_linked_accounts(client, m
     assert response.status_code == 200
     assert "\"provider\": \"instagram_business\"" in response.text
     assert "\"status\": \"connected\"" in response.text
+    assert captured_page_lookup["token"] == "page-token"
+    assert captured_page_lookup["page_id"] == "fb-page-1"
+    assert "access_token" in captured_page_lookup["fields"]
+    assert "instagram_business_account" in captured_page_lookup["fields"]
+    assert "followers_count" in captured_page_lookup["fields"]
+    assert "media_count" in captured_page_lookup["fields"]
     db = SessionLocal()
     try:
         integration = db.get(Integration, integration_id)
@@ -949,13 +971,13 @@ def test_instagram_business_facebook_callback_without_linked_accounts_does_not_c
     response = client.get(f"/integrations/meta/callback-pages?code=meta-code&state={state}")
 
     assert response.status_code == 200
-    assert "no_instagram_accounts_found" in response.text
-    assert "No Instagram Business accounts linked to the selected Facebook Pages were found." in response.text
+    assert "needs_page_ig_link" in response.text
+    assert "Facebook authorization succeeded, but no Instagram Business accounts linked to the selected Pages were found." in response.text
     db = SessionLocal()
     try:
         integration = db.get(Integration, integration_id)
         assert integration is not None
-        assert integration.status == "disconnected"
+        assert integration.status == "needs_page_ig_link"
         instagram_count = (
             db.query(MetaPage)
             .filter(
