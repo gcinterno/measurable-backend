@@ -6,7 +6,12 @@ import os
 os.environ.setdefault("DATABASE_URL", "sqlite:////tmp/measurable_five_slide_test.db?check_same_thread=false")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret")
 
-from app.main import build_5_blocks, extractDailyMetricSeries, truncateInsightForSlide
+from app.main import (
+    _ensure_facebook_pages_five_slide_structure,
+    build_5_blocks,
+    extractDailyMetricSeries,
+    truncateInsightForSlide,
+)
 
 
 OLD_INSIGHT_PLACEHOLDERS = (
@@ -212,6 +217,7 @@ def test_build_5_blocks_generates_new_metric_structure_for_facebook_pages():
 
     assert summary["slide_number"] == 5
     assert summary["slide_type"] == "executive_summary"
+    assert summary["title"] == "Executive Summary"
     assert set(summary["metrics_summary"].keys()) == {"organic_impressions", "engagement", "followers", "page_views", "fans", "reactions"}
     assert summary["metrics_summary"]["organic_impressions"]["value"] == 10187
     assert summary["metrics_summary"]["engagement"]["value"] == 320
@@ -507,6 +513,25 @@ def test_build_5_blocks_facebook_pages_exposes_exact_slide_sequence_without_reac
     assert "reach_overview" not in slide_types
     assert all("reach" not in str(json.loads(block["data_json"]).get("title") or "").lower() for block in blocks[1:4])
     assert all("alcance" not in str(json.loads(block["data_json"]).get("title") or "").lower() for block in blocks[1:4])
+
+
+def test_facebook_pages_final_report_structure_keeps_executive_summary_as_slide_five():
+    blocks = build_5_blocks(_base_context(integration_type="facebook_pages"))
+    normalized_blocks = _ensure_facebook_pages_five_slide_structure(blocks)
+    slide_payloads = [json.loads(block["data_json"]) for block in normalized_blocks]
+
+    assert [slide["slide_type"] for slide in slide_payloads] == [
+        "cover",
+        "organic_impressions_overview",
+        "engagement_overview",
+        "page_views_overview",
+        "executive_summary",
+    ]
+    assert slide_payloads[4]["slide_number"] == 5
+    assert slide_payloads[4]["slide_type"] == "executive_summary"
+    assert slide_payloads[4]["semantic_name"] == "executive_summary"
+    assert slide_payloads[4]["title"] == "Executive Summary"
+    assert slide_payloads[4]["slide_type"] != "cover"
 
 
 def test_build_5_blocks_facebook_pages_never_uses_invalid_or_cross_metric_aliases():

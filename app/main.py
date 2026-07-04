@@ -10810,6 +10810,85 @@ def _meta_report_block(
     }
 
 
+FACEBOOK_PAGES_FIVE_SLIDE_TYPES = [
+    "cover",
+    "organic_impressions_overview",
+    "engagement_overview",
+    "page_views_overview",
+    "executive_summary",
+]
+
+
+def _block_spec_data(block_spec: dict[str, Any]) -> dict[str, Any]:
+    raw_data = block_spec.get("data_json")
+    if isinstance(raw_data, str):
+        try:
+            parsed = json.loads(raw_data)
+        except json.JSONDecodeError:
+            return {}
+    elif isinstance(raw_data, dict):
+        parsed = raw_data
+    else:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _facebook_pages_report_slide_types(block_specs: list[dict[str, Any]]) -> list[str]:
+    return [
+        str(_block_spec_data(block_spec).get("slide_type") or "").strip()
+        for block_spec in block_specs
+    ]
+
+
+def _facebook_pages_report_source_metrics(block_specs: list[dict[str, Any]]) -> list[str]:
+    source_metrics: list[str] = []
+    seen: set[str] = set()
+    for block_spec in block_specs:
+        block_data = _block_spec_data(block_spec)
+        for raw_metric in block_data.get("source_metrics_used") or []:
+            metric = str(raw_metric or "").strip()
+            if metric and metric not in seen:
+                seen.add(metric)
+                source_metrics.append(metric)
+    return source_metrics
+
+
+def _ensure_facebook_pages_five_slide_structure(
+    block_specs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if len(block_specs) != 5:
+        return block_specs
+    normalized_blocks: list[dict[str, Any]] = []
+    for index, (block_spec, expected_slide_type) in enumerate(
+        zip(block_specs, FACEBOOK_PAGES_FIVE_SLIDE_TYPES, strict=True),
+        start=1,
+    ):
+        block_data = _block_spec_data(block_spec)
+        if not block_data:
+            normalized_blocks.append(block_spec)
+            continue
+        updated_data = dict(block_data)
+        updated_data["slide_number"] = index
+        updated_data["slide_type"] = expected_slide_type
+        updated_data["semantic_name"] = expected_slide_type
+        if expected_slide_type == "executive_summary":
+            updated_data["title"] = "Executive Summary"
+            updated_data["title_en"] = "Executive Summary"
+        updated_block = dict(block_spec)
+        updated_block["order"] = index
+        updated_block["data_json"] = json.dumps(updated_data)
+        normalized_blocks.append(updated_block)
+
+    slide_types = _facebook_pages_report_slide_types(normalized_blocks)
+    if slide_types != FACEBOOK_PAGES_FIVE_SLIDE_TYPES:
+        raise http_error(
+            500,
+            "facebook_pages_report_structure_invalid",
+            "Facebook Pages report structure could not be generated.",
+        )
+    return normalized_blocks
+
+
 def _meta_number(value) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -13665,8 +13744,8 @@ def _build_five_slide_summary_payload(
     return {
         "slide_number": 5,
         "slide_type": "executive_summary",
-        "title": "Resumen final",
-        "title_en": "Final Summary",
+        "title": "Executive Summary",
+        "title_en": "Executive Summary",
         "branding": context.get("branding") if isinstance(context.get("branding"), dict) else {},
         "metrics_summary": metrics_summary,
         "ai_summary": ai_summary,
@@ -17448,6 +17527,23 @@ def _create_meta_dataset_report(
             "number_of_blocks_final": len(block_specs),
         },
     )
+    if (
+        report_source == "meta_pages_v2"
+        and str(report_inputs.get("integration_type") or "").strip() in {"facebook_pages", "meta_pages"}
+        and int(slide_limits["effective_slide_limit"]) == 5
+    ):
+        block_specs = _ensure_facebook_pages_five_slide_structure(block_specs)
+        slide_types_order = _facebook_pages_report_slide_types(block_specs)
+        _log_json_event(
+            "FACEBOOK_PAGES_REPORT_STRUCTURE_CREATED",
+            {
+                "report_id": report.id,
+                "slide_count": len(block_specs),
+                "slide_types_order": slide_types_order,
+                "provider": FACEBOOK_PAGES_PROVIDER,
+                "source_metrics_used": _facebook_pages_report_source_metrics(block_specs),
+            },
+        )
     period_comparison_range = _meta_timeframe_range(block_build_context)
     logger.info(
         "[PERIOD_COMPARISON][range]",
