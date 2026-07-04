@@ -329,6 +329,8 @@ def test_meta_ads_callback_persists_accounts_when_available(client, monkeypatch)
             }
         },
     )
+    monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: True)
+    monkeypatch.setattr(main_module, "_table_available", lambda _name: True)
     monkeypatch.setattr(
         "app.main.list_ad_accounts",
         lambda _access_token: [{"id": "act_123", "account_id": "123", "name": "Primary Ads Account"}],
@@ -451,6 +453,8 @@ def test_meta_ads_accounts_select_sync_and_disconnect(client, monkeypatch):
             }
         },
     )
+    monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: True)
+    monkeypatch.setattr(main_module, "_table_available", lambda _name: True)
     monkeypatch.setattr("app.main.boto3.client", lambda *_args, **_kwargs: _FakeS3Client())
     monkeypatch.setattr(
         "app.main.fetch_campaign_insights",
