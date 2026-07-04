@@ -1,0 +1,98 @@
+{
+  "workspace_id": 2,
+  "generated_at": "2026-06-30T04:49:44.354316+00:00",
+  "providers": [
+    "facebook_pages",
+    "instagram_business",
+    "meta_ads"
+  ],
+  "summary": {
+    "total_available": 0,
+    "total_unavailable": 3,
+    "missing_permissions": 0,
+    "invalid_metrics": 0,
+    "recommended_report_metrics_by_provider": {
+      "facebook_pages": [],
+      "instagram_business": [],
+      "meta_ads": []
+    }
+  },
+  "provider_summary": {
+    "facebook_pages": {
+      "total_available": 0,
+      "total_unavailable": 1,
+      "missing_permissions": 0,
+      "invalid_metrics": 0,
+      "recommended_report_metrics": []
+    },
+    "instagram_business": {
+      "total_available": 0,
+      "total_unavailable": 1,
+      "missing_permissions": 0,
+      "invalid_metrics": 0,
+      "recommended_report_metrics": []
+    },
+    "meta_ads": {
+      "total_available": 0,
+      "total_unavailable": 1,
+      "missing_permissions": 0,
+      "invalid_metrics": 0,
+      "recommended_report_metrics": []
+    }
+  },
+  "records": [
+    {
+      "provider": "facebook_pages",
+      "workspace_id": 2,
+      "integration_id": 2,
+      "endpoint_type": "token",
+      "metric_name": "access_token",
+      "normalized_field": "access_token",
+      "raw_available": false,
+      "availability_status": "unavailable",
+      "status_code": null,
+      "error_code": null,
+      "error_message": "Facebook Pages token not found.",
+      "asset_id": null,
+      "asset_name": null,
+      "reason": "missing_token",
+      "sample_value": null
+    },
+    {
+      "provider": "instagram_business",
+      "workspace_id": 2,
+      "integration_id": null,
+      "endpoint_type": "integration",
+      "metric_name": "integration",
+      "normalized_field": "integration_status",
+      "raw_available": false,
+      "availability_status": "unavailable",
+      "status_code": null,
+      "error_code": null,
+      "error_message": "Instagram Business integration not found.",
+      "asset_id": null,
+      "asset_name": null,
+      "reason": "integration_missing",
+      "sample_value": null
+    },
+    {
+      "provider": "meta_ads",
+      "workspace_id": 2,
+      "integration_id": null,
+      "endpoint_type": "integration",
+      "metric_name": "integration",
+      "normalized_field": "integration_status",
+      "raw_available": false,
+      "availability_status": "unavailable",
+      "status_code": null,
+      "error_code": null,
+      "error_message": "Meta Ads integration not found.",
+      "asset_id": null,
+      "asset_name": null,
+      "reason": "integration_missing",
+      "sample_value": null
+    }
+  ],
+  "json_path": "tmp/meta_data_catalog_2_20260630T044944Z.json",
+  "csv_path": "tmp/meta_data_catalog_2_20260630T044944Z.csv"
+}

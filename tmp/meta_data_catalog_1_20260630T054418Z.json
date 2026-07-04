@@ -1,0 +1,788 @@
+{
+  "workspace_id": 1,
+  "summary": {
+    "total_available": 4,
+    "total_unavailable": 10,
+    "missing_permissions": 1,
+    "invalid_metrics": 1,
+    "recommended_report_metrics_by_provider": {
+      "facebook_pages": [
+        "page_posts_impressions_organic",
+        "page_views_total",
+        "followers_count",
+        "fan_count"
+      ],
+      "instagram_business": [],
+      "meta_ads": []
+    }
+  },
+  "provider_summary": {
+    "facebook_pages": {
+      "provider": "facebook_pages",
+      "total_available": 4,
+      "total_unavailable": 2,
+      "missing_permissions": 1,
+      "invalid_metrics": 1,
+      "recommended_report_metrics": [
+        "page_posts_impressions_organic",
+        "page_views_total",
+        "followers_count",
+        "fan_count"
+      ]
+    },
+    "instagram_business": {
+      "provider": "instagram_business",
+      "total_available": 0,
+      "total_unavailable": 7,
+      "missing_permissions": 0,
+      "invalid_metrics": 0,
+      "recommended_report_metrics": []
+    },
+    "meta_ads": {
+      "provider": "meta_ads",
+      "total_available": 0,
+      "total_unavailable": 1,
+      "missing_permissions": 0,
+      "invalid_metrics": 0,
+      "recommended_report_metrics": []
+    }
+  },
+  "details": {
+    "facebook_pages": [
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_fields",
+        "metric_name": "followers_count",
+        "status_code": 200,
+        "availability_status": "available",
+        "error_code": null,
+        "error_message": "{'followers_count': 321, 'fan_count': 123}",
+        "reason": "Metric is available.",
+        "missing": [],
+        "raw_available": true,
+        "sample_value": 321
+      },
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_fields",
+        "metric_name": "fan_count",
+        "status_code": 200,
+        "availability_status": "available",
+        "error_code": null,
+        "error_message": "{'followers_count': 321, 'fan_count': 123}",
+        "reason": "Metric is available.",
+        "missing": [],
+        "raw_available": true,
+        "sample_value": 123
+      },
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_insights",
+        "metric_name": "page_posts_impressions_organic",
+        "status_code": 200,
+        "availability_status": "available",
+        "error_code": null,
+        "error_message": "{'data': [{'name': 'page_posts_impressions_organic', 'values': [{'value': 10187}]}]}",
+        "reason": "Metric is available.",
+        "missing": [],
+        "raw_available": true,
+        "sample_value": 10187
+      },
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_insights",
+        "metric_name": "page_post_engagements",
+        "status_code": 400,
+        "availability_status": "invalid_metric",
+        "error_code": 100,
+        "error_message": "Invalid metric",
+        "reason": "Meta rejected page_post_engagements as invalid for this asset.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_insights",
+        "metric_name": "page_actions_post_reactions_total",
+        "status_code": 403,
+        "availability_status": "missing_permission",
+        "error_code": 10,
+        "error_message": "Permissions error",
+        "reason": "Permission is missing for page_actions_post_reactions_total.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_insights",
+        "metric_name": "page_views_total",
+        "status_code": 200,
+        "availability_status": "available",
+        "error_code": null,
+        "error_message": "{'data': [{'name': 'page_views_total', 'values': [{'value': 42}]}]}",
+        "reason": "Metric is available.",
+        "missing": [],
+        "raw_available": true,
+        "sample_value": 42
+      }
+    ],
+    "instagram_business": [
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": false,
+        "token_decrypt_ok": false,
+        "asset_count": 0,
+        "asset_ids": [],
+        "asset_names": [],
+        "endpoint_type": "config",
+        "metric_name": null,
+        "status_code": null,
+        "availability_status": "config_missing",
+        "error_code": null,
+        "error_message": null,
+        "reason": "OAuth config is incomplete: INSTAGRAM_APP_ID, INSTAGRAM_APP_SECRET, INSTAGRAM_REDIRECT_URI.",
+        "missing": [
+          "INSTAGRAM_APP_ID",
+          "INSTAGRAM_APP_SECRET",
+          "INSTAGRAM_REDIRECT_URI"
+        ],
+        "raw_available": null,
+        "sample_value": null
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "reach",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "views",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "profile_views",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "website_clicks",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "accounts_engaged",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "total_interactions",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      }
+    ],
+    "meta_ads": [
+      {
+        "provider": "meta_ads",
+        "integration_id": 2,
+        "db_provider": "meta_ads",
+        "record_type": null,
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 0,
+        "asset_ids": [],
+        "asset_names": [],
+        "endpoint_type": "ad_accounts",
+        "metric_name": null,
+        "status_code": null,
+        "availability_status": "no_assets",
+        "error_code": null,
+        "error_message": null,
+        "reason": "No authorized assets were found for this provider.",
+        "missing": [],
+        "raw_available": null,
+        "sample_value": null
+      }
+    ]
+  },
+  "rows_preview": {
+    "facebook_pages": [
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_fields",
+        "metric_name": "followers_count",
+        "status_code": 200,
+        "availability_status": "available",
+        "error_code": null,
+        "error_message": "{'followers_count': 321, 'fan_count': 123}",
+        "reason": "Metric is available.",
+        "missing": [],
+        "raw_available": true,
+        "sample_value": 321
+      },
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_fields",
+        "metric_name": "fan_count",
+        "status_code": 200,
+        "availability_status": "available",
+        "error_code": null,
+        "error_message": "{'followers_count': 321, 'fan_count': 123}",
+        "reason": "Metric is available.",
+        "missing": [],
+        "raw_available": true,
+        "sample_value": 123
+      },
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_insights",
+        "metric_name": "page_posts_impressions_organic",
+        "status_code": 200,
+        "availability_status": "available",
+        "error_code": null,
+        "error_message": "{'data': [{'name': 'page_posts_impressions_organic', 'values': [{'value': 10187}]}]}",
+        "reason": "Metric is available.",
+        "missing": [],
+        "raw_available": true,
+        "sample_value": 10187
+      },
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_insights",
+        "metric_name": "page_post_engagements",
+        "status_code": 400,
+        "availability_status": "invalid_metric",
+        "error_code": 100,
+        "error_message": "Invalid metric",
+        "reason": "Meta rejected page_post_engagements as invalid for this asset.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_insights",
+        "metric_name": "page_actions_post_reactions_total",
+        "status_code": 403,
+        "availability_status": "missing_permission",
+        "error_code": 10,
+        "error_message": "Permissions error",
+        "reason": "Permission is missing for page_actions_post_reactions_total.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "facebook_pages",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "fb-1"
+        ],
+        "asset_names": [
+          "Botanero FB"
+        ],
+        "endpoint_type": "page_insights",
+        "metric_name": "page_views_total",
+        "status_code": 200,
+        "availability_status": "available",
+        "error_code": null,
+        "error_message": "{'data': [{'name': 'page_views_total', 'values': [{'value': 42}]}]}",
+        "reason": "Metric is available.",
+        "missing": [],
+        "raw_available": true,
+        "sample_value": 42
+      }
+    ],
+    "instagram_business": [
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": false,
+        "token_decrypt_ok": false,
+        "asset_count": 0,
+        "asset_ids": [],
+        "asset_names": [],
+        "endpoint_type": "config",
+        "metric_name": null,
+        "status_code": null,
+        "availability_status": "config_missing",
+        "error_code": null,
+        "error_message": null,
+        "reason": "OAuth config is incomplete: INSTAGRAM_APP_ID, INSTAGRAM_APP_SECRET, INSTAGRAM_REDIRECT_URI.",
+        "missing": [
+          "INSTAGRAM_APP_ID",
+          "INSTAGRAM_APP_SECRET",
+          "INSTAGRAM_REDIRECT_URI"
+        ],
+        "raw_available": null,
+        "sample_value": null
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "reach",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "views",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "profile_views",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "website_clicks",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "accounts_engaged",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      },
+      {
+        "provider": "instagram_business",
+        "integration_id": 1,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 1,
+        "asset_ids": [
+          "ig-1"
+        ],
+        "asset_names": [
+          "botaneroig"
+        ],
+        "endpoint_type": "account_insights",
+        "metric_name": "total_interactions",
+        "status_code": 404,
+        "availability_status": "unexpected_error",
+        "error_code": 404,
+        "error_message": "Not found",
+        "reason": "Meta returned an unexpected error.",
+        "missing": [],
+        "raw_available": false,
+        "sample_value": []
+      }
+    ],
+    "meta_ads": [
+      {
+        "provider": "meta_ads",
+        "integration_id": 2,
+        "db_provider": "meta_ads",
+        "record_type": null,
+        "status": "connected",
+        "token_present": true,
+        "token_decrypt_ok": true,
+        "asset_count": 0,
+        "asset_ids": [],
+        "asset_names": [],
+        "endpoint_type": "ad_accounts",
+        "metric_name": null,
+        "status_code": null,
+        "availability_status": "no_assets",
+        "error_code": null,
+        "error_message": null,
+        "reason": "No authorized assets were found for this provider.",
+        "missing": [],
+        "raw_available": null,
+        "sample_value": null
+      }
+    ]
+  },
+  "json_path": "tmp/meta_data_catalog_1_20260630T054418Z.json",
+  "csv_path": "tmp/meta_data_catalog_1_20260630T054418Z.csv"
+}

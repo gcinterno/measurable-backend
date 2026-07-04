@@ -1,0 +1,206 @@
+{
+  "workspace_id": 2,
+  "summary": {
+    "total_available": 0,
+    "total_unavailable": 3,
+    "missing_permissions": 0,
+    "invalid_metrics": 0,
+    "recommended_report_metrics_by_provider": {
+      "facebook_pages": [],
+      "instagram_business": [],
+      "meta_ads": []
+    }
+  },
+  "provider_summary": {
+    "facebook_pages": {
+      "provider": "facebook_pages",
+      "total_available": 0,
+      "total_unavailable": 1,
+      "missing_permissions": 0,
+      "invalid_metrics": 0,
+      "recommended_report_metrics": []
+    },
+    "instagram_business": {
+      "provider": "instagram_business",
+      "total_available": 0,
+      "total_unavailable": 1,
+      "missing_permissions": 0,
+      "invalid_metrics": 0,
+      "recommended_report_metrics": []
+    },
+    "meta_ads": {
+      "provider": "meta_ads",
+      "total_available": 0,
+      "total_unavailable": 1,
+      "missing_permissions": 0,
+      "invalid_metrics": 0,
+      "recommended_report_metrics": []
+    }
+  },
+  "details": {
+    "facebook_pages": [
+      {
+        "provider": "facebook_pages",
+        "integration_id": 2,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "disconnected",
+        "token_present": false,
+        "token_decrypt_ok": false,
+        "asset_count": 0,
+        "asset_ids": [],
+        "asset_names": [],
+        "endpoint_type": "token",
+        "metric_name": null,
+        "status_code": null,
+        "availability_status": "no_token",
+        "error_code": null,
+        "error_message": null,
+        "reason": "No stored access token was found for this provider.",
+        "missing": [],
+        "raw_available": null,
+        "sample_value": null
+      }
+    ],
+    "instagram_business": [
+      {
+        "provider": "instagram_business",
+        "integration_id": 2,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "disconnected",
+        "token_present": false,
+        "token_decrypt_ok": false,
+        "asset_count": 0,
+        "asset_ids": [],
+        "asset_names": [],
+        "endpoint_type": "config",
+        "metric_name": null,
+        "status_code": null,
+        "availability_status": "config_missing",
+        "error_code": null,
+        "error_message": null,
+        "reason": "OAuth config is incomplete: INSTAGRAM_APP_ID, INSTAGRAM_APP_SECRET, INSTAGRAM_REDIRECT_URI.",
+        "missing": [
+          "INSTAGRAM_APP_ID",
+          "INSTAGRAM_APP_SECRET",
+          "INSTAGRAM_REDIRECT_URI"
+        ],
+        "raw_available": null,
+        "sample_value": null
+      }
+    ],
+    "meta_ads": [
+      {
+        "provider": "meta_ads",
+        "integration_id": null,
+        "db_provider": null,
+        "record_type": null,
+        "status": "missing",
+        "token_present": false,
+        "token_decrypt_ok": false,
+        "asset_count": 0,
+        "asset_ids": [],
+        "asset_names": [],
+        "endpoint_type": "config",
+        "metric_name": null,
+        "status_code": null,
+        "availability_status": "config_missing",
+        "error_code": null,
+        "error_message": null,
+        "reason": "OAuth config is incomplete: META_ADS_APP_ID, META_ADS_APP_SECRET, META_ADS_REDIRECT_URI.",
+        "missing": [
+          "META_ADS_APP_ID",
+          "META_ADS_APP_SECRET",
+          "META_ADS_REDIRECT_URI"
+        ],
+        "raw_available": null,
+        "sample_value": null
+      }
+    ]
+  },
+  "rows_preview": {
+    "facebook_pages": [
+      {
+        "provider": "facebook_pages",
+        "integration_id": 2,
+        "db_provider": "meta",
+        "record_type": "facebook_page",
+        "status": "disconnected",
+        "token_present": false,
+        "token_decrypt_ok": false,
+        "asset_count": 0,
+        "asset_ids": [],
+        "asset_names": [],
+        "endpoint_type": "token",
+        "metric_name": null,
+        "status_code": null,
+        "availability_status": "no_token",
+        "error_code": null,
+        "error_message": null,
+        "reason": "No stored access token was found for this provider.",
+        "missing": [],
+        "raw_available": null,
+        "sample_value": null
+      }
+    ],
+    "instagram_business": [
+      {
+        "provider": "instagram_business",
+        "integration_id": 2,
+        "db_provider": "meta",
+        "record_type": "instagram_account",
+        "status": "disconnected",
+        "token_present": false,
+        "token_decrypt_ok": false,
+        "asset_count": 0,
+        "asset_ids": [],
+        "asset_names": [],
+        "endpoint_type": "config",
+        "metric_name": null,
+        "status_code": null,
+        "availability_status": "config_missing",
+        "error_code": null,
+        "error_message": null,
+        "reason": "OAuth config is incomplete: INSTAGRAM_APP_ID, INSTAGRAM_APP_SECRET, INSTAGRAM_REDIRECT_URI.",
+        "missing": [
+          "INSTAGRAM_APP_ID",
+          "INSTAGRAM_APP_SECRET",
+          "INSTAGRAM_REDIRECT_URI"
+        ],
+        "raw_available": null,
+        "sample_value": null
+      }
+    ],
+    "meta_ads": [
+      {
+        "provider": "meta_ads",
+        "integration_id": null,
+        "db_provider": null,
+        "record_type": null,
+        "status": "missing",
+        "token_present": false,
+        "token_decrypt_ok": false,
+        "asset_count": 0,
+        "asset_ids": [],
+        "asset_names": [],
+        "endpoint_type": "config",
+        "metric_name": null,
+        "status_code": null,
+        "availability_status": "config_missing",
+        "error_code": null,
+        "error_message": null,
+        "reason": "OAuth config is incomplete: META_ADS_APP_ID, META_ADS_APP_SECRET, META_ADS_REDIRECT_URI.",
+        "missing": [
+          "META_ADS_APP_ID",
+          "META_ADS_APP_SECRET",
+          "META_ADS_REDIRECT_URI"
+        ],
+        "raw_available": null,
+        "sample_value": null
+      }
+    ]
+  },
+  "json_path": "tmp/meta_data_catalog_2_20260630T050556Z.json",
+  "csv_path": "tmp/meta_data_catalog_2_20260630T050556Z.csv"
+}

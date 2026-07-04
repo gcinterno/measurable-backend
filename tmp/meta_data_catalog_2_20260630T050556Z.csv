@@ -1,0 +1,4 @@
+provider,integration_id,db_provider,record_type,status,token_present,token_decrypt_ok,asset_count,asset_ids,asset_names,endpoint_type,metric_name,status_code,availability_status,error_code,error_message,reason,missing,raw_available,sample_value
+facebook_pages,2,meta,facebook_page,disconnected,False,False,0,[],[],token,,,no_token,,,No stored access token was found for this provider.,[],,
+instagram_business,2,meta,instagram_account,disconnected,False,False,0,[],[],config,,,config_missing,,,"OAuth config is incomplete: INSTAGRAM_APP_ID, INSTAGRAM_APP_SECRET, INSTAGRAM_REDIRECT_URI.","[""INSTAGRAM_APP_ID"", ""INSTAGRAM_APP_SECRET"", ""INSTAGRAM_REDIRECT_URI""]",,
+meta_ads,,,,missing,False,False,0,[],[],config,,,config_missing,,,"OAuth config is incomplete: META_ADS_APP_ID, META_ADS_APP_SECRET, META_ADS_REDIRECT_URI.","[""META_ADS_APP_ID"", ""META_ADS_APP_SECRET"", ""META_ADS_REDIRECT_URI""]",,
