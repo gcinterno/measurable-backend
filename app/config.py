@@ -96,6 +96,10 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("INSTAGRAM_BUSINESS_CONFIG_ID", "META_INSTAGRAM_BUSINESS_CONFIG_ID"),
     )
+    meta_business_suite_config_id: str | None = Field(
+        default=None,
+        validation_alias="META_BUSINESS_SUITE_CONFIG_ID",
+    )
     meta_pages_redirect_uri: str | None = Field(
         default=None,
         validation_alias=AliasChoices("META_PAGES_REDIRECT_URI", "META_REDIRECT_URI"),

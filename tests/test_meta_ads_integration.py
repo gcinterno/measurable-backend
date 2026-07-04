@@ -163,16 +163,16 @@ def test_meta_ads_connect_creates_separate_integration(client):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["scope"] == META_ADS_OAUTH_SCOPE
-    assert payload["scope"] == "public_profile,ads_read,business_management"
+    assert payload["scope"] == meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE
+    assert payload["scope"] == "public_profile,pages_show_list,pages_read_engagement,read_insights,pages_read_user_content,instagram_basic,business_management,ads_read"
     assert "ads_read" in payload["auth_url"]
     assert "business_management" in payload["auth_url"]
-    assert "pages_show_list" not in payload["auth_url"]
-    assert "ads_management" not in payload["auth_url"]
+    assert "pages_show_list" in payload["auth_url"]
+    assert "instagram_basic" in payload["auth_url"]
     query = parse_qs(urlparse(payload["auth_url"]).query)
-    assert query["scope"] == [META_ADS_OAUTH_SCOPE]
+    assert query["scope"] == [meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE]
     assert query["auth_type"] == ["rerequest"]
-    assert query["redirect_uri"] == ["http://localhost:8000/integrations/meta-ads/callback"]
+    assert query["redirect_uri"] == ["http://localhost:8000/integrations/meta/callback-pages"]
 
     db = SessionLocal()
     try:
@@ -373,7 +373,7 @@ def test_meta_ads_connect_accepts_preferred_env_family(client, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["scope"] == META_ADS_OAUTH_SCOPE
+    assert response.json()["scope"] == meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE
 
 
 def test_meta_ads_connect_accepts_legacy_fallback_env_family(client, monkeypatch):
@@ -396,8 +396,8 @@ def test_meta_ads_connect_accepts_legacy_fallback_env_family(client, monkeypatch
     assert response.status_code == 200
     payload = response.json()
     query = parse_qs(urlparse(payload["auth_url"]).query)
-    assert query["scope"] == [META_ADS_OAUTH_SCOPE]
-    assert query["redirect_uri"] == ["http://localhost:8000/integrations/meta-ads/callback"]
+    assert query["scope"] == [meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE]
+    assert query["redirect_uri"] == ["http://localhost:8000/integrations/meta/callback-pages"]
 
 
 def test_meta_ads_accounts_select_sync_and_disconnect(client, monkeypatch):

@@ -494,7 +494,7 @@ def test_meta_pages_business_config_does_not_affect_instagram_or_ads_oauth(monke
     assert ads_query["scope"] == [meta_ads.META_ADS_OAUTH_SCOPE]
 
 
-def test_instagram_business_connect_prefers_instagram_specific_config_id(client, monkeypatch):
+def test_instagram_business_connect_prefers_meta_business_suite_config_id(client, monkeypatch):
     db = SessionLocal()
     try:
         user = User(
@@ -520,7 +520,7 @@ def test_instagram_business_connect_prefers_instagram_specific_config_id(client,
     monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
     monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
     monkeypatch.setattr(meta_ads.settings, "meta_pages_config_id", "pages-config-id")
-    monkeypatch.setattr(meta_ads.settings, "instagram_business_config_id", "ig-business-config-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_business_suite_config_id", "suite-config-id")
     monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
     monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
 
@@ -531,7 +531,7 @@ def test_instagram_business_connect_prefers_instagram_specific_config_id(client,
 
     assert response.status_code == 200
     query = parse_qs(urlparse(response.json()["auth_url"]).query)
-    assert query["config_id"] == ["ig-business-config-id"]
+    assert query["config_id"] == ["suite-config-id"]
     assert "scope" not in query
 
 
@@ -577,16 +577,17 @@ def test_instagram_business_connect_uses_facebook_oauth_with_dedicated_endpoint(
     assert parsed.netloc == "www.facebook.com"
     assert parsed.path.endswith("/dialog/oauth")
     assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/meta/callback-pages"]
-    assert query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
+    assert query["scope"] == [meta_ads.META_BUSINESS_SUITE_OAUTH_SCOPE]
     assert query["response_type"] == ["code"]
     assert query["auth_type"] == ["rerequest"]
-    assert state_payload["integration_type"] == "instagram_business"
-    assert state_payload["source"] == "instagram_business"
-    assert state_payload["provider"] == "instagram_business"
+    assert state_payload["integration_type"] == "meta_business_suite"
+    assert state_payload["source"] == "meta_business_suite"
+    assert state_payload["provider"] == "meta_business_suite"
     assert state_payload["include_linked_instagram"] is True
+    assert state_payload["include_ads"] is True
     assert state_payload["callback_route"] == "/integrations/meta/callback-pages"
     assert payload["provider"] == "instagram_business"
-    assert payload["source"] == "facebook_pages_linked_instagram"
+    assert payload["source"] == "meta_business_suite"
 
 
 def test_meta_connect_pages_rejects_instagram_business_alias(client, monkeypatch):
@@ -806,13 +807,12 @@ def test_instagram_business_connect_returns_facebook_pages_scope(client, monkeyp
     state_payload = meta_ads.decode_state(query["state"][0])
     assert parsed.netloc == "www.facebook.com"
     assert "instagram.com" not in payload["auth_url"]
-    assert payload["scope"] == meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN
-    assert query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
+    assert payload["scope"] == meta_ads.META_BUSINESS_SUITE_OAUTH_SCOPE
+    assert query["scope"] == [meta_ads.META_BUSINESS_SUITE_OAUTH_SCOPE]
     assert "instagram_basic" in query["scope"][0]
     assert "instagram_business_basic" not in query["scope"][0]
-    assert "instagram_business_manage_insights" not in query["scope"][0]
-    assert "ads_read" not in query["scope"][0]
-    assert state_payload["integration_type"] == "instagram_business"
+    assert "ads_read" in query["scope"][0]
+    assert state_payload["integration_type"] == "meta_business_suite"
     assert state_payload["callback_route"] == "/integrations/meta/callback-pages"
 
 

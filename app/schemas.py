@@ -933,7 +933,16 @@ class MetaAdsStatusOut(BaseModel):
 class InstagramBusinessStatusOut(BaseModel):
     connected: bool = False
     provider: str = "instagram_business"
-    status: Literal["connected", "disconnected", "needs_reconnect"] = "disconnected"
+    status: Literal[
+        "connected",
+        "disconnected",
+        "needs_reconnect",
+        "needs_permission",
+        "needs_page_ig_link",
+        "needs_business_or_creator_account",
+        "connected_no_assets",
+        "no_token",
+    ] = "disconnected"
 
 
 class MetaAdsSelectAccountIn(BaseModel):

@@ -34,11 +34,22 @@ META_ADS_SCOPES = [
     "ads_read",
     "business_management",
 ]
+META_BUSINESS_SUITE_SCOPES = [
+    "public_profile",
+    "pages_show_list",
+    "pages_read_engagement",
+    "read_insights",
+    "pages_read_user_content",
+    "instagram_basic",
+    "business_management",
+    "ads_read",
+]
 FACEBOOK_PAGES_OAUTH_SCOPE = ",".join(FACEBOOK_PAGES_SCOPES)
 INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN = ",".join(
     INSTAGRAM_BUSINESS_SCOPES_LEGACY_FACEBOOK_LOGIN
 )
 META_ADS_OAUTH_SCOPE = ",".join(META_ADS_SCOPES)
+META_BUSINESS_SUITE_OAUTH_SCOPE = ",".join(META_BUSINESS_SUITE_SCOPES)
 META_PAGES_OAUTH_SCOPE = FACEBOOK_PAGES_OAUTH_SCOPE
 META_PAGES_CALLBACK_PATH = "/integrations/meta/callback-pages"
 META_ADS_CALLBACK_PATH = "/integrations/meta-ads/callback"
@@ -57,11 +68,15 @@ def normalize_meta_oauth_integration_type(value: str | None) -> str:
         return "instagram_business"
     if normalized in {"meta_ads", "meta-ad", "metaads", "ads"}:
         return "meta_ads"
+    if normalized in {"meta_business_suite", "meta-business-suite", "meta_suite", "suite"}:
+        return "meta_business_suite"
     return "facebook_pages"
 
 
 def meta_oauth_scopes_for_integration_type(integration_type: str | None) -> list[str]:
     normalized = normalize_meta_oauth_integration_type(integration_type)
+    if normalized == "meta_business_suite":
+        return list(META_BUSINESS_SUITE_SCOPES)
     if normalized == "instagram_business":
         return list(INSTAGRAM_BUSINESS_SCOPES_LEGACY_FACEBOOK_LOGIN)
     if normalized == "meta_ads":
@@ -75,6 +90,9 @@ def meta_oauth_scope_string_for_integration_type(integration_type: str | None) -
 
 def get_meta_oauth_config_id(integration_type: str | None = "facebook_pages") -> str | None:
     normalized = normalize_meta_oauth_integration_type(integration_type)
+    if normalized == "meta_business_suite":
+        config_id = str(settings.meta_business_suite_config_id or "").strip()
+        return config_id or None
     if normalized == "instagram_business":
         config_id = str(settings.instagram_business_config_id or "").strip()
         return config_id or None
@@ -85,7 +103,7 @@ def get_meta_oauth_config_id(integration_type: str | None = "facebook_pages") ->
 def get_meta_pages_auth_mode(integration_type: str | None = "facebook_pages") -> str:
     normalized = normalize_meta_oauth_integration_type(integration_type)
     config_id = get_meta_oauth_config_id(normalized)
-    if normalized in {"facebook_pages", "instagram_business"} and config_id:
+    if normalized in {"facebook_pages", "instagram_business", "meta_business_suite"} and config_id:
         return META_PAGES_AUTH_MODE_BUSINESS_CONFIG
     return META_PAGES_AUTH_MODE_LEGACY_SCOPE
 

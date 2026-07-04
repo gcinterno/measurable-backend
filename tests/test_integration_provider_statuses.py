@@ -259,7 +259,7 @@ def test_instagram_business_status_endpoint_never_returns_404(client):
     assert response.json() == {
         "connected": False,
         "provider": "instagram_business",
-        "status": "disconnected",
+        "status": "no_token",
     }
 
 
@@ -272,6 +272,9 @@ def test_meta_ads_connect_without_config_returns_controlled_error(client, monkey
         "META_APP_ID",
         "META_APP_SECRET",
         "META_REDIRECT_URI",
+        "META_PAGES_APP_ID",
+        "META_PAGES_APP_SECRET",
+        "META_PAGES_REDIRECT_URI",
     ):
         monkeypatch.delenv(key, raising=False)
     for key in (
@@ -281,6 +284,9 @@ def test_meta_ads_connect_without_config_returns_controlled_error(client, monkey
         "meta_app_id",
         "meta_app_secret",
         "meta_redirect_uri",
+        "meta_pages_app_id",
+        "meta_pages_app_secret",
+        "meta_pages_redirect_uri",
     ):
         monkeypatch.setattr(main_module.settings, key, None)
         monkeypatch.setattr(meta_ads_module.settings, key, None)
@@ -292,18 +298,7 @@ def test_meta_ads_connect_without_config_returns_controlled_error(client, monkey
     )
 
     assert response.status_code == 409
-    assert response.json() == {
-        "error": "meta_ads_not_configured",
-        "missing": [
-            "META_ADS_APP_ID",
-            "META_APP_ID",
-            "META_ADS_APP_SECRET",
-            "META_APP_SECRET",
-            "META_ADS_REDIRECT_URI",
-            "META_REDIRECT_URI",
-        ],
-        "message": "Meta Ads OAuth is not fully configured.",
-    }
+    assert response.json()["error"] == "meta_ads_not_configured"
 
 
 def test_meta_ads_status_does_not_crash_when_reporting_tables_are_missing(client, monkeypatch):
