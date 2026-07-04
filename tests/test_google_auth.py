@@ -848,6 +848,7 @@ def test_instagram_business_facebook_callback_connects_linked_accounts(client, m
             "id": page_id,
             "name": "Facebook Page",
             "access_token": "page-token",
+            "_meta_http_status_code": 200,
             "instagram_business_account": {
                 "id": "ig-1",
                 "username": "brand",
@@ -856,9 +857,15 @@ def test_instagram_business_facebook_callback_connects_linked_accounts(client, m
                 "followers_count": 123,
                 "media_count": 45,
             },
+            "connected_instagram_account": {
+                "id": "ig-1",
+                "username": "brand",
+                "name": "Brand IG",
+                "profile_picture_url": "https://example.com/ig.jpg",
+            },
         }
 
-    monkeypatch.setattr(main_module, "fetch_page_info", fake_fetch_page_info)
+    monkeypatch.setattr(main_module, "fetch_page_info_with_metadata", fake_fetch_page_info)
     monkeypatch.setattr(
         main_module,
         "_fetch_instagram_user_details",
@@ -877,6 +884,7 @@ def test_instagram_business_facebook_callback_connects_linked_accounts(client, m
     assert captured_page_lookup["page_id"] == "fb-page-1"
     assert "access_token" in captured_page_lookup["fields"]
     assert "instagram_business_account" in captured_page_lookup["fields"]
+    assert "connected_instagram_account" in captured_page_lookup["fields"]
     assert "followers_count" in captured_page_lookup["fields"]
     assert "media_count" in captured_page_lookup["fields"]
     db = SessionLocal()
@@ -988,6 +996,125 @@ def test_instagram_business_facebook_callback_without_linked_accounts_does_not_c
         )
         assert instagram_count == 0
         assert db.query(Integration).filter(Integration.workspace_id == workspace_id, Integration.provider == "meta").count() == 0
+    finally:
+        db.close()
+
+
+def test_instagram_business_facebook_callback_connected_instagram_account_without_business_account_returns_needs_business_or_creator_account(
+    client,
+    monkeypatch,
+):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="instagram-facebook-connected-only@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Instagram Facebook Connected Only",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        workspace = Workspace(name="Instagram Facebook Connected Only Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="free", status="active"))
+        integration = Integration(
+            workspace_id=workspace.id,
+            provider="instagram_business",
+            name="Instagram Business",
+            status="disconnected",
+        )
+        db.add(integration)
+        db.commit()
+        user_id = user.id
+        workspace_id = workspace.id
+        integration_id = integration.id
+    finally:
+        db.close()
+
+    scopes = meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN.split(",")
+    state = meta_ads.encode_state(
+        {
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "integration_id": integration_id,
+            "integration_type": "instagram_business",
+            "source": "instagram_business",
+            "provider": "instagram_business",
+            "include_linked_instagram": True,
+            "callback_route": "/integrations/meta/callback-pages",
+        }
+    )
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
+    monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
+    monkeypatch.setattr(
+        main_module,
+        "exchange_pages_code_for_token",
+        lambda _code, *, redirect_uri=None: {"access_token": "meta-token"},
+    )
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {"data": {"is_valid": True, "scopes": scopes}},
+    )
+    monkeypatch.setattr(
+        main_module,
+        "list_pages",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "fb-page-1",
+                "name": "Facebook Page",
+                "access_token": "page-token",
+            }
+        ],
+    )
+
+    captured_page_lookup: dict[str, str] = {}
+
+    def fake_fetch_page_info(token, page_id, *, fields="id,name"):
+        captured_page_lookup["token"] = token
+        captured_page_lookup["page_id"] = page_id
+        captured_page_lookup["fields"] = fields
+        return {
+            "id": page_id,
+            "name": "Facebook Page",
+            "access_token": "page-token",
+            "_meta_http_status_code": 200,
+            "connected_instagram_account": {
+                "id": "ig-connected-1",
+                "username": "brand_connected",
+                "name": "Brand Connected",
+                "profile_picture_url": "https://example.com/ig-connected.jpg",
+            },
+        }
+
+    monkeypatch.setattr(main_module, "fetch_page_info_with_metadata", fake_fetch_page_info)
+
+    response = client.get(f"/integrations/meta/callback-pages?code=meta-code&state={state}")
+
+    assert response.status_code == 200
+    assert "needs_business_or_creator_account" in response.text
+    assert "Instagram account found, but it is not available as an Instagram Business account for reporting yet." in response.text
+    assert "connected_instagram_account" in captured_page_lookup["fields"]
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, integration_id)
+        assert integration is not None
+        assert integration.status == "needs_business_or_creator_account"
+        instagram_count = (
+            db.query(MetaPage)
+            .filter(
+                MetaPage.integration_id == integration_id,
+                MetaPage.record_type == "instagram_account",
+            )
+            .count()
+        )
+        assert instagram_count == 0
     finally:
         db.close()
 

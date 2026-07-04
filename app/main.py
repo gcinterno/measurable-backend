@@ -7272,6 +7272,16 @@ def _log_instagram_business_account_raw(
     )
 
 
+def _extract_meta_graph_error_details(exc: HTTPException) -> tuple[int | None, str | None, str | None]:
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    graph_error = detail.get("meta_error") if isinstance(detail.get("meta_error"), dict) else {}
+    upstream_status = detail.get("upstream_status_code")
+    graph_status = upstream_status if isinstance(upstream_status, int) else exc.status_code
+    graph_error_code = str(graph_error.get("code") or detail.get("code") or "").strip() or None
+    graph_error_message = str(graph_error.get("message") or detail.get("message") or "").strip() or None
+    return graph_status, graph_error_code, graph_error_message
+
+
 def _meta_token_preview(access_token: str | None) -> str | None:
     token = str(access_token or "").strip()
     return f"{token[:8]}..." if token else None
@@ -7336,43 +7346,119 @@ def _fetch_instagram_business_account_for_page(
         },
     )
     lookup_token = page_access_token or fallback_access_token
-    try:
-        page_info = fetch_page_info(
-            lookup_token,
-            page_id,
-            fields=(
-                "id,name,access_token,"
-                "instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}"
-            ),
-        )
-    except HTTPException as exc:
-        if not _is_meta_api_error(exc):
-            raise
-        logger.warning(
-            "Meta Instagram fallback lookup failed",
-            extra={
-                "integration_id": integration_id,
-                "user_id": user_id,
+    fields = (
+        "id,name,access_token,"
+        "instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}"
+    )
+    if is_instagram_business_flow:
+        fields += ",connected_instagram_account{id,username,name,profile_picture_url}"
+    if is_instagram_business_flow:
+        try:
+            page_info = fetch_page_info_with_metadata(
+                lookup_token,
+                page_id,
+                fields=fields,
+            )
+        except HTTPException as exc:
+            if not _is_meta_api_error(exc):
+                raise
+            graph_status, graph_error_code, graph_error_message = _extract_meta_graph_error_details(exc)
+            _meta_oauth_log(
+                "INSTAGRAM_BUSINESS_PAGE_LOOKUP_RESULT",
+                provider="instagram_business",
+                integration_id=integration_id,
+                user_id=user_id,
+                page_id=page_id,
+                page_name=page_name,
+                graph_status=graph_status,
+                graph_error_code=graph_error_code,
+                graph_error_message=graph_error_message,
+                has_instagram_business_account=False,
+                has_connected_instagram_account=False,
+            )
+            logger.warning(
+                "Meta Instagram fallback lookup failed",
+                extra={
+                    "integration_id": integration_id,
+                    "user_id": user_id,
+                    "page_id": page_id,
+                    "page_name": page_name,
+                    "has_page_access_token": has_page_access_token,
+                    "error": str(exc.detail),
+                },
+            )
+            return {
                 "page_id": page_id,
                 "page_name": page_name,
-                "has_page_access_token": has_page_access_token,
-                "error": str(exc.detail),
-            },
-        )
-        return None
+                "graph_status": graph_status,
+                "graph_error_code": graph_error_code,
+                "graph_error_message": graph_error_message,
+                "has_instagram_business_account": False,
+                "has_connected_instagram_account": False,
+                "instagram_business_account": None,
+                "connected_instagram_account": None,
+            }
+    else:
+        try:
+            page_info = fetch_page_info(
+                lookup_token,
+                page_id,
+                fields=fields,
+            )
+        except HTTPException as exc:
+            if not _is_meta_api_error(exc):
+                raise
+            logger.warning(
+                "Meta Instagram fallback lookup failed",
+                extra={
+                    "integration_id": integration_id,
+                    "user_id": user_id,
+                    "page_id": page_id,
+                    "page_name": page_name,
+                    "has_page_access_token": has_page_access_token,
+                    "error": str(exc.detail),
+                },
+            )
+            return None
 
     instagram_account = _normalize_instagram_business_account_node(
         page_info.get("instagram_business_account")
     )
-    _log_instagram_business_account_raw(
-        integration_id=integration_id,
-        user_id=user_id,
-        page_id=page_id,
-        page_name=page_name,
-        has_page_access_token=has_page_access_token,
-        instagram_business_account=instagram_account,
-    )
     if is_instagram_business_flow:
+        connected_instagram_account = _normalize_instagram_business_account_node(
+            page_info.get("connected_instagram_account")
+        )
+        graph_status = page_info.get("_meta_http_status_code")
+        graph_error_code = None
+        graph_error_message = None
+        instagram_business_account_id = (
+            str(instagram_account.get("id") or "").strip() or None
+            if instagram_account
+            else None
+        )
+        instagram_business_account_username = (
+            str(instagram_account.get("username") or "").strip() or None
+            if instagram_account
+            else None
+        )
+        connected_instagram_account_id = (
+            str(connected_instagram_account.get("id") or "").strip() or None
+            if connected_instagram_account
+            else None
+        )
+        connected_instagram_account_username = (
+            str(connected_instagram_account.get("username") or "").strip() or None
+            if connected_instagram_account
+            else None
+        )
+        _log_instagram_business_account_raw(
+            integration_id=integration_id,
+            user_id=user_id,
+            page_id=page_id,
+            page_name=page_name,
+            has_page_access_token=has_page_access_token,
+            instagram_business_account=instagram_account,
+        )
         if instagram_account:
             _meta_oauth_log(
                 "INSTAGRAM_BUSINESS_LINKED_ACCOUNT_FOUND",
@@ -7393,6 +7479,42 @@ def _fetch_instagram_business_account_for_page(
                 page_id=page_id,
                 page_name=page_name,
             )
+        _meta_oauth_log(
+            "INSTAGRAM_BUSINESS_PAGE_LOOKUP_RESULT",
+            provider="instagram_business",
+            integration_id=integration_id,
+            user_id=user_id,
+            page_id=page_id,
+            page_name=page_name,
+            graph_status=graph_status,
+            graph_error_code=graph_error_code,
+            graph_error_message=graph_error_message,
+            has_instagram_business_account=bool(instagram_account),
+            has_connected_instagram_account=bool(connected_instagram_account),
+            instagram_business_account_id=instagram_business_account_id,
+            instagram_business_username=instagram_business_account_username,
+            connected_instagram_account_id=connected_instagram_account_id,
+            connected_instagram_account_username=connected_instagram_account_username,
+        )
+        return {
+            "page_id": page_id,
+            "page_name": page_name,
+            "graph_status": graph_status,
+            "graph_error_code": graph_error_code,
+            "graph_error_message": graph_error_message,
+            "has_instagram_business_account": bool(instagram_account),
+            "has_connected_instagram_account": bool(connected_instagram_account),
+            "instagram_business_account": instagram_account,
+            "connected_instagram_account": connected_instagram_account,
+        }
+    _log_instagram_business_account_raw(
+        integration_id=integration_id,
+        user_id=user_id,
+        page_id=page_id,
+        page_name=page_name,
+        has_page_access_token=has_page_access_token,
+        instagram_business_account=instagram_account,
+    )
     return instagram_account
 
 
@@ -7862,11 +7984,13 @@ def _collect_meta_instagram_diagnostics(
         )
 
         page_lookup_instagram = me_accounts_instagram
+        connected_instagram_account: dict[str, Any] | None = None
         page_lookup_error: str | None = None
+        page_lookup_result = None
         if is_instagram_business_flow or page_lookup_instagram is None:
             if is_instagram_business_flow and me_accounts_instagram is not None:
                 page_lookup_instagram = None
-            page_lookup_instagram = _fetch_instagram_business_account_for_page(
+            page_lookup_result = _fetch_instagram_business_account_for_page(
                 page_id=page_id,
                 page_name=page_name,
                 page_access_token=page_access_token,
@@ -7875,10 +7999,22 @@ def _collect_meta_instagram_diagnostics(
                 user_id=user_id,
                 is_instagram_business_flow=is_instagram_business_flow,
             )
-            if page_lookup_instagram is None and me_accounts_instagram is not None:
-                page_lookup_instagram = me_accounts_instagram
-            if page_lookup_instagram is None:
-                page_lookup_error = "instagram_business_account_not_returned"
+            if is_instagram_business_flow:
+                page_lookup_instagram = (
+                    (page_lookup_result or {}).get("instagram_business_account")
+                    or me_accounts_instagram
+                )
+                connected_instagram_account = (page_lookup_result or {}).get("connected_instagram_account")
+                if page_lookup_instagram is None and me_accounts_instagram is not None:
+                    page_lookup_instagram = me_accounts_instagram
+                if page_lookup_instagram is None and not connected_instagram_account:
+                    page_lookup_error = "instagram_business_account_not_returned"
+            else:
+                page_lookup_instagram = page_lookup_result
+                if page_lookup_instagram is None and me_accounts_instagram is not None:
+                    page_lookup_instagram = me_accounts_instagram
+                if page_lookup_instagram is None:
+                    page_lookup_error = "instagram_business_account_not_returned"
 
         instagram_details: dict[str, Any] | None = None
         instagram_details_error: str | None = None
@@ -7915,6 +8051,12 @@ def _collect_meta_instagram_diagnostics(
                 ].get("business_name"),
                 "instagram_business_account_from_me_accounts": me_accounts_instagram,
                 "instagram_business_account_from_page_lookup": page_lookup_instagram,
+                "connected_instagram_account_from_page_lookup": connected_instagram_account,
+                "has_instagram_business_account": bool(page_lookup_instagram),
+                "has_connected_instagram_account": bool(connected_instagram_account),
+                "graph_status": (page_lookup_result or {}).get("graph_status") if isinstance(page_lookup_result, dict) else None,
+                "graph_error_code": (page_lookup_result or {}).get("graph_error_code") if isinstance(page_lookup_result, dict) else None,
+                "graph_error_message": (page_lookup_result or {}).get("graph_error_message") if isinstance(page_lookup_result, dict) else None,
                 "instagram_user_details": instagram_details,
                 "errors": [
                     error
@@ -10218,13 +10360,94 @@ def _run_meta_pages_oauth_callback(
             instagram_accounts_count=len(instagram_accounts),
             assets=connected_assets,
         )
-        required_assets = instagram_accounts if selected_integration_type == "instagram_business" else page_payloads
+        graph_page_names = [item.get("page_name") for item in diagnostics if item.get("page_name")]
+        pages_filtered_out = max(len(graph_page_names) - len(page_payloads), 0) if graph_page_names else 0
+        _meta_oauth_log(
+            "FACEBOOK_PAGES_RETURNED_FROM_GRAPH",
+            integration_id=integration.id,
+            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            pages_returned_from_graph=len(graph_page_names),
+            page_names_returned_from_graph=graph_page_names,
+            selected_integration_type=selected_integration_type,
+            provider="meta",
+            record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
+        )
+        _meta_oauth_log(
+            "FACEBOOK_PAGES_SAVED_FINAL",
+            integration_id=integration.id,
+            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            pages_saved_final=len(page_payloads),
+            page_names_saved_final=[page.name for page in page_payloads],
+            pages_filtered_out=pages_filtered_out,
+            selected_integration_type=selected_integration_type,
+            provider="meta",
+            record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
+        )
+        page_diagnostics = [
+            item for item in diagnostics if isinstance(item, dict) and item.get("page_id")
+        ]
+        has_business_instagram_account = bool(instagram_accounts)
+        has_connected_instagram_account_only = any(
+            bool(item.get("has_connected_instagram_account")) and not bool(item.get("has_instagram_business_account"))
+            for item in page_diagnostics
+        )
         unavailable_reason = (
             "Facebook authorization succeeded, but no Instagram Business accounts linked to the selected Pages were found."
             if selected_integration_type == "instagram_business"
             else "Meta connected, but no authorized Facebook Pages were returned."
         )
-        if not required_assets:
+        if is_instagram_business_flow and has_connected_instagram_account_only and not has_business_instagram_account:
+            if not reconnect_requested:
+                _set_meta_integration_status(db, integration, status="needs_business_or_creator_account")
+            _meta_oauth_log(
+                "INSTAGRAM_BUSINESS_STATUS_RESOLVED",
+                provider="instagram_business",
+                integration_id=integration.id,
+                workspace_id=workspace_id,
+                user_id=effective_user_id,
+                status="needs_business_or_creator_account",
+                asset_count=0,
+                source="facebook_pages_linked_instagram",
+            )
+            _meta_oauth_log(
+                "INSTAGRAM_BUSINESS_CONNECT_COMPLETED",
+                provider="instagram_business",
+                integration_id=integration.id,
+                workspace_id=workspace_id,
+                user_id=effective_user_id,
+                status="needs_business_or_creator_account",
+                asset_count=0,
+                source="facebook_pages_linked_instagram",
+            )
+            message = "Instagram account found, but it is not available as an Instagram Business account for reporting yet."
+            return (
+                _meta_oauth_popup_response(
+                    status="needs_business_or_creator_account",
+                    source="facebook_pages_linked_instagram",
+                    integration_id=integration.id,
+                    error="needs_business_or_creator_account",
+                    message=message,
+                    provider="instagram_business",
+                    callback_path="/integrations/instagram-business/callback",
+                )
+                if redirect_to_frontend
+                else {
+                    **_safe_meta_callback_payload(
+                        success=False,
+                        pages=[],
+                        error="needs_business_or_creator_account",
+                        integration_id=integration.id,
+                    ),
+                    "status": "needs_business_or_creator_account",
+                    "message": message,
+                    "asset_count": 0,
+                    "provider": "instagram_business",
+                    "source": "facebook_pages_linked_instagram",
+                }
+            )
+        if not has_business_instagram_account:
             if not reconnect_requested:
                 _set_meta_integration_status(
                     db,
@@ -10287,31 +10510,6 @@ def _run_meta_pages_oauth_callback(
                     ),
                 }
             )
-        graph_page_names = [item.get("page_name") for item in diagnostics if item.get("page_name")]
-        pages_filtered_out = max(len(graph_page_names) - len(page_payloads), 0) if graph_page_names else 0
-        _meta_oauth_log(
-            "FACEBOOK_PAGES_RETURNED_FROM_GRAPH",
-            integration_id=integration.id,
-            workspace_id=workspace_id,
-            user_id=effective_user_id,
-            pages_returned_from_graph=len(graph_page_names),
-            page_names_returned_from_graph=graph_page_names,
-            selected_integration_type=selected_integration_type,
-            provider="meta",
-            record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
-        )
-        _meta_oauth_log(
-            "FACEBOOK_PAGES_SAVED_FINAL",
-            integration_id=integration.id,
-            workspace_id=workspace_id,
-            user_id=effective_user_id,
-            pages_saved_final=len(page_payloads),
-            page_names_saved_final=[page.name for page in page_payloads],
-            pages_filtered_out=pages_filtered_out,
-            selected_integration_type=selected_integration_type,
-            provider="meta",
-            record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
-        )
         logger.warning(
             "Meta Pages callback account sync integration_id=%s workspace_id=%s user_id=%s state_integration_id=%s resolved_integration_id=%s token_id=%s pages_returned_from_graph=%s page_names_returned_from_graph=%s pages_deleted_as_stale=%s pages_saved_final=%s instagram_accounts_saved_final=%s selected_integration_type=%s",
             integration.id,
