@@ -26,11 +26,8 @@ INSTAGRAM_BUSINESS_SCOPES_LEGACY_FACEBOOK_LOGIN = [
     "pages_show_list",
     "pages_read_engagement",
     "read_insights",
-    # The instagram_business_* scopes belong to Instagram Business Login /
-    # Instagram Platform and must not be requested through Facebook Login.
-    # Reserve them for a future dedicated Instagram auth flow.
-    "instagram_basic",
-    "instagram_manage_insights",
+    "pages_read_user_content",
+    "business_management",
 ]
 META_ADS_SCOPES = [
     "public_profile",

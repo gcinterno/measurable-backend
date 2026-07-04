@@ -460,11 +460,11 @@ def test_linked_instagram_discovery_does_not_mark_instagram_business_connected(c
     assert response.json()["connected"] is False
 
 
-def test_instagram_business_connect_without_env_returns_409(client, monkeypatch):
+def test_instagram_business_connect_without_meta_pages_env_returns_409(client, monkeypatch):
     refs = _seed_workspace_with_legacy_meta()
-    monkeypatch.setattr(instagram_business_module.settings, "instagram_app_id", None)
-    monkeypatch.setattr(instagram_business_module.settings, "instagram_app_secret", None)
-    monkeypatch.setattr(instagram_business_module.settings, "instagram_redirect_uri", None)
+    monkeypatch.setattr(meta_ads_module.settings, "meta_pages_app_id", None)
+    monkeypatch.setattr(meta_ads_module.settings, "meta_pages_app_secret", None)
+    monkeypatch.setattr(meta_ads_module.settings, "meta_pages_redirect_uri", None)
 
     response = client.get(
         "/integrations/instagram-business/connect",
@@ -473,10 +473,7 @@ def test_instagram_business_connect_without_env_returns_409(client, monkeypatch)
     )
 
     assert response.status_code == 409
-    assert response.json() == {
-        "error": "instagram_business_not_configured",
-        "missing": ["INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET", "INSTAGRAM_REDIRECT_URI"],
-    }
+    assert response.json()["error"] == "meta_pages_config_missing"
 
 
 def test_admin_meta_data_catalog_returns_actionable_details(client, monkeypatch):
