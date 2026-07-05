@@ -236,6 +236,81 @@ def _seed_admin_workspace_with_tokens() -> dict[str, int]:
         db.close()
 
 
+def _seed_workspace_with_suite_token() -> dict[str, int]:
+    db = SessionLocal()
+    try:
+        user = User(
+            email="suite-status@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Suite Status User",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        workspace = Workspace(name="Suite Status Workspace")
+        db.add_all([user, workspace])
+        db.flush()
+        db.add_all(
+            [
+                WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"),
+                Subscription(workspace_id=workspace.id, plan="core", status="active"),
+            ]
+        )
+        suite_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta_business_suite",
+            name="Meta Business Suite",
+            status="connected",
+        )
+        facebook_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta",
+            name="Meta Pages",
+            status="disconnected",
+        )
+        instagram_integration = Integration(
+            workspace_id=workspace.id,
+            provider="instagram_business",
+            name="Instagram Business",
+            status="disconnected",
+        )
+        ads_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta_ads",
+            name="Meta Ads",
+            status="disconnected",
+        )
+        db.add_all([suite_integration, facebook_integration, instagram_integration, ads_integration])
+        db.flush()
+        suite_token_account = IntegrationAccount(
+            integration_id=suite_integration.id,
+            workspace_id=workspace.id,
+            external_account_id=f"__meta_token__:{suite_integration.id}",
+            display_name="Meta Business Suite token store",
+        )
+        db.add(suite_token_account)
+        db.flush()
+        db.add(
+            IntegrationToken(
+                account_id=suite_token_account.id,
+                workspace_id=workspace.id,
+                token_type="access_token",
+                access_token="suite-token",
+            )
+        )
+        db.commit()
+        return {
+            "user_id": user.id,
+            "workspace_id": workspace.id,
+            "suite_integration_id": suite_integration.id,
+            "facebook_integration_id": facebook_integration.id,
+            "instagram_integration_id": instagram_integration.id,
+            "meta_ads_integration_id": ads_integration.id,
+        }
+    finally:
+        db.close()
+
+
 class _FakeResponse:
     def __init__(self, status_code: int, payload: dict[str, object]):
         self.status_code = status_code
@@ -575,6 +650,90 @@ def test_linked_instagram_discovery_does_not_mark_instagram_business_connected(c
 
     assert response.status_code == 200
     assert response.json()["connected"] is False
+
+
+def test_shared_suite_token_resolves_provider_statuses_independently(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    main_module._table_names.cache_clear()
+    for key, value in (
+        ("meta_ads_app_id", "meta-app-id"),
+        ("meta_ads_app_secret", "meta-app-secret"),
+        ("meta_ads_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
+    ):
+        monkeypatch.setattr(main_module.settings, key, value)
+        monkeypatch.setattr(meta_ads_module.settings, key, value)
+    monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: True)
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {
+            "data": {
+                "is_valid": True,
+                "scopes": meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE.split(","),
+            }
+        },
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_collect_meta_instagram_diagnostics",
+        lambda *_args, **_kwargs: (
+            [
+                {
+                    "record_type": META_RECORD_TYPE_FACEBOOK_PAGE,
+                    "page_id": "fb-1",
+                    "name": "Suite FB Page",
+                }
+            ],
+            [
+                {
+                    "page_id": "fb-1",
+                    "page_name": "Suite FB Page",
+                    "has_page_access_token": True,
+                    "has_instagram_business_account": False,
+                    "has_connected_instagram_account": True,
+                    "graph_status": 200,
+                    "graph_error_code": None,
+                    "graph_error_message": None,
+                    "token_used_type": "page_token",
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(main_module, "_discover_meta_ads_accounts_for_suite", lambda *_args, **_kwargs: ([], [], None, False))
+
+    integrations_response = client.get(
+        "/integrations",
+        headers=_auth_headers(refs["user_id"]),
+    )
+
+    assert integrations_response.status_code == 200
+    provider_map = {item["provider"]: item for item in integrations_response.json()}
+    assert provider_map["facebook_pages"]["status"] == "connected"
+    assert provider_map["instagram_business"]["status"] == "connected"
+    assert provider_map["meta_ads"]["status"] == "connected_no_assets"
+
+    instagram_response = client.get(
+        "/integrations/instagram-business/status",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    assert instagram_response.status_code == 200
+    assert instagram_response.json() == {
+        "connected": True,
+        "provider": "instagram_business",
+        "status": "connected",
+    }
+
+    ads_response = client.get(
+        "/integrations/meta-ads/status",
+        headers=_auth_headers(refs["user_id"]),
+        params={"integration_id": refs["meta_ads_integration_id"]},
+    )
+    assert ads_response.status_code == 200
+    ads_payload = ads_response.json()
+    assert ads_payload["connected"] is True
+    assert ads_payload["status"] == "connected_no_assets"
+    assert ads_payload["missing_scopes"] == []
 
 
 def test_instagram_business_connect_without_meta_pages_env_returns_409(client, monkeypatch):

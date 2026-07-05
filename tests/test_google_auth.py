@@ -1487,10 +1487,15 @@ def test_admin_meta_business_suite_diagnostics_includes_instagram_discovery_summ
     assert payload["pages_checked_count"] == 1
     assert payload["pages_with_instagram_business_account_count"] == 0
     assert payload["pages_with_connected_instagram_account_count"] == 1
-    assert payload["instagram_accounts_found_count"] == 0
+    assert payload["instagram_accounts_found_count"] == 1
     assert payload["missing_required_scopes"] == []
     assert payload["page_results"][0]["page_id"] == "fb-page-1"
     assert payload["page_results"][0]["has_connected_instagram_account"] is True
+    assert payload["provider_status"] == {
+        "facebook_pages": "connected",
+        "instagram_business": "connected",
+        "meta_ads": "connected_no_assets",
+    }
     assert "suite-token" not in response.text
 
 
