@@ -442,6 +442,128 @@ def test_integrations_returns_independent_provider_states(client):
     assert provider_map["meta_ads"]["status"] == "disconnected"
 
 
+def test_meta_business_suite_callback_continues_when_client_ad_account_discovery_fails(client, monkeypatch):
+    db = SessionLocal()
+    try:
+        user = User(
+            email="suite-callback@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Suite Callback User",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        workspace = Workspace(name="Suite Callback Workspace")
+        db.add_all([user, workspace])
+        db.flush()
+        db.add_all(
+            [
+                WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"),
+                Subscription(workspace_id=workspace.id, plan="core", status="active"),
+            ]
+        )
+        db.commit()
+        user_id = user.id
+        workspace_id = workspace.id
+    finally:
+        db.close()
+
+    for key, value in (
+        ("meta_pages_app_id", "meta-pages-app-id"),
+        ("meta_pages_app_secret", "meta-pages-app-secret"),
+        ("meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback"),
+        ("api_base_url", "https://api.measurableapp.com"),
+    ):
+        monkeypatch.setattr(main_module.settings, key, value)
+        monkeypatch.setattr(meta_ads_module.settings, key, value)
+
+    state = meta_ads_module.encode_state(
+        {
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "integration_type": "meta_business_suite",
+            "source": "meta_business_suite",
+            "provider": "meta_business_suite",
+            "oauth_suite": "meta_business_suite",
+            "callback_route": "/integrations/meta/callback-pages",
+        }
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "exchange_pages_code_for_token",
+        lambda _code, *, redirect_uri=None: {"access_token": "suite-token"},
+    )
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {
+            "data": {
+                "is_valid": True,
+                "scopes": meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE.split(","),
+            }
+        },
+    )
+
+    def fake_refresh_meta_pages_from_live_graph(
+        _db,
+        integration,
+        *,
+        access_token,
+        user_id,
+        selected_integration_type,
+        context,
+        return_empty_on_error,
+        preserve_existing_on_empty,
+    ):
+        assert access_token == "suite-token"
+        if selected_integration_type == "facebook_pages":
+            facebook_page = MetaPage(
+                integration_id=integration.id,
+                user_id=user_id,
+                record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
+                page_id="fb-1",
+                name="Suite FB Page",
+            )
+            return [facebook_page], [], [facebook_page]
+        return [], [{"page_id": "fb-1", "page_name": "Suite FB Page"}], []
+
+    monkeypatch.setattr(main_module, "_refresh_meta_pages_from_live_graph", fake_refresh_meta_pages_from_live_graph)
+    monkeypatch.setattr(main_module, "list_ad_accounts", lambda _token: [])
+    monkeypatch.setattr(main_module, "get_businesses", lambda _token: [{"id": "biz-1", "name": "Biz One"}])
+    monkeypatch.setattr(main_module, "get_owned_ad_accounts", lambda _token, _business_id: [])
+
+    def fail_client_ad_accounts(_token, _business_id):
+        raise main_module.HTTPException(status_code=400, detail={"message": "temporary discovery failure"})
+
+    monkeypatch.setattr(main_module, "get_client_ad_accounts", fail_client_ad_accounts)
+    main_module._table_names.cache_clear()
+
+    response = client.get(
+        "/integrations/meta/callback-pages",
+        params={"code": "meta-code", "state": state},
+    )
+
+    assert response.status_code == 200
+    assert "Meta Business Suite connected successfully." in response.text
+    assert "status=connected" in response.text
+    assert "provider=meta_business_suite" in response.text
+
+    db = SessionLocal()
+    try:
+        provider_statuses = {
+            integration.provider: integration.status
+            for integration in db.query(Integration).filter(Integration.workspace_id == workspace_id).all()
+        }
+        assert provider_statuses["meta_business_suite"] == "connected"
+        assert provider_statuses["meta"] == "connected"
+        assert provider_statuses["instagram_business"] == "needs_page_ig_link"
+        assert provider_statuses["meta_ads"] == "connected_no_assets"
+    finally:
+        db.close()
+        main_module._table_names.cache_clear()
+
+
 def test_linked_instagram_discovery_does_not_mark_instagram_business_connected(client):
     refs = _seed_workspace_with_legacy_meta()
 

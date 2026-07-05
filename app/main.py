@@ -74,6 +74,7 @@ from .integrations.meta_ads import (
     get_meta_ads_redirect_uri,
     get_meta_pages_redirect_uri,
     get_businesses,
+    get_client_ad_accounts,
     get_owned_ad_accounts,
     get_meta_pages_auth_mode,
     list_ad_accounts,
@@ -10190,16 +10191,45 @@ def _discover_meta_ads_accounts_for_suite(
     discovery_error_message: str | None = None
     business_management_required = False
 
+    def _record_discovery_failure(stage: str, exc: Exception) -> None:
+        nonlocal discovery_error_message, business_management_required
+        message: str | None = None
+        if isinstance(exc, HTTPException):
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            message = str(detail.get("message") or exc.detail or "").strip() or None
+            if _meta_ads_discovery_requires_business_management(exc):
+                business_management_required = True
+        else:
+            message = str(exc).strip() or exc.__class__.__name__
+        discovery_error_message = message or discovery_error_message
+        logger.warning(
+            "META_ADS_ACCOUNT_DISCOVERY_FAILED %s",
+            json.dumps(
+                {
+                    "integration_id": integration_id,
+                    "workspace_id": workspace_id,
+                    "stage": stage,
+                    "business_management_required": business_management_required,
+                    "error_message": message,
+                    "error_type": exc.__class__.__name__,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+
+    _meta_oauth_log(
+        "META_ADS_ACCOUNT_DISCOVERY_STARTED",
+        integration_id=integration_id,
+        workspace_id=workspace_id,
+    )
+
     try:
         direct_accounts = list_ad_accounts(access_token)
-    except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, dict) else {}
-        discovery_error_message = str(detail.get("message") or exc.detail or "").strip() or None
-        if _meta_ads_discovery_requires_business_management(exc):
-            business_management_required = True
-            direct_accounts = []
-        else:
-            raise
+    except Exception as exc:
+        _record_discovery_failure("list_ad_accounts", exc)
+        direct_accounts = []
     else:
         direct_accounts = direct_accounts or []
 
@@ -10220,14 +10250,9 @@ def _discover_meta_ads_accounts_for_suite(
     if not business_management_required:
         try:
             businesses = get_businesses(access_token)
-        except HTTPException as exc:
-            detail = exc.detail if isinstance(exc.detail, dict) else {}
-            discovery_error_message = str(detail.get("message") or exc.detail or "").strip() or discovery_error_message
-            if _meta_ads_discovery_requires_business_management(exc):
-                business_management_required = True
-                businesses = []
-            else:
-                raise
+        except Exception as exc:
+            _record_discovery_failure("get_businesses", exc)
+            businesses = []
         for business in businesses:
             if not isinstance(business, dict):
                 continue
@@ -10241,15 +10266,12 @@ def _discover_meta_ads_accounts_for_suite(
             ):
                 try:
                     business_accounts = fetcher(access_token, business_id)
-                except HTTPException as exc:
-                    detail = exc.detail if isinstance(exc.detail, dict) else {}
-                    discovery_error_message = (
-                        str(detail.get("message") or exc.detail or "").strip() or discovery_error_message
+                except Exception as exc:
+                    _record_discovery_failure(
+                        f"get_business_ad_accounts:{source}:{business_id}",
+                        exc,
                     )
-                    if _meta_ads_discovery_requires_business_management(exc):
-                        business_management_required = True
-                        continue
-                    raise
+                    continue
                 for account in business_accounts:
                     if not isinstance(account, dict):
                         continue
@@ -10266,7 +10288,17 @@ def _discover_meta_ads_accounts_for_suite(
                         }
                     )
 
-    return _dedupe_meta_ads_accounts(discovered_accounts), ad_account_results, discovery_error_message, business_management_required
+    deduped_accounts = _dedupe_meta_ads_accounts(discovered_accounts)
+    _meta_oauth_log(
+        "META_ADS_ACCOUNT_DISCOVERY_COMPLETED",
+        integration_id=integration_id,
+        workspace_id=workspace_id,
+        ad_accounts_count=len(deduped_accounts),
+        ad_account_results=ad_account_results,
+        discovery_error=discovery_error_message,
+        business_management_required=business_management_required,
+    )
+    return deduped_accounts, ad_account_results, discovery_error_message, business_management_required
 
 
 def _build_meta_business_suite_diagnostics_snapshot(
@@ -11010,6 +11042,19 @@ def _run_meta_pages_oauth_callback(
                 pages_count=len(facebook_pages),
                 instagram_accounts_count=len(instagram_accounts),
                 ad_accounts_count=len(meta_ads_accounts_discovered),
+            )
+            _meta_oauth_log(
+                "META_BUSINESS_SUITE_CALLBACK_COMPLETED",
+                integration_id=integration.id,
+                workspace_id=workspace_id,
+                user_id=effective_user_id,
+                facebook_pages_status=facebook_status,
+                instagram_business_status=instagram_status,
+                meta_ads_status=meta_ads_status,
+                facebook_pages_count=len(facebook_pages),
+                instagram_accounts_count=len(instagram_accounts),
+                meta_ads_accounts_count=len(meta_ads_accounts_discovered),
+                meta_ads_discovery_error=meta_ads_discovery_error,
             )
             if is_instagram_business_flow:
                 popup_status = instagram_status
