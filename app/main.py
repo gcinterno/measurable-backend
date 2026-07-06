@@ -7132,7 +7132,7 @@ def _resolve_meta_suite_provider_statuses(
         elif instagram_missing_scopes:
             result["instagram_business"]["status"] = "needs_permission"
         else:
-            result["instagram_business"]["status"] = "needs_page_ig_link"
+            result["instagram_business"]["status"] = "connected_no_assets"
 
         if meta_ads_missing_scopes or meta_ads_business_management_required:
             result["meta_ads"]["status"] = "needs_permission"
@@ -7147,12 +7147,25 @@ def _resolve_meta_suite_provider_statuses(
             workspace_id=workspace_id,
             user_id=user_id,
             context=context,
-            status=result[provider]["status"],
+            token_present=suite_token_present,
+            scopes_received=result["scopes_received"],
             missing_scopes=result["missing_scopes_by_provider"].get(provider, []),
+            pages_checked_count=result["instagram_business"]["pages_checked_count"],
+            instagram_accounts_found_count=max(
+                int(result["instagram_business"]["cached_instagram_accounts_count"]),
+                int(result["instagram_business"]["discovered_instagram_accounts_count"]),
+            ),
+            final_status=result[provider]["status"],
             **{
                 key: value
                 for key, value in result[provider].items()
-                if key not in {"status"}
+                if key
+                not in {
+                    "status",
+                    "pages_checked_count",
+                    "discovered_instagram_accounts_count",
+                    "cached_instagram_accounts_count",
+                }
             },
         )
         _meta_oauth_log(
@@ -7161,8 +7174,15 @@ def _resolve_meta_suite_provider_statuses(
             user_id=user_id,
             context=context,
             provider=provider,
-            status=result[provider]["status"],
+            token_present=suite_token_present,
+            scopes_received=result["scopes_received"],
             missing_scopes=result["missing_scopes_by_provider"].get(provider, []),
+            pages_checked_count=result["instagram_business"]["pages_checked_count"],
+            instagram_accounts_found_count=max(
+                int(result["instagram_business"]["cached_instagram_accounts_count"]),
+                int(result["instagram_business"]["discovered_instagram_accounts_count"]),
+            ),
+            final_status=result[provider]["status"],
         )
 
     return result
@@ -10218,10 +10238,11 @@ def _meta_oauth_popup_response(
         callback_path=callback_path,
     )
     frontend_origin = _meta_frontend_origin()
-    event_type = "MEASURABLE_META_CONNECT_SUCCESS" if status == "connected" else "MEASURABLE_META_CONNECT_ERROR"
+    success_statuses = {"connected", "connected_no_assets"}
+    event_type = "MEASURABLE_META_CONNECT_SUCCESS" if status in success_statuses else "MEASURABLE_META_CONNECT_ERROR"
     fallback_message = (
         "Connection completed. You can close this window."
-        if status == "connected"
+        if status in success_statuses
         else "We could not complete the connection. You can close this window and try again."
     )
     payload: dict[str, Any] = {
@@ -10734,7 +10755,7 @@ def _run_meta_pages_oauth_callback(
         )
         if is_instagram_business_flow:
             _meta_oauth_log(
-                "INSTAGRAM_BUSINESS_FACEBOOK_OAUTH_CALLBACK_STARTED",
+                "INSTAGRAM_BUSINESS_CALLBACK_STARTED",
                 provider="instagram_business",
                 workspace_id=workspace_id,
                 user_id=effective_user_id,
@@ -10743,6 +10764,12 @@ def _run_meta_pages_oauth_callback(
                 state_received=bool(state),
                 source=state_source,
                 integration_type=selected_integration_type,
+                token_present=False,
+                scopes_received=[],
+                missing_scopes=[],
+                pages_checked_count=0,
+                instagram_accounts_found_count=0,
+                final_status="pending",
             )
             _meta_oauth_log(
                 "INSTAGRAM_BUSINESS_FACEBOOK_CALLBACK_RECEIVED",
@@ -11161,10 +11188,8 @@ def _run_meta_pages_oauth_callback(
                         "needs_permission"
                         if instagram_missing_scopes
                         else "connected"
-                        if instagram_accounts
-                        else "needs_business_or_creator_account"
-                        if has_connected_instagram_only
-                        else "needs_page_ig_link"
+                        if instagram_accounts or has_connected_instagram_only
+                        else "connected_no_assets"
                     ),
                     pages_checked_count=len(
                         [item for item in instagram_diagnostics if isinstance(item, dict) and item.get("page_id")]
@@ -11217,12 +11242,10 @@ def _run_meta_pages_oauth_callback(
             )
             if instagram_missing_scopes:
                 instagram_status = "needs_permission"
-            elif instagram_accounts:
+            elif instagram_accounts or has_connected_instagram_only:
                 instagram_status = "connected"
-            elif has_connected_instagram_only:
-                instagram_status = "needs_business_or_creator_account"
             else:
-                instagram_status = "needs_page_ig_link"
+                instagram_status = "connected_no_assets"
 
             if meta_ads_missing_scopes or meta_ads_business_management_required:
                 meta_ads_status = "needs_permission"
@@ -11242,9 +11265,56 @@ def _run_meta_pages_oauth_callback(
                     integration_id=instagram_integration.id,
                     workspace_id=workspace_id,
                     user_id=effective_user_id,
-                    status=instagram_status,
+                    token_present=True,
+                    scopes_received=received_scopes,
                     missing_scopes=instagram_missing_scopes,
-                    asset_count=len(instagram_accounts),
+                    pages_checked_count=len(
+                        [item for item in instagram_diagnostics if isinstance(item, dict) and item.get("page_id")]
+                    ),
+                    instagram_accounts_found_count=(
+                        len(instagram_accounts)
+                        if instagram_accounts
+                        else sum(
+                            1
+                            for item in instagram_diagnostics
+                            if isinstance(item, dict)
+                            and item.get("page_id")
+                            and (
+                                item.get("has_instagram_business_account")
+                                or item.get("has_connected_instagram_account")
+                            )
+                        )
+                    ),
+                    final_status=instagram_status,
+                    source="instagram_business_through_facebook",
+                )
+                _meta_oauth_log(
+                    "INSTAGRAM_BUSINESS_CALLBACK_COMPLETED",
+                    provider="instagram_business",
+                    integration_id=instagram_integration.id,
+                    workspace_id=workspace_id,
+                    user_id=effective_user_id,
+                    token_present=True,
+                    scopes_received=received_scopes,
+                    missing_scopes=instagram_missing_scopes,
+                    pages_checked_count=len(
+                        [item for item in instagram_diagnostics if isinstance(item, dict) and item.get("page_id")]
+                    ),
+                    instagram_accounts_found_count=(
+                        len(instagram_accounts)
+                        if instagram_accounts
+                        else sum(
+                            1
+                            for item in instagram_diagnostics
+                            if isinstance(item, dict)
+                            and item.get("page_id")
+                            and (
+                                item.get("has_instagram_business_account")
+                                or item.get("has_connected_instagram_account")
+                            )
+                        )
+                    ),
+                    final_status=instagram_status,
                     source="instagram_business_through_facebook",
                 )
             _meta_oauth_log(
@@ -11283,16 +11353,8 @@ def _run_meta_pages_oauth_callback(
                         if "instagram_basic" in instagram_missing_scopes
                         else "Instagram Business needs additional Facebook permissions to discover linked accounts."
                     )
-                elif instagram_status == "needs_business_or_creator_account":
-                    popup_error = "needs_business_or_creator_account"
-                    popup_message = (
-                        "An Instagram account is linked to the Page, but it is not available as an Instagram Business or Creator account for reporting."
-                    )
-                elif instagram_status == "needs_page_ig_link":
-                    popup_error = "needs_page_ig_link"
-                    popup_message = (
-                        "Facebook authorization succeeded, but no Instagram Business accounts linked to the selected Pages were found."
-                    )
+                elif instagram_status == "connected_no_assets":
+                    popup_message = "Instagram Business connected, but no assets were found."
                 elif instagram_status == "connected":
                     popup_message = "Instagram Business connected successfully."
                 if redirect_to_frontend:
@@ -11317,7 +11379,20 @@ def _run_meta_pages_oauth_callback(
                     "message": popup_message,
                     "provider": "instagram_business",
                     "source": "instagram_business_through_facebook",
-                    "asset_count": len(instagram_accounts),
+                    "asset_count": (
+                        len(instagram_accounts)
+                        if instagram_accounts
+                        else sum(
+                            1
+                            for item in instagram_diagnostics
+                            if isinstance(item, dict)
+                            and item.get("page_id")
+                            and (
+                                item.get("has_instagram_business_account")
+                                or item.get("has_connected_instagram_account")
+                            )
+                        )
+                    ),
                     "provider_status": {
                         "facebook_pages": facebook_status,
                         "instagram_business": instagram_status,
@@ -11476,31 +11551,39 @@ def _run_meta_pages_oauth_callback(
             for item in page_diagnostics
         )
         unavailable_reason = (
-            "Facebook authorization succeeded, but no Instagram Business accounts linked to the selected Pages were found."
+            "Connected, but no assets were found."
             if selected_integration_type == "instagram_business"
             else "Meta connected, but no authorized Facebook Pages were returned."
         )
         if is_instagram_business_flow and has_connected_instagram_account_only and not has_business_instagram_account:
             if not reconnect_requested:
-                _set_meta_integration_status(db, integration, status="needs_business_or_creator_account")
+                _set_meta_integration_status(db, integration, status="connected")
             _meta_oauth_log(
                 "INSTAGRAM_BUSINESS_STATUS_RESOLVED",
                 provider="instagram_business",
                 integration_id=integration.id,
                 workspace_id=workspace_id,
                 user_id=effective_user_id,
-                status="needs_business_or_creator_account",
-                asset_count=0,
+                token_present=True,
+                scopes_received=received_scopes,
+                missing_scopes=[],
+                pages_checked_count=len(page_diagnostics),
+                instagram_accounts_found_count=1,
+                final_status="connected",
                 source="facebook_pages_linked_instagram",
             )
             _meta_oauth_log(
-                "INSTAGRAM_BUSINESS_CONNECT_COMPLETED",
+                "INSTAGRAM_BUSINESS_CALLBACK_COMPLETED",
                 provider="instagram_business",
                 integration_id=integration.id,
                 workspace_id=workspace_id,
                 user_id=effective_user_id,
-                status="needs_business_or_creator_account",
-                asset_count=0,
+                token_present=True,
+                scopes_received=received_scopes,
+                missing_scopes=[],
+                pages_checked_count=len(page_diagnostics),
+                instagram_accounts_found_count=1,
+                final_status="connected",
                 source="facebook_pages_linked_instagram",
             )
             _meta_oauth_log(
@@ -11509,21 +11592,20 @@ def _run_meta_pages_oauth_callback(
                 integration_id=integration.id,
                 workspace_id=workspace_id,
                 user_id=effective_user_id,
-                status="needs_business_or_creator_account",
+                status="connected",
                 pages_returned_from_graph=len(facebook_pages),
                 pages_saved_final=len(page_payloads),
                 page_names_returned_from_graph=[page.name for page in facebook_pages],
                 page_names_saved_final=[page.name for page in page_payloads],
-                asset_count=0,
+                asset_count=1,
                 source="facebook_pages_linked_instagram",
             )
-            message = "An Instagram account is linked to the Page, but it is not available as an Instagram Business or Creator account for reporting."
+            message = "Instagram Business connected successfully."
             return (
                 _meta_oauth_popup_response(
-                    status="needs_business_or_creator_account",
+                    status="connected",
                     source="facebook_pages_linked_instagram",
                     integration_id=integration.id,
-                    error="needs_business_or_creator_account",
                     message=message,
                     provider="instagram_business",
                     callback_path="/integrations/instagram-business/callback",
@@ -11531,14 +11613,13 @@ def _run_meta_pages_oauth_callback(
                 if redirect_to_frontend
                 else {
                     **_safe_meta_callback_payload(
-                        success=False,
+                        success=True,
                         pages=[],
-                        error="needs_business_or_creator_account",
                         integration_id=integration.id,
                     ),
-                    "status": "needs_business_or_creator_account",
+                    "status": "connected",
                     "message": message,
-                    "asset_count": 0,
+                    "asset_count": 1,
                     "provider": "instagram_business",
                     "source": "facebook_pages_linked_instagram",
                 }
@@ -11548,7 +11629,7 @@ def _run_meta_pages_oauth_callback(
                 _set_meta_integration_status(
                     db,
                     integration,
-                    status="needs_page_ig_link" if is_instagram_business_flow else "disconnected",
+                    status="connected_no_assets" if is_instagram_business_flow else "disconnected",
                 )
             if is_instagram_business_flow:
                 _meta_oauth_log(
@@ -11557,18 +11638,26 @@ def _run_meta_pages_oauth_callback(
                     integration_id=integration.id,
                     workspace_id=workspace_id,
                     user_id=effective_user_id,
-                    status="needs_page_ig_link",
-                    asset_count=0,
+                    token_present=True,
+                    scopes_received=received_scopes,
+                    missing_scopes=[],
+                    pages_checked_count=len(page_diagnostics),
+                    instagram_accounts_found_count=0,
+                    final_status="connected_no_assets",
                     source="facebook_pages_linked_instagram",
                 )
                 _meta_oauth_log(
-                    "INSTAGRAM_BUSINESS_CONNECT_COMPLETED",
+                    "INSTAGRAM_BUSINESS_CALLBACK_COMPLETED",
                     provider="instagram_business",
                     integration_id=integration.id,
                     workspace_id=workspace_id,
                     user_id=effective_user_id,
-                    status="needs_page_ig_link",
-                    asset_count=0,
+                    token_present=True,
+                    scopes_received=received_scopes,
+                    missing_scopes=[],
+                    pages_checked_count=len(page_diagnostics),
+                    instagram_accounts_found_count=0,
+                    final_status="connected_no_assets",
                     source="facebook_pages_linked_instagram",
                 )
                 _meta_oauth_log(
@@ -11577,7 +11666,7 @@ def _run_meta_pages_oauth_callback(
                     integration_id=integration.id,
                     workspace_id=workspace_id,
                     user_id=effective_user_id,
-                    status="needs_page_ig_link",
+                    status="connected_no_assets",
                     pages_returned_from_graph=len(facebook_pages),
                     pages_saved_final=len(page_payloads),
                     page_names_returned_from_graph=[page.name for page in facebook_pages],
@@ -11587,10 +11676,10 @@ def _run_meta_pages_oauth_callback(
                 )
             return (
                 _meta_oauth_popup_response(
-                    status="needs_page_ig_link" if is_instagram_business_flow else "error",
+                    status="connected_no_assets" if is_instagram_business_flow else "error",
                     source="facebook_pages_linked_instagram" if is_instagram_business_flow else state_source,
                     integration_id=integration.id,
-                    error="needs_page_ig_link" if is_instagram_business_flow else "no_authorized_assets",
+                    error=None if is_instagram_business_flow else "no_authorized_assets",
                     message=unavailable_reason,
                     provider="instagram_business" if is_instagram_business_flow else "meta",
                     callback_path=(
@@ -11602,14 +11691,14 @@ def _run_meta_pages_oauth_callback(
                 if redirect_to_frontend
                 else {
                     **_safe_meta_callback_payload(
-                        success=False,
+                        success=is_instagram_business_flow,
                         pages=[],
-                        error="needs_page_ig_link" if is_instagram_business_flow else "no_authorized_assets",
+                        error=None if is_instagram_business_flow else "no_authorized_assets",
                         integration_id=integration.id,
                     ),
                     **(
                         {
-                            "status": "needs_page_ig_link",
+                            "status": "connected_no_assets",
                             "message": unavailable_reason,
                             "asset_count": 0,
                             "provider": "instagram_business",
@@ -23700,8 +23789,23 @@ def instagram_business_status(
     normalized_status = str(suite_status["instagram_business"]["status"])
     if normalized_status == "disconnected" and not token_present and not bool(suite_status["suite_token_present"]):
         normalized_status = "no_token"
+    _meta_oauth_log(
+        "INSTAGRAM_BUSINESS_STATUS_RESOLVED",
+        provider="instagram_business",
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+        token_present=bool(token_present or suite_status["suite_token_present"]),
+        scopes_received=suite_status["scopes_received"],
+        missing_scopes=suite_status["missing_scopes_by_provider"]["instagram_business"],
+        pages_checked_count=suite_status["instagram_business"]["pages_checked_count"],
+        instagram_accounts_found_count=max(
+            int(suite_status["instagram_business"]["cached_instagram_accounts_count"]),
+            int(suite_status["instagram_business"]["discovered_instagram_accounts_count"]),
+        ),
+        final_status=normalized_status,
+    )
     return InstagramBusinessStatusOut(
-        connected=normalized_status == "connected",
+        connected=normalized_status in {"connected", "connected_no_assets"},
         provider="instagram_business",
         status=cast(
             Literal[
@@ -23888,6 +23992,18 @@ def instagram_business_callback(
             sort_keys=True,
         ),
     )
+    _meta_oauth_log(
+        "INSTAGRAM_BUSINESS_CALLBACK_STARTED",
+        provider="instagram_business",
+        integration_id=integration_id,
+        workspace_id=workspace_id,
+        token_present=False,
+        scopes_received=[],
+        missing_scopes=[],
+        pages_checked_count=0,
+        instagram_accounts_found_count=0,
+        final_status="pending",
+    )
 
     try:
         token_payload = exchange_instagram_business_code_for_token(code)
@@ -24054,6 +24170,18 @@ def instagram_business_callback(
             ],
         )
         _set_meta_integration_status(db, integration, status="connected")
+        _meta_oauth_log(
+            "INSTAGRAM_BUSINESS_CALLBACK_COMPLETED",
+            provider="instagram_business",
+            integration_id=integration_id,
+            workspace_id=workspace_id,
+            token_present=True,
+            scopes_received=granted_scopes,
+            missing_scopes=missing_scopes,
+            pages_checked_count=1,
+            instagram_accounts_found_count=1,
+            final_status="connected",
+        )
         logger.info(
             "INSTAGRAM_BUSINESS_CONNECT_SUCCESS %s",
             json.dumps(
@@ -24110,6 +24238,18 @@ def instagram_business_callback(
                 sort_keys=True,
             ),
         )
+        _meta_oauth_log(
+            "INSTAGRAM_BUSINESS_CALLBACK_COMPLETED",
+            provider="instagram_business",
+            integration_id=integration_id,
+            workspace_id=workspace_id,
+            token_present=False,
+            scopes_received=[],
+            missing_scopes=[],
+            pages_checked_count=0,
+            instagram_accounts_found_count=0,
+            final_status="error",
+        )
         if not reconnect_requested:
             _set_meta_integration_status(db, integration, status="disconnected")
         return _meta_oauth_popup_response(
@@ -24123,6 +24263,18 @@ def instagram_business_callback(
         )
     except Exception:
         logger.exception("Instagram Business OAuth callback failed unexpectedly")
+        _meta_oauth_log(
+            "INSTAGRAM_BUSINESS_CALLBACK_COMPLETED",
+            provider="instagram_business",
+            integration_id=integration_id,
+            workspace_id=workspace_id,
+            token_present=False,
+            scopes_received=[],
+            missing_scopes=[],
+            pages_checked_count=0,
+            instagram_accounts_found_count=0,
+            final_status="error",
+        )
         if not reconnect_requested:
             _set_meta_integration_status(db, integration, status="disconnected")
         return _meta_oauth_popup_response(

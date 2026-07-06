@@ -1038,14 +1038,14 @@ def test_instagram_business_facebook_callback_without_linked_accounts_does_not_c
     response = client.get(f"/integrations/meta/callback-pages?code=meta-code&state={state}")
 
     assert response.status_code == 200
-    assert "needs_page_ig_link" in response.text
-    assert "Facebook authorization succeeded, but no Instagram Business accounts linked to the selected Pages were found." in response.text
+    assert "connected_no_assets" in response.text
+    assert "Connected, but no assets were found." in response.text
     assert "connected_instagram_account" in captured_page_lookup["fields"]
     db = SessionLocal()
     try:
         integration = db.get(Integration, integration_id)
         assert integration is not None
-        assert integration.status == "needs_page_ig_link"
+        assert integration.status == "connected_no_assets"
         instagram_count = (
             db.query(MetaPage)
             .filter(
@@ -1060,7 +1060,7 @@ def test_instagram_business_facebook_callback_without_linked_accounts_does_not_c
         db.close()
 
 
-def test_instagram_business_facebook_callback_connected_instagram_account_without_business_account_returns_needs_business_or_creator_account(
+def test_instagram_business_facebook_callback_connected_instagram_account_without_business_account_returns_connected(
     client,
     monkeypatch,
 ):
@@ -1158,14 +1158,14 @@ def test_instagram_business_facebook_callback_connected_instagram_account_withou
     response = client.get(f"/integrations/meta/callback-pages?code=meta-code&state={state}")
 
     assert response.status_code == 200
-    assert "needs_business_or_creator_account" in response.text
-    assert "An Instagram account is linked to the Page, but it is not available as an Instagram Business or Creator account for reporting." in response.text
+    assert "status=connected" in response.text
+    assert "Instagram Business connected successfully." in response.text
     assert "connected_instagram_account" in captured_page_lookup["fields"]
     db = SessionLocal()
     try:
         integration = db.get(Integration, integration_id)
         assert integration is not None
-        assert integration.status == "needs_business_or_creator_account"
+        assert integration.status == "connected"
         instagram_count = (
             db.query(MetaPage)
             .filter(

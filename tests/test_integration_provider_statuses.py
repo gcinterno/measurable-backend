@@ -632,7 +632,7 @@ def test_meta_business_suite_callback_continues_when_client_ad_account_discovery
         }
         assert provider_statuses["meta_business_suite"] == "connected"
         assert provider_statuses["meta"] == "connected"
-        assert provider_statuses["instagram_business"] == "needs_page_ig_link"
+        assert provider_statuses["instagram_business"] == "connected_no_assets"
         assert provider_statuses["meta_ads"] == "connected_no_assets"
     finally:
         db.close()
@@ -722,6 +722,51 @@ def test_shared_suite_token_resolves_provider_statuses_independently(client, mon
         "connected": True,
         "provider": "instagram_business",
         "status": "connected",
+    }
+
+
+def test_shared_suite_token_returns_connected_no_assets_for_instagram_when_no_accounts_found(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    main_module._table_names.cache_clear()
+    for key, value in (
+        ("meta_ads_app_id", "meta-app-id"),
+        ("meta_ads_app_secret", "meta-app-secret"),
+        ("meta_ads_redirect_uri", "http://localhost:8000/integrations/meta-ads/callback"),
+    ):
+        monkeypatch.setattr(main_module.settings, key, value)
+        monkeypatch.setattr(meta_ads_module.settings, key, value)
+    monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: True)
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {
+            "data": {
+                "is_valid": True,
+                "scopes": meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE.split(","),
+            }
+        },
+    )
+    monkeypatch.setattr(main_module, "_collect_meta_instagram_diagnostics", lambda *_args, **_kwargs: ([], []))
+
+    integrations_response = client.get(
+        "/integrations",
+        headers=_auth_headers(refs["user_id"]),
+    )
+
+    assert integrations_response.status_code == 200
+    provider_map = {item["provider"]: item for item in integrations_response.json()}
+    assert provider_map["instagram_business"]["status"] == "connected_no_assets"
+
+    instagram_response = client.get(
+        "/integrations/instagram-business/status",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    assert instagram_response.status_code == 200
+    assert instagram_response.json() == {
+        "connected": True,
+        "provider": "instagram_business",
+        "status": "connected_no_assets",
     }
 
     ads_response = client.get(
