@@ -446,7 +446,7 @@ def test_meta_ads_status_returns_needs_permission_when_business_management_missi
     assert payload["permission_missing"] is True
 
 
-def test_meta_ads_status_returns_connected_no_assets_when_token_has_permissions(client, monkeypatch):
+def test_meta_ads_status_returns_checking_before_first_live_discovery(client, monkeypatch):
     refs = _seed_workspace_with_suite_token()
     integration_id = refs["meta_ads_integration_id"]
 
@@ -477,9 +477,10 @@ def test_meta_ads_status_returns_connected_no_assets_when_token_has_permissions(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "connected_no_assets"
-    assert payload["connected"] is True
+    assert payload["status"] == "checking"
+    assert payload["connected"] is False
     assert payload["asset_count"] == 0
+    assert payload["discovery_status"] == "pending"
     assert payload["account_names"] == []
 
 
@@ -612,6 +613,7 @@ def test_instagram_business_suite_callback_returns_canonical_event_without_disco
         raise AssertionError("Suite-backed visible provider callback should not block on discovery")
 
     monkeypatch.setattr(main_module, "_refresh_meta_pages_from_live_graph", fail_discovery)
+    monkeypatch.setattr(main_module, "_collect_meta_instagram_diagnostics", fail_discovery)
     monkeypatch.setattr(main_module, "_discover_meta_ads_accounts_for_suite", fail_discovery)
 
     response = client.get(
@@ -622,7 +624,7 @@ def test_instagram_business_suite_callback_returns_canonical_event_without_disco
     assert response.status_code == 200
     assert "measurable:integration-oauth-complete" in response.text
     assert '"provider": "instagram_business"' in response.text
-    assert '"status": "connected_no_assets"' in response.text
+    assert '"status": "connected"' in response.text
     assert f'"integrationId": {connect_payload["integration_id"]}' in response.text
     assert f'"workspaceId": {refs["workspace_id"]}' in response.text
     assert "MEASURABLE_META_CONNECT_SUCCESS" in response.text
@@ -638,7 +640,7 @@ def test_instagram_business_suite_callback_returns_canonical_event_without_disco
         assert suite.status == "connected"
         assert instagram is not None
         assert instagram.provider == "instagram_business"
-        assert instagram.status == "connected_no_assets"
+        assert instagram.status == "checking"
     finally:
         db.close()
 
@@ -710,6 +712,7 @@ def test_meta_business_suite_callback_continues_when_client_ad_account_discovery
         raise AssertionError("OAuth callback should not run live discovery before returning popup HTML")
 
     monkeypatch.setattr(main_module, "_refresh_meta_pages_from_live_graph", fail_discovery)
+    monkeypatch.setattr(main_module, "_collect_meta_instagram_diagnostics", fail_discovery)
     monkeypatch.setattr(main_module, "_discover_meta_ads_accounts_for_suite", fail_discovery)
     main_module._table_names.cache_clear()
 
@@ -730,9 +733,9 @@ def test_meta_business_suite_callback_continues_when_client_ad_account_discovery
             for integration in db.query(Integration).filter(Integration.workspace_id == workspace_id).all()
         }
         assert provider_statuses["meta_business_suite"] == "connected"
-        assert provider_statuses["meta"] == "connected_no_assets"
-        assert provider_statuses["instagram_business"] == "connected_no_assets"
-        assert provider_statuses["meta_ads"] == "connected_no_assets"
+        assert provider_statuses["meta"] == "checking"
+        assert provider_statuses["instagram_business"] == "checking"
+        assert provider_statuses["meta_ads"] == "checking"
     finally:
         db.close()
         main_module._table_names.cache_clear()
@@ -763,7 +766,7 @@ def test_meta_provider_statuses_are_cache_first_without_live_graph(client, monke
         db.query(Integration).filter(
             Integration.workspace_id == refs["workspace_id"],
             Integration.provider == "instagram_business",
-        ).one().status = "connected"
+        ).one().status = "connected_no_assets"
         db.query(Integration).filter(
             Integration.workspace_id == refs["workspace_id"],
             Integration.provider == "meta_ads",
@@ -852,8 +855,8 @@ def test_meta_business_suite_status_connects_facebook_child_from_cached_pages(cl
     assert payload["status"] == "connected"
     assert payload["children"]["facebook_pages"]["status"] == "connected"
     assert payload["children"]["facebook_pages"]["asset_count"] == 1
-    assert payload["children"]["instagram_business"]["status"] == "connected_no_assets"
-    assert payload["children"]["meta_ads"]["status"] == "connected_no_assets"
+    assert payload["children"]["instagram_business"]["status"] == "checking"
+    assert payload["children"]["meta_ads"]["status"] == "checking"
 
 
 def test_meta_business_suite_status_connects_instagram_child_from_cached_accounts(client):
@@ -941,6 +944,140 @@ def test_meta_business_suite_status_connects_ads_child_from_cached_accounts(clie
     assert status_map["meta_ads"]["connected"] == suite_payload["children"]["meta_ads"]["connected"]
 
 
+def test_meta_business_suite_refresh_discovers_persists_and_cache_reads_child_assets(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: True)
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {
+            "data": {
+                "is_valid": True,
+                "scopes": meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE.split(","),
+            }
+        },
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_collect_meta_instagram_diagnostics",
+        lambda *_args, **_kwargs: (
+            [
+                {
+                    "record_type": META_RECORD_TYPE_FACEBOOK_PAGE,
+                    "page_id": "fb-live-1",
+                    "name": "Live Facebook Page",
+                    "page_access_token": "page-token",
+                },
+                {
+                    "record_type": META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+                    "page_id": "ig-live-1",
+                    "parent_page_id": "fb-live-1",
+                    "name": "Live Instagram Account",
+                    "instagram_username": "liveig",
+                },
+            ],
+            [
+                {
+                    "page_id": "fb-live-1",
+                    "page_name": "Live Facebook Page",
+                    "has_instagram_business_account": True,
+                    "has_connected_instagram_account": False,
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_discover_meta_ads_accounts_for_suite",
+        lambda *_args, **_kwargs: (
+            [
+                {
+                    "id": "act_123456",
+                    "account_id": "123456",
+                    "name": "Live Ads Account",
+                    "business": {"id": "biz-1", "name": "Live Business"},
+                }
+            ],
+            [{"ad_account_id": "123456", "name": "Live Ads Account", "source": "/me/adaccounts"}],
+            None,
+            False,
+        ),
+    )
+
+    refresh_response = client.get(
+        "/integrations/meta-business-suite/status",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"], "refresh": True},
+    )
+
+    assert refresh_response.status_code == 200
+    refresh_payload = refresh_response.json()
+    assert refresh_payload["children"]["facebook_pages"]["status"] == "connected"
+    assert refresh_payload["children"]["facebook_pages"]["asset_count"] == 1
+    assert refresh_payload["children"]["instagram_business"]["status"] == "connected"
+    assert refresh_payload["children"]["instagram_business"]["asset_count"] == 1
+    assert refresh_payload["children"]["meta_ads"]["status"] == "connected"
+    assert refresh_payload["children"]["meta_ads"]["asset_count"] == 1
+
+    db = SessionLocal()
+    try:
+        assert (
+            db.query(MetaPage)
+            .filter(
+                MetaPage.integration_id == refs["facebook_integration_id"],
+                MetaPage.record_type == META_RECORD_TYPE_FACEBOOK_PAGE,
+            )
+            .count()
+            == 1
+        )
+        assert (
+            db.query(MetaPage)
+            .filter(
+                MetaPage.integration_id == refs["instagram_integration_id"],
+                MetaPage.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+            )
+            .count()
+            == 1
+        )
+        assert (
+            db.query(MetaAdAccount)
+            .filter(MetaAdAccount.integration_id == refs["meta_ads_integration_id"])
+            .count()
+            == 1
+        )
+    finally:
+        db.close()
+
+    def fail_live_graph(*_args, **_kwargs):
+        raise AssertionError("refresh=false must read cached suite assets without live Graph calls")
+
+    monkeypatch.setattr(main_module, "debug_token", fail_live_graph)
+    monkeypatch.setattr(main_module, "_collect_meta_instagram_diagnostics", fail_live_graph)
+    monkeypatch.setattr(main_module, "_discover_meta_ads_accounts_for_suite", fail_live_graph)
+
+    cached_response = client.get(
+        "/integrations/meta-business-suite/status",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    statuses_response = client.get(
+        "/integrations/meta/statuses",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert cached_response.status_code == 200
+    cached_payload = cached_response.json()
+    assert cached_payload["children"]["facebook_pages"]["asset_count"] == 1
+    assert cached_payload["children"]["instagram_business"]["asset_count"] == 1
+    assert cached_payload["children"]["meta_ads"]["asset_count"] == 1
+    assert statuses_response.status_code == 200
+    status_map = {item["provider"]: item for item in statuses_response.json()}
+    assert status_map["facebook_pages"]["status"] == "connected"
+    assert status_map["instagram_business"]["status"] == "connected"
+    assert status_map["meta_ads"]["status"] == "connected"
+
+
 def test_shared_suite_token_resolves_provider_statuses_independently(client, monkeypatch):
     refs = _seed_workspace_with_suite_token()
     main_module._table_names.cache_clear()
@@ -998,7 +1135,7 @@ def test_shared_suite_token_resolves_provider_statuses_independently(client, mon
     assert integrations_response.status_code == 200
     provider_map = {item["provider"]: item for item in integrations_response.json()}
     assert set(provider_map) == {"meta_business_suite"}
-    assert provider_map["meta_business_suite"]["status"] == "connected_no_assets"
+    assert provider_map["meta_business_suite"]["status"] == "connected"
     assert provider_map["meta_business_suite"]["connected"] is True
 
     refreshed_response = client.get(
@@ -1010,7 +1147,7 @@ def test_shared_suite_token_resolves_provider_statuses_independently(client, mon
     assert refreshed_response.status_code == 200
     refreshed_map = {item["provider"]: item for item in refreshed_response.json()}
     assert refreshed_map["facebook_pages"]["status"] == "connected"
-    assert refreshed_map["instagram_business"]["status"] == "connected"
+    assert refreshed_map["instagram_business"]["status"] == "connected_no_assets"
     assert refreshed_map["meta_ads"]["status"] == "connected_no_assets"
     assert refreshed_map["meta_ads"]["connected"] is True
 
@@ -1024,7 +1161,7 @@ def test_shared_suite_token_resolves_provider_statuses_independently(client, mon
     assert suite_payload["provider"] == "meta_business_suite"
     assert suite_payload["connected"] is True
     assert suite_payload["children"]["facebook_pages"]["status"] == "connected"
-    assert suite_payload["children"]["instagram_business"]["status"] == "connected"
+    assert suite_payload["children"]["instagram_business"]["status"] == "connected_no_assets"
     assert suite_payload["children"]["meta_ads"]["status"] == "connected_no_assets"
 
     instagram_response = client.get(
@@ -1036,8 +1173,8 @@ def test_shared_suite_token_resolves_provider_statuses_independently(client, mon
     instagram_payload = instagram_response.json()
     assert instagram_payload["connected"] is True
     assert instagram_payload["provider"] == "instagram_business"
-    assert instagram_payload["status"] == "connected"
-    assert instagram_payload["asset_count"] == 1
+    assert instagram_payload["status"] == "connected_no_assets"
+    assert instagram_payload["asset_count"] == 0
 
 
 def test_shared_suite_token_returns_connected_no_assets_for_instagram_when_no_accounts_found(client, monkeypatch):
@@ -1071,7 +1208,7 @@ def test_shared_suite_token_returns_connected_no_assets_for_instagram_when_no_ac
     assert integrations_response.status_code == 200
     provider_map = {item["provider"]: item for item in integrations_response.json()}
     assert set(provider_map) == {"meta_business_suite"}
-    assert provider_map["meta_business_suite"]["status"] == "connected_no_assets"
+    assert provider_map["meta_business_suite"]["status"] == "connected"
     assert provider_map["meta_business_suite"]["connected"] is True
 
     refreshed_response = client.get(
