@@ -214,8 +214,14 @@ def test_meta_disconnect_clears_token_and_status(client, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is True
-    assert payload["provider"] == "meta"
+    assert payload["provider"] == "meta_business_suite"
     assert payload["status"] == "disconnected"
+    assert payload["disconnected_integrations"] == [
+        "meta_business_suite",
+        "facebook_pages",
+        "instagram_business",
+        "meta_ads",
+    ]
     assert payload["cleared"]["tokens"] is True
     assert payload["meta_revoke_status"] == "success"
 
@@ -224,6 +230,12 @@ def test_meta_disconnect_clears_token_and_status(client, monkeypatch):
         integration = db.get(Integration, int(refs["integration_id"]))
         assert integration is not None
         assert integration.status == "disconnected"
+        suite = (
+            db.query(Integration)
+            .filter(Integration.workspace_id == refs["workspace_id"], Integration.provider == "meta_business_suite")
+            .one()
+        )
+        assert suite.status == "disconnected"
         assert db.query(IntegrationToken).count() == 0
     finally:
         db.close()
@@ -462,11 +474,76 @@ def test_integrations_and_account_summary_show_disconnected_after_disconnect(cli
 
     assert integrations_response.status_code == 200
     providers = {item["provider"]: item["status"] for item in integrations_response.json()}
-    assert providers["facebook_pages"] == "no_token"
-    assert providers["instagram_business"] == "no_token"
-    assert providers["meta_ads"] == "no_token"
+    assert providers == {"meta_business_suite": "no_token"}
     assert summary_response.status_code == 200
     assert summary_response.json()["integrations_connected_count"] == 0
+
+
+def test_meta_business_suite_disconnect_clears_children_and_status_does_not_revive(client, monkeypatch):
+    refs = _seed_meta_disconnect_fixture()
+    db = SessionLocal()
+    try:
+        suite = Integration(
+            workspace_id=int(refs["workspace_id"]),
+            provider="meta_business_suite",
+            name="Meta Business Suite",
+            status="connected",
+        )
+        db.add(suite)
+        db.flush()
+        suite_token_account = IntegrationAccount(
+            integration_id=suite.id,
+            workspace_id=int(refs["workspace_id"]),
+            external_account_id=_meta_token_account_external_id(suite.id),
+            display_name="Meta Business Suite token store",
+        )
+        db.add(suite_token_account)
+        db.flush()
+        db.add(
+            IntegrationToken(
+                account_id=suite_token_account.id,
+                workspace_id=int(refs["workspace_id"]),
+                token_type="access_token",
+                access_token="suite-access-token",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+    monkeypatch.setattr(main_module, "_revoke_meta_permissions", lambda _token: "success")
+
+    before_response = client.get(
+        "/integrations/meta-business-suite/status",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    disconnect_response = client.delete(
+        "/integrations/meta-business-suite/disconnect",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    after_response = client.get(
+        "/integrations/meta-business-suite/status",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    child_response = client.get(
+        "/integrations/meta/statuses",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert before_response.status_code == 200
+    assert before_response.json()["connected"] is True
+    assert disconnect_response.status_code == 200
+    assert disconnect_response.json()["provider"] == "meta_business_suite"
+    assert after_response.status_code == 200
+    assert after_response.json()["connected"] is False
+    assert after_response.json()["status"] == "no_token"
+    child_map = {item["provider"]: item for item in child_response.json()}
+    assert child_map["facebook_pages"]["status"] == "no_token"
+    assert child_map["instagram_business"]["status"] == "no_token"
+    assert child_map["meta_ads"]["status"] == "no_token"
 
 
 def test_sync_pages_cannot_use_old_cached_selection_after_disconnect(client, monkeypatch):

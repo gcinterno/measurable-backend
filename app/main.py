@@ -211,6 +211,8 @@ from .schemas import (
     MeUpdateIn,
     IntegrationSchema,
     InstagramBusinessStatusOut,
+    MetaBusinessSuiteChildStatusOut,
+    MetaBusinessSuiteStatusOut,
     MetaProviderStatusOut,
     MetaPageOut,
     MetaPageCatalogOut,
@@ -7026,12 +7028,6 @@ def _canonical_meta_provider_status_out(
     integration_id = int(provider_status.get("integration_id") or 0) or None
     integration = db.get(Integration, integration_id) if integration_id is not None else None
     token_present = bool(suite_status.get("suite_token_present"))
-    if integration is not None:
-        token_present = token_present or _meta_provider_direct_token_present(
-            db,
-            provider=visible_provider,
-            integration=integration,
-        )
 
     status = _canonical_meta_frontend_status(str(provider_status.get("status") or "disconnected"))
     if not token_present and status in {"disconnected", "available"}:
@@ -7119,6 +7115,117 @@ def _canonical_meta_provider_statuses_out(
         )
         for provider in META_VISIBLE_PROVIDERS
     ]
+
+
+def _meta_business_suite_status_out(
+    db: Session,
+    *,
+    workspace_id: int,
+    user_id: int | None = None,
+    live_refresh: bool = False,
+    context: str = "meta_business_suite_status",
+) -> MetaBusinessSuiteStatusOut:
+    suite_status = _resolve_meta_suite_provider_statuses(
+        db,
+        workspace_id,
+        user_id=user_id,
+        live_refresh=live_refresh,
+        context=context,
+    )
+    provider_statuses = _canonical_meta_provider_statuses_out(
+        db,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        suite_status=suite_status,
+        context=context,
+    )
+    children: dict[Literal["facebook_pages", "instagram_business", "meta_ads"], MetaBusinessSuiteChildStatusOut] = {}
+    all_missing_scopes: set[str] = set()
+    asset_count = 0
+    last_refreshed_values: list[datetime] = []
+    discovery_values: list[str] = []
+
+    for provider_status in provider_statuses:
+        all_missing_scopes.update(provider_status.missing_scopes)
+        asset_count += int(provider_status.asset_count or 0)
+        if provider_status.last_refreshed_at is not None:
+            last_refreshed_values.append(provider_status.last_refreshed_at)
+        discovery_values.append(str(provider_status.discovery_status or "idle"))
+        children[provider_status.provider] = MetaBusinessSuiteChildStatusOut(
+            status=provider_status.status,
+            connected=provider_status.connected,
+            asset_count=provider_status.asset_count,
+            integration_id=provider_status.integration_id,
+            missing_scopes=provider_status.missing_scopes,
+            message=provider_status.message,
+            last_refreshed_at=provider_status.last_refreshed_at,
+            discovery_status=provider_status.discovery_status,
+        )
+        _meta_oauth_log(
+            "META_SUITE_CHILD_STATUS_RESOLVED",
+            provider=provider_status.provider,
+            workspace_id=workspace_id,
+            integration_id=provider_status.integration_id,
+            status=provider_status.status,
+            connected=provider_status.connected,
+            asset_count=provider_status.asset_count,
+            missing_scopes=provider_status.missing_scopes,
+            discovery_status=provider_status.discovery_status,
+            context=context,
+        )
+
+    suite_integration_id = int(suite_status.get("suite_integration_id") or 0) or None
+    suite_integration = db.get(Integration, suite_integration_id) if suite_integration_id is not None else None
+    token_present = bool(suite_status.get("suite_token_present"))
+    if not token_present:
+        suite_frontend_status = "no_token"
+    elif all_missing_scopes:
+        suite_frontend_status = "needs_permission"
+    elif asset_count > 0:
+        suite_frontend_status = "connected"
+    else:
+        suite_frontend_status = "connected_no_assets"
+
+    if "failed" in discovery_values:
+        discovery_status = "failed"
+    elif "running" in discovery_values:
+        discovery_status = "running"
+    elif any(value == "succeeded" for value in discovery_values):
+        discovery_status = "completed"
+    else:
+        discovery_status = "idle"
+
+    connected = _meta_status_connected(suite_frontend_status)
+    message: str | None = None
+    if suite_frontend_status == "connected_no_assets":
+        message = "Meta Business Suite connected, but no assets were found."
+    elif suite_frontend_status == "needs_permission":
+        message = "Meta Business Suite needs additional Meta permissions."
+
+    return MetaBusinessSuiteStatusOut(
+        provider="meta_business_suite",
+        connected=connected,
+        status=cast(
+            Literal[
+                "connected",
+                "connected_no_assets",
+                "needs_permission",
+                "no_token",
+                "disconnected",
+                "available",
+                "checking",
+                "error",
+            ],
+            suite_frontend_status,
+        ),
+        integration_id=suite_integration_id,
+        last_connected_at=suite_integration.updated_at if suite_integration is not None and connected else None,
+        last_refreshed_at=max(last_refreshed_values) if last_refreshed_values else None,
+        discovery_status=discovery_status,
+        missing_scopes=sorted(all_missing_scopes),
+        message=message,
+        children=children,
+    )
 
 
 def _count_meta_records_for_integration(
@@ -7252,6 +7359,36 @@ def _resolve_meta_suite_provider_statuses(
         live_refresh=live_refresh,
     )
 
+    facebook_child_status = _canonical_meta_frontend_status(facebook_integration.status)
+    instagram_child_status = _canonical_meta_frontend_status(instagram_integration.status)
+    meta_ads_child_status = _canonical_meta_frontend_status(meta_ads_integration.status)
+    if suite_token_present:
+        facebook_initial_status = (
+            "connected"
+            if cached_pages_count > 0
+            else "needs_permission"
+            if facebook_child_status == "needs_permission"
+            else "connected_no_assets"
+        )
+        instagram_initial_status = (
+            "connected"
+            if cached_instagram_accounts_count > 0
+            else "needs_permission"
+            if instagram_child_status == "needs_permission"
+            else "connected_no_assets"
+        )
+        meta_ads_initial_status = (
+            "connected"
+            if cached_ad_accounts_count > 0
+            else "needs_permission"
+            if meta_ads_child_status == "needs_permission"
+            else "connected_no_assets"
+        )
+    else:
+        facebook_initial_status = "no_token"
+        instagram_initial_status = "no_token"
+        meta_ads_initial_status = "no_token"
+
     result: dict[str, Any] = {
         "suite_integration_id": suite_integration.id,
         "suite_token_present": suite_token_present,
@@ -7264,7 +7401,7 @@ def _resolve_meta_suite_provider_statuses(
         },
         "facebook_pages": {
             "integration_id": facebook_integration.id,
-            "status": "connected" if cached_pages_count > 0 else _normalized_provider_status(facebook_integration.status),
+            "status": facebook_initial_status,
             "cached_pages_count": cached_pages_count,
             "accessible_pages_count": 0,
             "last_refreshed_at": facebook_last_refreshed_at,
@@ -7272,11 +7409,7 @@ def _resolve_meta_suite_provider_statuses(
         },
         "instagram_business": {
             "integration_id": instagram_integration.id,
-            "status": (
-                "connected"
-                if cached_instagram_accounts_count > 0
-                else _normalized_provider_status(instagram_integration.status)
-            ),
+            "status": instagram_initial_status,
             "cached_instagram_accounts_count": cached_instagram_accounts_count,
             "discovered_instagram_accounts_count": 0,
             "pages_checked_count": 0,
@@ -7287,7 +7420,7 @@ def _resolve_meta_suite_provider_statuses(
         },
         "meta_ads": {
             "integration_id": meta_ads_integration.id,
-            "status": "connected" if cached_ad_accounts_count > 0 else _normalized_provider_status(meta_ads_integration.status),
+            "status": meta_ads_initial_status,
             "cached_ad_accounts_count": cached_ad_accounts_count,
             "discovered_ad_accounts_count": 0,
             "ad_account_results": [],
@@ -7300,6 +7433,17 @@ def _resolve_meta_suite_provider_statuses(
     }
 
     if suite_access_token and live_refresh:
+        discovery_started_at = perf_counter()
+        _meta_oauth_log(
+            "META_SUITE_DISCOVERY_STARTED",
+            workspace_id=workspace_id,
+            user_id=user_id,
+            suite_integration_id=suite_integration.id,
+            context=context,
+            cached_pages_count=cached_pages_count,
+            cached_instagram_accounts_count=cached_instagram_accounts_count,
+            cached_ad_accounts_count=cached_ad_accounts_count,
+        )
         debug_summary = {"is_valid": None, "scopes": [], "granular_target_ids": []}
         debug_summary_loaded = False
         try:
@@ -7455,6 +7599,21 @@ def _resolve_meta_suite_provider_statuses(
             result["meta_ads"]["status"] = "connected_no_assets"
         else:
             result["meta_ads"]["status"] = "connected_no_assets"
+        _meta_oauth_log(
+            "META_SUITE_DISCOVERY_COMPLETED",
+            workspace_id=workspace_id,
+            user_id=user_id,
+            suite_integration_id=suite_integration.id,
+            context=context,
+            duration_ms=round((perf_counter() - discovery_started_at) * 1000, 2),
+            facebook_pages_status=result["facebook_pages"]["status"],
+            instagram_business_status=result["instagram_business"]["status"],
+            meta_ads_status=result["meta_ads"]["status"],
+            pages_count=max(cached_pages_count, accessible_pages_count),
+            instagram_accounts_count=max(cached_instagram_accounts_count, discovered_instagram_assets_count),
+            ad_accounts_count=max(cached_ad_accounts_count, len(meta_ads_accounts_discovered)),
+            missing_scopes_by_provider=result["missing_scopes_by_provider"],
+        )
 
     for provider in ("facebook_pages", "instagram_business", "meta_ads"):
         _meta_oauth_log(
@@ -7558,65 +7717,26 @@ def _integration_schema_payload(
 
 
 def _integration_entries_for_workspace(db: Session, workspace_id: int) -> list[IntegrationSchema]:
-    facebook_integration = _get_or_create_meta_integration_for_workspace(db, workspace_id)
-    instagram_integration = _get_or_create_instagram_business_integration_for_workspace(db, workspace_id)
-    meta_ads_integration = _get_or_create_meta_ads_integration_for_workspace(db, workspace_id)
-    suite_status = _resolve_meta_suite_provider_statuses(
+    suite_integration = _get_or_create_meta_business_suite_integration_for_workspace(db, workspace_id)
+    suite_status = _meta_business_suite_status_out(
         db,
-        workspace_id,
+        workspace_id=workspace_id,
         context="integrations_list",
     )
-    provider_statuses = {
-        status.provider: status
-        for status in _canonical_meta_provider_statuses_out(
-            db,
-            workspace_id=workspace_id,
-            suite_status=suite_status,
-            context="integrations_list",
-        )
-    }
-    facebook_status = provider_statuses["facebook_pages"]
-    instagram_status = provider_statuses["instagram_business"]
-    meta_ads_status = provider_statuses["meta_ads"]
+    asset_count = sum(child.asset_count for child in suite_status.children.values())
     return [
         _integration_schema_payload(
-            integration=facebook_integration,
-            provider="facebook_pages",
-            name="Facebook Pages",
-            status=facebook_status.status,
-            connected=facebook_status.connected,
-            asset_count=facebook_status.asset_count,
-            missing_scopes=facebook_status.missing_scopes,
-            message=facebook_status.message,
-            last_connected_at=facebook_status.last_connected_at,
-            last_refreshed_at=facebook_status.last_refreshed_at,
-            discovery_status=facebook_status.discovery_status,
-        ),
-        _integration_schema_payload(
-            integration=instagram_integration,
-            provider="instagram_business",
-            name="Instagram Business",
-            status=instagram_status.status,
-            connected=instagram_status.connected,
-            asset_count=instagram_status.asset_count,
-            missing_scopes=instagram_status.missing_scopes,
-            message=instagram_status.message,
-            last_connected_at=instagram_status.last_connected_at,
-            last_refreshed_at=instagram_status.last_refreshed_at,
-            discovery_status=instagram_status.discovery_status,
-        ),
-        _integration_schema_payload(
-            integration=meta_ads_integration,
-            provider="meta_ads",
-            name="Meta Ads",
-            status=meta_ads_status.status,
-            connected=meta_ads_status.connected,
-            asset_count=meta_ads_status.asset_count,
-            missing_scopes=meta_ads_status.missing_scopes,
-            message=meta_ads_status.message,
-            last_connected_at=meta_ads_status.last_connected_at,
-            last_refreshed_at=meta_ads_status.last_refreshed_at,
-            discovery_status=meta_ads_status.discovery_status,
+            integration=suite_integration,
+            provider="meta_business_suite",
+            name="Meta Business Suite",
+            status=suite_status.status,
+            connected=suite_status.connected,
+            asset_count=asset_count,
+            missing_scopes=suite_status.missing_scopes,
+            message=suite_status.message,
+            last_connected_at=suite_status.last_connected_at,
+            last_refreshed_at=suite_status.last_refreshed_at,
+            discovery_status=suite_status.discovery_status,
         ),
     ]
 
@@ -7662,6 +7782,137 @@ def _disconnect_meta_ads_integration(
         cleared_accounts=cleared_accounts,
         cleared_rows=cleared_rows,
         token_revoked=token_revoked,
+    )
+
+
+def _disconnect_meta_business_suite_for_workspace(
+    db: Session,
+    *,
+    workspace_id: int,
+    revoke_permissions: bool = True,
+) -> MetaDisconnectOut:
+    suite_integration = _get_or_create_meta_business_suite_integration_for_workspace(db, workspace_id)
+    facebook_integration = _get_or_create_meta_integration_for_workspace(db, workspace_id)
+    instagram_integration = _get_or_create_instagram_business_integration_for_workspace(db, workspace_id)
+    meta_ads_integration = _get_or_create_meta_ads_integration_for_workspace(db, workspace_id)
+    managed_integrations = [
+        suite_integration,
+        facebook_integration,
+        instagram_integration,
+        meta_ads_integration,
+    ]
+    managed_integration_ids = [integration.id for integration in managed_integrations]
+
+    integration_accounts = (
+        db.query(IntegrationAccount)
+        .filter(IntegrationAccount.integration_id.in_(managed_integration_ids))
+        .all()
+    )
+    integration_account_ids = [account.id for account in integration_accounts]
+    tokens = (
+        db.query(IntegrationToken)
+        .filter(IntegrationToken.account_id.in_(integration_account_ids))
+        .all()
+        if integration_account_ids
+        else []
+    )
+
+    meta_revoke_status = "skipped"
+    if revoke_permissions:
+        for account in integration_accounts:
+            latest_token = _get_latest_integration_token(db, account.id)
+            _token_present, _token_decrypt_ok, access_token = _resolve_integration_token_value(latest_token)
+            if access_token:
+                meta_revoke_status = _revoke_meta_permissions(access_token)
+                break
+
+    stored_records: list[MetaPage] = []
+    if _table_available("meta_pages"):
+        try:
+            stored_records = (
+                db.query(MetaPage)
+                .filter(MetaPage.integration_id.in_([facebook_integration.id, instagram_integration.id]))
+                .all()
+            )
+        except (OperationalError, ProgrammingError):
+            _table_names.cache_clear()
+            stored_records = []
+    facebook_pages_count = len(
+        [record for record in stored_records if record.record_type == META_RECORD_TYPE_FACEBOOK_PAGE]
+    )
+    instagram_accounts_count = len(
+        [record for record in stored_records if record.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT]
+    )
+
+    meta_ad_accounts: list[MetaAdAccount] = []
+    meta_ads_rows: list[MetaAdsInsightDaily] = []
+    if _table_available("meta_ad_accounts"):
+        try:
+            meta_ad_accounts = (
+                db.query(MetaAdAccount)
+                .filter(MetaAdAccount.integration_id == meta_ads_integration.id)
+                .all()
+            )
+        except (OperationalError, ProgrammingError):
+            _table_names.cache_clear()
+            meta_ad_accounts = []
+    if _table_available("meta_ads_insights_daily"):
+        try:
+            meta_ads_rows = (
+                db.query(MetaAdsInsightDaily)
+                .filter(MetaAdsInsightDaily.integration_id == meta_ads_integration.id)
+                .all()
+            )
+        except (OperationalError, ProgrammingError):
+            _table_names.cache_clear()
+            meta_ads_rows = []
+
+    for row in meta_ads_rows:
+        db.delete(row)
+    for account in meta_ad_accounts:
+        db.delete(account)
+    for record in stored_records:
+        db.delete(record)
+    for account in integration_accounts:
+        db.delete(account)
+    for integration in managed_integrations:
+        integration.status = "disconnected"
+        db.add(integration)
+    db.commit()
+    for integration in managed_integrations:
+        db.refresh(integration)
+
+    cleared = MetaDisconnectClearedOut(
+        tokens=bool(tokens),
+        facebook_pages=facebook_pages_count,
+        instagram_accounts=instagram_accounts_count,
+        integration_accounts=len(integration_accounts),
+    )
+    _meta_oauth_log(
+        "META_BUSINESS_SUITE_DISCONNECTED",
+        workspace_id=workspace_id,
+        suite_integration_id=suite_integration.id,
+        facebook_integration_id=facebook_integration.id,
+        instagram_integration_id=instagram_integration.id,
+        meta_ads_integration_id=meta_ads_integration.id,
+        tokens_cleared=cleared.tokens,
+        integration_accounts_cleared=cleared.integration_accounts,
+        facebook_pages_cleared=cleared.facebook_pages,
+        instagram_accounts_cleared=cleared.instagram_accounts,
+        meta_ad_accounts_cleared=len(meta_ad_accounts),
+        meta_ads_rows_cleared=len(meta_ads_rows),
+        meta_revoke_status=meta_revoke_status,
+    )
+    return MetaDisconnectOut(
+        provider="meta_business_suite",
+        disconnected_integrations=[
+            "meta_business_suite",
+            "facebook_pages",
+            "instagram_business",
+            "meta_ads",
+        ],
+        cleared=cleared,
+        meta_revoke_status=meta_revoke_status,
     )
 
 
@@ -11164,6 +11415,21 @@ def _run_meta_pages_oauth_callback(
             state_callback_route=state_callback_route,
             state_payload=payload,
         )
+        if is_meta_business_suite_flow:
+            _meta_oauth_log(
+                "META_SUITE_CALLBACK_RECEIVED",
+                provider=visible_provider,
+                code_received=bool(code),
+                workspace_id=workspace_id,
+                user_id=effective_user_id,
+                state_integration_id=state_integration_id,
+                suite_integration_id=state_suite_integration_id,
+                redirect_uri_param=redirect_uri,
+                integration_type=selected_integration_type,
+                requested_auth_mode=requested_auth_mode,
+                reconnect_requested=reconnect_requested,
+                state_callback_route=state_callback_route,
+            )
         if is_instagram_business_flow:
             _meta_oauth_log(
                 "INSTAGRAM_BUSINESS_CALLBACK_STARTED",
@@ -11596,6 +11862,19 @@ def _run_meta_pages_oauth_callback(
                 saved_token.id,
                 reconnect_requested,
             )
+            _meta_oauth_log(
+                "META_SUITE_TOKEN_SAVED",
+                provider=visible_provider,
+                integration_id=suite_token_integration.id,
+                visible_integration_id=integration.id,
+                workspace_id=workspace_id,
+                user_id=effective_user_id,
+                token_account_id=token_account.id,
+                saved_token_id=saved_token.id,
+                token_exchange_ms=token_exchange_ms,
+                scope_validation_ms=scope_validation_ms,
+                duration_ms=round((perf_counter() - callback_started_at) * 1000, 2),
+            )
             facebook_integration = _get_or_create_meta_integration_for_workspace(db, workspace_id)
             instagram_integration = _get_or_create_instagram_business_integration_for_workspace(db, workspace_id)
             meta_ads_integration = _get_or_create_meta_ads_integration_for_workspace(db, workspace_id)
@@ -11737,6 +12016,20 @@ def _run_meta_pages_oauth_callback(
                         discovery_status="idle",
                         source=state_source or provider_name,
                     )
+                    _meta_oauth_log(
+                        "META_SUITE_CHILD_STATUS_RESOLVED",
+                        provider=provider_name,
+                        integration_id=provider_integration.id,
+                        suite_integration_id=suite_token_integration.id,
+                        workspace_id=workspace_id,
+                        user_id=effective_user_id,
+                        status=provider_status,
+                        connected=_meta_status_connected(provider_status),
+                        asset_count=provider_asset_count,
+                        missing_scopes=provider_missing_scopes,
+                        discovery_status="idle",
+                        source=state_source or provider_name,
+                    )
                 _meta_oauth_log(
                     "META_DISCOVERY_NOT_STARTED",
                     provider=callback_provider,
@@ -11754,6 +12047,23 @@ def _run_meta_pages_oauth_callback(
                     "CALLBACK_HTML_RETURNED",
                     provider=callback_provider,
                     integration_id=callback_visible_integration.id,
+                    workspace_id=workspace_id,
+                    user_id=effective_user_id,
+                    status=callback_status,
+                    connected=_meta_status_connected(callback_status),
+                    asset_count=callback_asset_count,
+                    missing_scopes=callback_missing_scopes,
+                    token_exchange_ms=token_exchange_ms,
+                    scope_validation_ms=scope_validation_ms,
+                    status_persist_ms=status_persist_ms,
+                    popup_response_ms=round((perf_counter() - callback_started_at) * 1000, 2),
+                    source=state_source or callback_provider,
+                )
+                _meta_oauth_log(
+                    "META_SUITE_POPUP_SUCCESS_RETURNED",
+                    provider=callback_provider,
+                    integration_id=callback_visible_integration.id,
+                    suite_integration_id=suite_token_integration.id,
                     workspace_id=workspace_id,
                     user_id=effective_user_id,
                     status=callback_status,
@@ -22885,18 +23195,20 @@ def meta_ads_status(
             message="Meta Ads database tables are not available yet. Apply database migrations.",
             discovery_status="failed",
         )
-    token_present = True
-    access_token = ""
-    try:
-        access_token = _get_meta_ads_access_token(db, integration)
-    except HTTPException:
-        token_present = False
     suite_status = _resolve_meta_suite_provider_statuses(
         db,
         integration.workspace_id,
         user_id=current_user.id,
         context="meta_ads_status",
         live_refresh=refresh,
+    )
+    canonical_status = _canonical_meta_provider_status_out(
+        db,
+        workspace_id=integration.workspace_id,
+        provider="meta_ads",
+        user_id=current_user.id,
+        suite_status=suite_status,
+        context="meta_ads_status",
     )
     accounts = (
         db.query(MetaAdAccount)
@@ -22905,30 +23217,8 @@ def meta_ads_status(
         .all()
     )
     selected_account = next((account for account in accounts if account.is_selected), None)
-    missing_scopes = list(suite_status["missing_scopes_by_provider"]["meta_ads"])
-    if bool(suite_status["suite_token_present"]):
-        status = str(suite_status["meta_ads"]["status"])
-    else:
-        status = str(integration.status or "disconnected").strip() or "disconnected"
-        if not token_present:
-            status = "no_token"
-        elif refresh:
-            try:
-                debug_token_summary = _extract_debug_token_summary(debug_token(access_token))
-            except Exception:
-                debug_token_summary = {"scopes": [], "is_valid": None, "granular_target_ids": []}
-            received_scopes = [
-                str(scope).strip()
-                for scope in debug_token_summary["scopes"]
-                if str(scope).strip()
-            ]
-            if received_scopes:
-                missing_scopes = _meta_ads_missing_scopes(received_scopes)
-                if missing_scopes:
-                    status = "needs_permission"
-    if status == "connected" and not accounts and int(suite_status["meta_ads"]["discovered_ad_accounts_count"]) == 0:
-        status = "connected_no_assets"
-    status = _canonical_meta_frontend_status(status)
+    missing_scopes = canonical_status.missing_scopes
+    status = _canonical_meta_frontend_status(canonical_status.status)
     connected = _meta_status_connected(status)
     account_names = [account.account_name for account in accounts if str(account.account_name or "").strip()]
     return MetaAdsStatusOut(
@@ -23112,7 +23402,36 @@ def meta_ads_disconnect(
         integration_id=integration_id,
         workspace_id=workspace_id,
     )
-    return _disconnect_meta_ads_integration(db, integration, revoke_permissions=True)
+    cleared_accounts = 0
+    cleared_rows = 0
+    if _table_available("meta_ad_accounts"):
+        try:
+            cleared_accounts = _safe_int_scalar(
+                db,
+                db.query(func.count(MetaAdAccount.id)).filter(MetaAdAccount.integration_id == integration.id),
+            )
+        except (OperationalError, ProgrammingError):
+            _table_names.cache_clear()
+            cleared_accounts = 0
+    if _table_available("meta_ads_insights_daily"):
+        try:
+            cleared_rows = _safe_int_scalar(
+                db,
+                db.query(func.count(MetaAdsInsightDaily.id)).filter(MetaAdsInsightDaily.integration_id == integration.id),
+            )
+        except (OperationalError, ProgrammingError):
+            _table_names.cache_clear()
+            cleared_rows = 0
+    suite_disconnect = _disconnect_meta_business_suite_for_workspace(
+        db,
+        workspace_id=integration.workspace_id,
+        revoke_permissions=True,
+    )
+    return MetaAdsDisconnectOut(
+        cleared_accounts=cleared_accounts,
+        cleared_rows=cleared_rows,
+        token_revoked=suite_disconnect.meta_revoke_status == "success",
+    )
 
 
 def _resolve_tiktok_sync_date_range(
@@ -24285,6 +24604,47 @@ def meta_connect(
     }
 
 
+@app.get("/integrations/meta-business-suite/status", response_model=MetaBusinessSuiteStatusOut)
+def meta_business_suite_status(
+    workspace_id: int | None = Query(default=None),
+    refresh: bool = Query(default=False),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaBusinessSuiteStatusOut:
+    resolved_workspace_id = _resolve_meta_connect_workspace_id(
+        db,
+        user_id=current_user.id,
+        requested_workspace_id=workspace_id,
+    )
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    return _meta_business_suite_status_out(
+        db,
+        workspace_id=resolved_workspace_id,
+        user_id=current_user.id,
+        live_refresh=refresh,
+        context="meta_business_suite_status",
+    )
+
+
+@app.delete("/integrations/meta-business-suite/disconnect", response_model=MetaDisconnectOut)
+def meta_business_suite_disconnect(
+    workspace_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaDisconnectOut:
+    resolved_workspace_id = _resolve_meta_connect_workspace_id(
+        db,
+        user_id=current_user.id,
+        requested_workspace_id=workspace_id,
+    )
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    return _disconnect_meta_business_suite_for_workspace(
+        db,
+        workspace_id=resolved_workspace_id,
+        revoke_permissions=True,
+    )
+
+
 @app.get("/integrations/meta-business-suite/connect", response_model=None)
 def meta_business_suite_connect(
     workspace_id: int | None = Query(default=None),
@@ -24347,6 +24707,19 @@ def _build_meta_business_suite_connect_payload(
         reconnect_requested=reconnect,
         request_source=request_source,
         requested_scopes=requested_scopes,
+    )
+    _meta_oauth_log(
+        "META_SUITE_OAUTH_STARTED",
+        workspace_id=resolved_workspace_id,
+        user_id=current_user.id,
+        integration_id=suite_integration.id,
+        visible_integration_id=visible_integration.id,
+        provider=visible_provider or "meta_business_suite",
+        reconnect_requested=reconnect,
+        request_source=request_source,
+        requested_scopes=requested_scopes,
+        auth_mode=requested_auth_mode,
+        callback_route="/integrations/meta/callback-pages",
     )
     _meta_oauth_log(
         "OAUTH_STARTED",
@@ -25390,7 +25763,11 @@ def meta_disconnect(
         integration_id=payload.integration_id,
         workspace_id=payload.workspace_id,
     )
-    return _disconnect_meta_integration(db, integration, revoke_permissions=True)
+    return _disconnect_meta_business_suite_for_workspace(
+        db,
+        workspace_id=integration.workspace_id,
+        revoke_permissions=True,
+    )
 
 
 @app.get("/integrations/meta/debug-permissions")

@@ -946,6 +946,30 @@ class MetaProviderStatusOut(BaseModel):
     discovery_status: str = "idle"
 
 
+class MetaBusinessSuiteChildStatusOut(BaseModel):
+    status: MetaVisibleProviderStatus = "available"
+    connected: bool = False
+    asset_count: int = 0
+    integration_id: Optional[int] = None
+    missing_scopes: list[str] = Field(default_factory=list)
+    message: Optional[str] = None
+    last_refreshed_at: Optional[datetime] = None
+    discovery_status: str = "idle"
+
+
+class MetaBusinessSuiteStatusOut(BaseModel):
+    provider: Literal["meta_business_suite"] = "meta_business_suite"
+    connected: bool = False
+    status: MetaVisibleProviderStatus = "available"
+    integration_id: Optional[int] = None
+    last_connected_at: Optional[datetime] = None
+    last_refreshed_at: Optional[datetime] = None
+    discovery_status: str = "idle"
+    missing_scopes: list[str] = Field(default_factory=list)
+    message: Optional[str] = None
+    children: dict[MetaVisibleProvider, MetaBusinessSuiteChildStatusOut] = Field(default_factory=dict)
+
+
 class MetaAdsStatusOut(BaseModel):
     integration_id: int
     workspace_id: int

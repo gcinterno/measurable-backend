@@ -41,6 +41,7 @@ META_BUSINESS_SUITE_SCOPES = [
     "read_insights",
     "pages_read_user_content",
     "instagram_basic",
+    "instagram_manage_insights",
     "business_management",
     "ads_read",
 ]

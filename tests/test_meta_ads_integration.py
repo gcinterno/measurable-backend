@@ -164,7 +164,7 @@ def test_meta_ads_connect_creates_separate_integration(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["scope"] == meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE
-    assert payload["scope"] == "public_profile,pages_show_list,pages_read_engagement,read_insights,pages_read_user_content,instagram_basic,business_management,ads_read"
+    assert payload["scope"] == "public_profile,pages_show_list,pages_read_engagement,read_insights,pages_read_user_content,instagram_basic,instagram_manage_insights,business_management,ads_read"
     assert "ads_read" in payload["auth_url"]
     assert "business_management" in payload["auth_url"]
     assert "pages_show_list" in payload["auth_url"]
@@ -424,6 +424,30 @@ def test_meta_ads_accounts_select_sync_and_disconnect(client, monkeypatch):
                 workspace_id=integration.workspace_id,
                 token_type="access_token",
                 access_token="meta-ads-access-token",
+            )
+        )
+        suite_integration = Integration(
+            workspace_id=integration.workspace_id,
+            provider="meta_business_suite",
+            name="Meta Business Suite",
+            status="connected",
+        )
+        db.add(suite_integration)
+        db.flush()
+        suite_token_account = IntegrationAccount(
+            integration_id=suite_integration.id,
+            workspace_id=integration.workspace_id,
+            external_account_id=f"__meta_token__:{suite_integration.id}",
+            display_name="Meta Business Suite token store",
+        )
+        db.add(suite_token_account)
+        db.flush()
+        db.add(
+            IntegrationToken(
+                account_id=suite_token_account.id,
+                workspace_id=integration.workspace_id,
+                token_type="access_token",
+                access_token="suite-access-token",
             )
         )
         db.commit()
