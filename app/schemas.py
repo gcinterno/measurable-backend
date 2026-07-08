@@ -721,6 +721,11 @@ class IntegrationSchema(BaseSchema):
     provider: str
     name: Optional[str]
     status: str
+    integration_id: Optional[int] = None
+    connected: bool = False
+    asset_count: int = 0
+    missing_scopes: list[str] = Field(default_factory=list)
+    message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -912,6 +917,29 @@ class MetaAdsAccountOut(BaseModel):
     source: Optional[str] = None
 
 
+MetaVisibleProvider = Literal["facebook_pages", "instagram_business", "meta_ads"]
+MetaVisibleProviderStatus = Literal[
+    "connected",
+    "connected_no_assets",
+    "needs_permission",
+    "no_token",
+    "disconnected",
+    "available",
+    "checking",
+    "error",
+]
+
+
+class MetaProviderStatusOut(BaseModel):
+    provider: MetaVisibleProvider
+    integration_id: Optional[int] = None
+    status: MetaVisibleProviderStatus = "available"
+    connected: bool = False
+    asset_count: int = 0
+    missing_scopes: list[str] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
 class MetaAdsStatusOut(BaseModel):
     integration_id: int
     workspace_id: int
@@ -933,15 +961,19 @@ class MetaAdsStatusOut(BaseModel):
 class InstagramBusinessStatusOut(BaseModel):
     connected: bool = False
     provider: str = "instagram_business"
+    integration_id: Optional[int] = None
+    asset_count: int = 0
+    missing_scopes: list[str] = Field(default_factory=list)
+    message: Optional[str] = None
     status: Literal[
         "connected",
         "disconnected",
-        "needs_reconnect",
         "needs_permission",
-        "needs_page_ig_link",
-        "needs_business_or_creator_account",
         "connected_no_assets",
         "no_token",
+        "available",
+        "checking",
+        "error",
     ] = "disconnected"
 
 
