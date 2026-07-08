@@ -726,6 +726,9 @@ class IntegrationSchema(BaseSchema):
     asset_count: int = 0
     missing_scopes: list[str] = Field(default_factory=list)
     message: Optional[str] = None
+    last_connected_at: Optional[datetime] = None
+    last_refreshed_at: Optional[datetime] = None
+    discovery_status: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -938,6 +941,9 @@ class MetaProviderStatusOut(BaseModel):
     asset_count: int = 0
     missing_scopes: list[str] = Field(default_factory=list)
     message: Optional[str] = None
+    last_connected_at: Optional[datetime] = None
+    last_refreshed_at: Optional[datetime] = None
+    discovery_status: str = "idle"
 
 
 class MetaAdsStatusOut(BaseModel):
@@ -956,6 +962,9 @@ class MetaAdsStatusOut(BaseModel):
     reconnect_required: bool = False
     permission_missing: bool = False
     message: Optional[str] = None
+    last_connected_at: Optional[datetime] = None
+    last_refreshed_at: Optional[datetime] = None
+    discovery_status: str = "idle"
 
 
 class InstagramBusinessStatusOut(BaseModel):
@@ -965,6 +974,9 @@ class InstagramBusinessStatusOut(BaseModel):
     asset_count: int = 0
     missing_scopes: list[str] = Field(default_factory=list)
     message: Optional[str] = None
+    last_connected_at: Optional[datetime] = None
+    last_refreshed_at: Optional[datetime] = None
+    discovery_status: str = "idle"
     status: Literal[
         "connected",
         "disconnected",

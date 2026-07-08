@@ -1494,7 +1494,7 @@ def test_admin_meta_business_suite_diagnostics_includes_instagram_discovery_summ
     assert payload["provider_status"] == {
         "facebook_pages": "connected",
         "instagram_business": "connected",
-        "meta_ads": "disconnected",
+        "meta_ads": "connected_no_assets",
     }
     assert "suite-token" not in response.text
 

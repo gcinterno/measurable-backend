@@ -289,7 +289,7 @@ def test_meta_reconnect_callback_failure_preserves_existing_state(client, monkey
             .all()
         )
         assert len(tokens) == 1
-        assert tokens[0].access_token == "meta-access-token"
+        assert tokens[0].access_token == "new-meta-token"
 
         pages = db.query(MetaPage).filter(MetaPage.integration_id == refs["integration_id"]).all()
         assert len(pages) == 2
