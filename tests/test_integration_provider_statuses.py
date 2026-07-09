@@ -1038,6 +1038,155 @@ def test_meta_business_suite_instagram_accounts_empty_only_after_discovery_compl
     assert payload["message"] == "No Instagram Business accounts found."
 
 
+def _seed_suite_instagram_sync_account(refs: dict[str, int]) -> None:
+    db = SessionLocal()
+    try:
+        instagram_integration = db.get(Integration, refs["instagram_integration_id"])
+        assert instagram_integration is not None
+        instagram_integration.status = "connected"
+        db.add(
+            MetaPage(
+                integration_id=refs["instagram_integration_id"],
+                user_id=refs["user_id"],
+                record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+                page_id="17841400000000001",
+                parent_page_id="fb-page-1",
+                name="Atria Instagram",
+                instagram_username="atria",
+                business_name="Atria Facebook Page",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _patch_instagram_business_sync(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_sync_meta_instagram_account(*, db, integration, selected_page, selected_meta_record, timeframe_config, current_user):
+        captured["integration_id"] = integration.id
+        captured["workspace_id"] = integration.workspace_id
+        captured["selected_page_external_account_id"] = selected_page.external_account_id
+        captured["selected_meta_record_id"] = selected_meta_record.page_id
+        captured["timeframe_config"] = timeframe_config
+        return main_module.MetaPagesSyncOut(
+            integration_id=integration.id,
+            dataset_id=321,
+            dataset_file_id=654,
+            page_id=selected_meta_record.page_id,
+            page_name=selected_meta_record.name,
+            status="uploaded",
+            timeframe=timeframe_config,
+        )
+
+    monkeypatch.setattr(main_module, "_sync_meta_instagram_account", fake_sync_meta_instagram_account)
+    return captured
+
+
+@pytest.mark.parametrize(
+    ("route", "payload_kind"),
+    [
+        ("/integrations/meta-business-suite/sync-instagram-business", "child_integration_id"),
+        ("/integrations/meta-business-suite/sync-instagram-business", "suite_integration_id"),
+        ("/integrations/meta-business-suite/sync-instagram-business", "workspace_only"),
+        ("/integrations/meta/sync-instagram-business", "legacy_alias"),
+    ],
+)
+def test_meta_business_suite_instagram_sync_resolves_child_integration(client, monkeypatch, route, payload_kind):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    captured = _patch_instagram_business_sync(monkeypatch)
+
+    payload: dict[str, object] = {
+        "workspace_id": refs["workspace_id"],
+        "instagram_account_id": "17841400000000001",
+        "timeframe": "custom",
+        "start_date": "2026-06-01",
+        "end_date": "2026-06-30",
+    }
+    if payload_kind == "child_integration_id":
+        payload["integration_id"] = refs["instagram_integration_id"]
+    elif payload_kind == "suite_integration_id":
+        payload["integration_id"] = refs["suite_integration_id"]
+        payload["account_id"] = payload.pop("instagram_account_id")
+    elif payload_kind == "legacy_alias":
+        payload["integrationId"] = refs["suite_integration_id"]
+        payload["pageId"] = payload.pop("instagram_account_id")
+
+    response = client.post(
+        route,
+        headers=_auth_headers(refs["user_id"]),
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["integration_id"] == refs["instagram_integration_id"]
+    assert body["account_id"] == "17841400000000001"
+    assert body["account_name"] == "Atria Instagram"
+    assert body["status"] == "synced"
+    assert captured["integration_id"] == refs["instagram_integration_id"]
+    assert captured["workspace_id"] == refs["workspace_id"]
+    assert captured["selected_meta_record_id"] == "17841400000000001"
+    assert captured["timeframe_config"]["key"] == "custom"
+    assert captured["timeframe_config"]["since"] == "2026-06-01"
+    assert captured["timeframe_config"]["until"] == "2026-06-30"
+
+
+def test_meta_business_suite_instagram_sync_requires_suite_connection(client):
+    refs = _seed_workspace_with_legacy_meta()
+
+    response = client.post(
+        "/integrations/meta-business-suite/sync-instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "workspace_id": refs["workspace_id"],
+            "instagram_account_id": "17841400000000001",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["message"] == "Meta Business Suite is not connected."
+
+
+def test_meta_business_suite_instagram_sync_requires_selected_account(client):
+    refs = _seed_workspace_with_suite_token()
+
+    response = client.post(
+        "/integrations/meta-business-suite/sync-instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["message"] == "Select an Instagram Business account to sync."
+
+
+def test_meta_business_suite_instagram_sync_rejects_unconnected_child(client):
+    refs = _seed_workspace_with_suite_token()
+    db = SessionLocal()
+    try:
+        instagram_integration = db.get(Integration, refs["instagram_integration_id"])
+        assert instagram_integration is not None
+        instagram_integration.status = "needs_permission"
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post(
+        "/integrations/meta-business-suite/sync-instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "workspace_id": refs["workspace_id"],
+            "instagram_account_id": "17841400000000001",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["message"] == "Instagram Business is not connected."
+
+
 def test_meta_business_suite_status_connects_ads_child_from_cached_accounts(client, monkeypatch):
     refs = _seed_workspace_with_suite_token()
     monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: True)

@@ -201,7 +201,6 @@ from .schemas import (
     DatasetDetailOut,
     DatasetUploadOut,
     InstagramBusinessReportCreateIn,
-    InstagramBusinessSyncIn,
     InstagramBusinessSyncOut,
     OnboardingCompleteOut,
     OnboardingStateOut,
@@ -27881,18 +27880,114 @@ def _sync_meta_instagram_account(
     )
 
 
+def _resolve_instagram_business_sync_integration(
+    db: Session,
+    *,
+    current_user: User,
+    integration_id: int | None,
+    workspace_id: int | None,
+) -> tuple[Integration, Integration]:
+    requested_integration: Integration | None = None
+    if integration_id is not None:
+        requested_integration = db.get(Integration, integration_id)
+        if requested_integration is None:
+            raise http_error(404, "integration_not_found", "Integration not found.")
+        _require_workspace_access(db, current_user.id, requested_integration.workspace_id)
+        resolved_workspace_id = int(requested_integration.workspace_id)
+        if workspace_id is not None and int(workspace_id) != resolved_workspace_id:
+            raise http_error(
+                400,
+                "workspace_mismatch",
+                "workspace_id does not match the integration workspace.",
+            )
+        if requested_integration.provider not in {"meta", "meta_business_suite", "instagram_business"}:
+            raise http_error(
+                400,
+                "invalid_integration_provider",
+                "Instagram Business sync requires a Meta Business Suite or Instagram Business integration.",
+            )
+    else:
+        resolved_workspace_id = _resolve_meta_connect_workspace_id(
+            db,
+            user_id=current_user.id,
+            requested_workspace_id=workspace_id,
+        )
+        _require_workspace_access(db, current_user.id, resolved_workspace_id)
+
+    suite_integration = _get_or_create_meta_business_suite_integration_for_workspace(db, resolved_workspace_id)
+    _suite_token_integration, suite_access_token = _resolve_workspace_meta_business_suite_access_token(
+        db,
+        resolved_workspace_id,
+    )
+    if not suite_access_token:
+        raise http_error(
+            400,
+            "meta_business_suite_not_connected",
+            "Meta Business Suite is not connected.",
+        )
+
+    instagram_integration = (
+        requested_integration
+        if requested_integration is not None and requested_integration.provider == "instagram_business"
+        else _get_or_create_instagram_business_integration_for_workspace(db, resolved_workspace_id)
+    )
+    cached_instagram_count = _count_meta_records_for_integration(
+        db,
+        integration_id=instagram_integration.id,
+        record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+    )
+    instagram_status = _canonical_meta_frontend_status(instagram_integration.status)
+    if instagram_status == "needs_permission":
+        raise http_error(
+            400,
+            "instagram_business_not_connected",
+            "Instagram Business is not connected.",
+        )
+    if instagram_status in {"no_token", "disconnected", "available"} and cached_instagram_count == 0:
+        suite_status = _resolve_meta_suite_provider_statuses(
+            db,
+            resolved_workspace_id,
+            user_id=current_user.id,
+            context="instagram_business_sync_resolution",
+            live_refresh=False,
+        )
+        canonical_status = _canonical_meta_provider_status_out(
+            db,
+            workspace_id=resolved_workspace_id,
+            provider="instagram_business",
+            user_id=current_user.id,
+            suite_status=suite_status,
+            context="instagram_business_sync_resolution",
+        )
+        if not canonical_status.connected:
+            raise http_error(
+                400,
+                "instagram_business_not_connected",
+                "Instagram Business is not connected.",
+            )
+
+    return instagram_integration, suite_integration
+
+
 def _run_instagram_business_sync(
     *,
     db: Session,
     current_user: User,
-    integration_id: int,
+    integration_id: int | None,
     instagram_account_id: str,
     workspace_id: int | None = None,
     timeframe: str = "last_28_days",
     start_date: str | None = None,
     end_date: str | None = None,
+    integration: Integration | None = None,
 ) -> InstagramBusinessSyncOut:
-    integration = _get_meta_integration(db, current_user, integration_id)
+    if integration is None:
+        integration, _suite_integration = _resolve_instagram_business_sync_integration(
+            db,
+            current_user=current_user,
+            integration_id=integration_id,
+            workspace_id=workspace_id,
+        )
     if workspace_id is not None and int(workspace_id) != int(integration.workspace_id):
         raise http_error(
             400,
@@ -27940,6 +28035,186 @@ def _run_instagram_business_sync(
         status="synced",
         timeframe=sync_result.timeframe,
     )
+
+
+def _payload_value(raw_body: dict[str, Any], raw_query_params: dict[str, Any], *names: str) -> Any:
+    for name in names:
+        value = raw_body.get(name)
+        if value is not None and str(value).strip() != "":
+            return value
+    for name in names:
+        value = raw_query_params.get(name)
+        if value is not None and str(value).strip() != "":
+            return value
+    return None
+
+
+def _coerce_optional_int_field(value: Any, *, field_name: str) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise http_error(422, f"invalid_{field_name}", f"{field_name} must be an integer.")
+
+
+def _body_timeframe_key(value: object) -> object:
+    if isinstance(value, dict):
+        return (
+            value.get("key")
+            or value.get("timeframe")
+            or value.get("value")
+            or value.get("preset")
+        )
+    return value
+
+
+def _run_instagram_business_sync_request(
+    *,
+    request: Request,
+    payload: dict | None,
+    current_user: User,
+    db: Session,
+    route_name: str,
+) -> InstagramBusinessSyncOut:
+    started_at = perf_counter()
+    raw_body = payload if isinstance(payload, dict) else {}
+    raw_query_params = dict(request.query_params)
+    timeframe_selection = raw_body.get("timeframe_selection")
+    if not isinstance(timeframe_selection, dict):
+        timeframe_selection = raw_body.get("timeframeSelection")
+    if not isinstance(timeframe_selection, dict):
+        timeframe_selection = {}
+
+    integration_id = _coerce_optional_int_field(
+        _payload_value(raw_body, raw_query_params, "integration_id", "integrationId"),
+        field_name="integration_id",
+    )
+    workspace_id = _coerce_optional_int_field(
+        _payload_value(raw_body, raw_query_params, "workspace_id", "workspaceId"),
+        field_name="workspace_id",
+    )
+    instagram_account_id_value = _payload_value(
+        raw_body,
+        raw_query_params,
+        "instagram_account_id",
+        "instagramAccountId",
+        "instagram_business_account_id",
+        "instagramBusinessAccountId",
+        "selected_instagram_account_id",
+        "selectedInstagramAccountId",
+        "account_id",
+        "accountId",
+        "page_id",
+        "pageId",
+        "selected_account_id",
+        "selectedAccountId",
+    )
+    timeframe_value = (
+        _body_timeframe_key(raw_body.get("timeframe"))
+        or _body_timeframe_key(timeframe_selection)
+        or _payload_value(raw_body, raw_query_params, "timeframe")
+    )
+    start_date_value = (
+        _payload_value(raw_body, raw_query_params, "start_date", "startDate")
+        or timeframe_selection.get("start_date")
+        or timeframe_selection.get("startDate")
+    )
+    end_date_value = (
+        _payload_value(raw_body, raw_query_params, "end_date", "endDate")
+        or timeframe_selection.get("end_date")
+        or timeframe_selection.get("endDate")
+    )
+    _meta_oauth_log(
+        "INSTAGRAM_BUSINESS_SYNC_REQUEST_RECEIVED",
+        route=route_name,
+        user_id=current_user.id,
+        workspace_id=workspace_id,
+        integration_id=integration_id,
+        account_id_present=bool(str(instagram_account_id_value or "").strip()),
+        timeframe=str(timeframe_value or "last_28_days"),
+    )
+
+    try:
+        integration, suite_integration = _resolve_instagram_business_sync_integration(
+            db,
+            current_user=current_user,
+            integration_id=integration_id,
+            workspace_id=workspace_id,
+        )
+        if not str(instagram_account_id_value or "").strip():
+            raise http_error(
+                400,
+                "missing_instagram_account_id",
+                "Select an Instagram Business account to sync.",
+            )
+        instagram_account_id = str(instagram_account_id_value).strip()
+        _meta_oauth_log(
+            "INSTAGRAM_BUSINESS_SYNC_INTEGRATION_RESOLVED",
+            route=route_name,
+            user_id=current_user.id,
+            workspace_id=integration.workspace_id,
+            suite_integration_id=suite_integration.id,
+            instagram_integration_id=integration.id,
+            requested_integration_id=integration_id,
+            instagram_account_id=instagram_account_id,
+        )
+        _meta_oauth_log(
+            "INSTAGRAM_BUSINESS_SYNC_STARTED",
+            route=route_name,
+            user_id=current_user.id,
+            workspace_id=integration.workspace_id,
+            suite_integration_id=suite_integration.id,
+            instagram_integration_id=integration.id,
+            instagram_account_id=instagram_account_id,
+            timeframe=str(timeframe_value or "last_28_days").strip() or "last_28_days",
+        )
+        result = _run_instagram_business_sync(
+            db=db,
+            current_user=current_user,
+            integration_id=integration.id,
+            instagram_account_id=instagram_account_id,
+            workspace_id=integration.workspace_id,
+            timeframe=str(timeframe_value or "last_28_days").strip() or "last_28_days",
+            start_date=str(start_date_value) if start_date_value is not None else None,
+            end_date=str(end_date_value) if end_date_value is not None else None,
+            integration=integration,
+        )
+        _meta_oauth_log(
+            "INSTAGRAM_BUSINESS_SYNC_COMPLETED",
+            route=route_name,
+            user_id=current_user.id,
+            workspace_id=integration.workspace_id,
+            suite_integration_id=suite_integration.id,
+            instagram_integration_id=integration.id,
+            instagram_account_id=instagram_account_id,
+            dataset_id=result.dataset_id,
+            dataset_file_id=result.dataset_file_id,
+            duration_ms=round((perf_counter() - started_at) * 1000, 2),
+        )
+        return result
+    except HTTPException as exc:
+        _meta_oauth_log(
+            "INSTAGRAM_BUSINESS_SYNC_FAILED",
+            route=route_name,
+            user_id=current_user.id,
+            workspace_id=workspace_id,
+            integration_id=integration_id,
+            error=exc.detail if isinstance(exc.detail, dict) else str(exc.detail),
+            duration_ms=round((perf_counter() - started_at) * 1000, 2),
+        )
+        raise
+    except Exception as exc:
+        _meta_oauth_log(
+            "INSTAGRAM_BUSINESS_SYNC_FAILED",
+            route=route_name,
+            user_id=current_user.id,
+            workspace_id=workspace_id,
+            integration_id=integration_id,
+            error=exc.__class__.__name__,
+            duration_ms=round((perf_counter() - started_at) * 1000, 2),
+        )
+        raise
 
 
 def _run_meta_pages_sync(
@@ -29185,21 +29460,35 @@ def _execute_meta_source_sync(
         source_db.close()
 
 
-@app.post("/integrations/meta/sync-instagram-business", response_model=InstagramBusinessSyncOut)
-def sync_instagram_business(
-    payload: InstagramBusinessSyncIn,
+@app.post("/integrations/meta-business-suite/sync-instagram-business", response_model=InstagramBusinessSyncOut)
+def meta_business_suite_sync_instagram_business(
+    request: Request,
+    payload: dict | None = Body(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> InstagramBusinessSyncOut:
-    return _run_instagram_business_sync(
-        db=db,
+    return _run_instagram_business_sync_request(
+        request=request,
+        payload=payload,
         current_user=current_user,
-        integration_id=payload.integration_id,
-        instagram_account_id=payload.instagram_account_id,
-        workspace_id=payload.workspace_id,
-        timeframe=payload.timeframe,
-        start_date=payload.start_date,
-        end_date=payload.end_date,
+        db=db,
+        route_name="/integrations/meta-business-suite/sync-instagram-business",
+    )
+
+
+@app.post("/integrations/meta/sync-instagram-business", response_model=InstagramBusinessSyncOut)
+def sync_instagram_business(
+    request: Request,
+    payload: dict | None = Body(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramBusinessSyncOut:
+    return _run_instagram_business_sync_request(
+        request=request,
+        payload=payload,
+        current_user=current_user,
+        db=db,
+        route_name="/integrations/meta/sync-instagram-business",
     )
 
 
