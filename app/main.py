@@ -10952,6 +10952,8 @@ def _meta_page_out_from_cache(meta_page: MetaPage) -> MetaPageOut:
     )
     return MetaPageOut(
         id=meta_page.page_id,
+        integration_id=meta_page.integration_id,
+        provider="instagram_business" if is_instagram_record else "facebook_pages",
         account_id=meta_page.page_id if is_instagram_record else None,
         page_id=meta_page.page_id,
         type=meta_page.record_type,
@@ -13566,6 +13568,14 @@ def _paginate_meta_records(records: list[MetaPage], *, limit: int, offset: int) 
 def _meta_page_out_with_cache_status(meta_page: MetaPage, *, cache_status: str) -> MetaPageOut:
     payload = _meta_page_out_from_cache(meta_page)
     payload.source = "cached"
+    payload.cache_status = cache_status
+    return payload
+
+
+def _meta_business_suite_instagram_account_out(meta_page: MetaPage, *, cache_status: str) -> MetaPageOut:
+    payload = _meta_page_out_from_cache(meta_page)
+    payload.provider = "instagram_business"
+    payload.source = "meta_business_suite_cache"
     payload.cache_status = cache_status
     return payload
 
@@ -24955,6 +24965,136 @@ def meta_business_suite_status(
         live_refresh=refresh,
         context="meta_business_suite_status",
     )
+
+
+@app.get("/integrations/meta-business-suite/instagram-accounts", response_model=MetaPageCatalogOut)
+def meta_business_suite_instagram_accounts(
+    workspace_id: int | None = Query(default=None),
+    refresh: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaPageCatalogOut:
+    started_at = perf_counter()
+    resolved_workspace_id = _resolve_meta_connect_workspace_id(
+        db,
+        user_id=current_user.id,
+        requested_workspace_id=workspace_id,
+    )
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    suite_status = _resolve_meta_suite_provider_statuses(
+        db,
+        resolved_workspace_id,
+        user_id=current_user.id,
+        context="meta_business_suite_instagram_accounts",
+        live_refresh=refresh,
+    )
+    suite_integration_id = int(suite_status.get("suite_integration_id") or 0) or None
+    instagram_status = _canonical_meta_provider_status_out(
+        db,
+        workspace_id=resolved_workspace_id,
+        provider="instagram_business",
+        user_id=current_user.id,
+        suite_status=suite_status,
+        context="meta_business_suite_instagram_accounts",
+    )
+    instagram_integration_id = int(instagram_status.integration_id or 0) or None
+    records = (
+        _get_stored_meta_records(
+            db,
+            instagram_integration_id,
+            record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+        )
+        if instagram_integration_id is not None
+        else []
+    )
+    cache_status = _meta_cache_status(records)
+    searched_records = _apply_meta_records_search(records, search)
+    paginated_records = _paginate_meta_records(searched_records, limit=limit, offset=offset)
+    raw_discovery_status = str(instagram_status.discovery_status or "idle")
+    if records:
+        discovery_status = "succeeded"
+        status = "connected"
+        source = "persisted_db"
+        message = None
+    elif instagram_status.status in {"checking"} or raw_discovery_status in {"pending", "running"}:
+        discovery_status = "pending" if raw_discovery_status != "running" else "running"
+        status = "checking"
+        source = "discovery_pending"
+        message = "Instagram Business assets are still being prepared."
+    elif instagram_status.status == "needs_permission":
+        discovery_status = raw_discovery_status
+        status = "needs_permission"
+        source = "permission_missing"
+        message = "Instagram Business needs additional Meta permissions."
+    elif instagram_status.status in {"no_token", "disconnected", "available"}:
+        discovery_status = raw_discovery_status
+        status = str(instagram_status.status)
+        source = "no_suite_token"
+        message = "Meta Business Suite is not connected."
+    else:
+        discovery_status = "succeeded"
+        status = "connected_no_assets"
+        source = "persisted_db"
+        message = "No Instagram Business accounts found."
+
+    _meta_oauth_log(
+        "META_SUITE_INSTAGRAM_ACCOUNTS_ENDPOINT_CALLED",
+        workspace_id=resolved_workspace_id,
+        user_id=current_user.id,
+        suite_integration_id=suite_integration_id,
+        instagram_integration_id=instagram_integration_id,
+        token_present=bool(suite_status.get("suite_token_present")),
+        refresh=refresh,
+        status=status,
+        discovery_status=discovery_status,
+        cached_instagram_accounts_count=len(records),
+        returned_instagram_accounts_count=len(paginated_records),
+        source=source,
+        limit=limit,
+        offset=offset,
+        search=search,
+    )
+    catalog = MetaPageCatalogOut(
+        data=[
+            _meta_business_suite_instagram_account_out(record, cache_status=cache_status)
+            for record in paginated_records
+        ],
+        source=source,
+        count=len(searched_records),
+        provider="instagram_business",
+        integration_id=instagram_integration_id,
+        suite_integration_id=suite_integration_id,
+        total_pages_count=len(searched_records),
+        business_discovery_status=discovery_status,
+        discovery_status=discovery_status,
+        has_cached_data=bool(records),
+        status=status,
+        connected=bool(instagram_status.connected),
+        refresh_available=True,
+        refresh_recommended=discovery_status in {"pending", "running"},
+        message=message,
+        limit=limit,
+        offset=offset,
+        search=search,
+    )
+    _meta_oauth_log(
+        "META_SUITE_INSTAGRAM_ACCOUNTS_RETURNED",
+        workspace_id=resolved_workspace_id,
+        user_id=current_user.id,
+        suite_integration_id=suite_integration_id,
+        instagram_integration_id=instagram_integration_id,
+        refresh=refresh,
+        status=catalog.status,
+        discovery_status=catalog.discovery_status,
+        count=catalog.count,
+        returned_instagram_accounts_count=len(catalog.data),
+        source=catalog.source,
+        duration_ms=round((perf_counter() - started_at) * 1000, 2),
+    )
+    return catalog
 
 
 @app.delete("/integrations/meta-business-suite/disconnect", response_model=MetaDisconnectOut)

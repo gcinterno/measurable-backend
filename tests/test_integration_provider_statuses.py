@@ -926,6 +926,118 @@ def test_meta_business_suite_status_connects_instagram_child_from_cached_account
     assert instagram_response.json()["connected"] == payload["children"]["instagram_business"]["connected"]
 
 
+def test_meta_business_suite_instagram_accounts_returns_pending_before_discovery(client):
+    refs = _seed_workspace_with_suite_token()
+
+    response = client.get(
+        "/integrations/meta-business-suite/instagram-accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "instagram_business"
+    assert payload["integration_id"] == refs["instagram_integration_id"]
+    assert payload["suite_integration_id"] == refs["suite_integration_id"]
+    assert payload["connected"] is True
+    assert payload["status"] == "checking"
+    assert payload["discovery_status"] == "pending"
+    assert payload["source"] == "discovery_pending"
+    assert payload["data"] == []
+    assert payload["message"] == "Instagram Business assets are still being prepared."
+
+
+def test_meta_business_suite_instagram_accounts_returns_persisted_child_assets_without_direct_oauth(client):
+    refs = _seed_workspace_with_suite_token()
+    db = SessionLocal()
+    try:
+        instagram_direct_token_accounts = (
+            db.query(IntegrationAccount)
+            .filter(IntegrationAccount.integration_id == refs["instagram_integration_id"])
+            .count()
+        )
+        assert instagram_direct_token_accounts == 0
+        instagram_integration = db.get(Integration, refs["instagram_integration_id"])
+        assert instagram_integration is not None
+        instagram_integration.status = "connected"
+        db.add(
+            MetaPage(
+                integration_id=refs["instagram_integration_id"],
+                user_id=refs["user_id"],
+                record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+                page_id="17841400000000001",
+                parent_page_id="fb-page-1",
+                name="Atria Instagram",
+                instagram_username="atria",
+                business_name="Atria Facebook Page",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/integrations/meta-business-suite/instagram-accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "instagram_business"
+    assert payload["integration_id"] == refs["instagram_integration_id"]
+    assert payload["suite_integration_id"] == refs["suite_integration_id"]
+    assert payload["status"] == "connected"
+    assert payload["connected"] is True
+    assert payload["discovery_status"] == "succeeded"
+    assert payload["source"] == "persisted_db"
+    assert payload["count"] == 1
+    assert len(payload["data"]) == 1
+    account = payload["data"][0]
+    assert account["id"] == "17841400000000001"
+    assert account["account_id"] == "17841400000000001"
+    assert account["page_id"] == "17841400000000001"
+    assert account["parent_page_id"] == "fb-page-1"
+    assert account["facebook_page_id"] == "fb-page-1"
+    assert account["facebook_page_name"] == "Atria Facebook Page"
+    assert account["name"] == "Atria Instagram"
+    assert account["username"] == "atria"
+    assert account["instagram_username"] == "atria"
+    assert account["provider"] == "instagram_business"
+    assert account["integration_id"] == refs["instagram_integration_id"]
+    assert account["source"] == "meta_business_suite_cache"
+
+
+def test_meta_business_suite_instagram_accounts_empty_only_after_discovery_completed(client):
+    refs = _seed_workspace_with_suite_token()
+    db = SessionLocal()
+    try:
+        instagram_integration = db.get(Integration, refs["instagram_integration_id"])
+        assert instagram_integration is not None
+        instagram_integration.status = "connected_no_assets"
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/integrations/meta-business-suite/instagram-accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "instagram_business"
+    assert payload["integration_id"] == refs["instagram_integration_id"]
+    assert payload["connected"] is True
+    assert payload["status"] == "connected_no_assets"
+    assert payload["discovery_status"] == "succeeded"
+    assert payload["source"] == "persisted_db"
+    assert payload["data"] == []
+    assert payload["message"] == "No Instagram Business accounts found."
+
+
 def test_meta_business_suite_status_connects_ads_child_from_cached_accounts(client, monkeypatch):
     refs = _seed_workspace_with_suite_token()
     monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: True)

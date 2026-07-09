@@ -1221,6 +1221,8 @@ class MetaSelectPageIn(BaseModel):
 
 class MetaPageOut(BaseModel):
     id: str
+    integration_id: Optional[int] = None
+    provider: Optional[str] = None
     account_id: Optional[str] = None
     page_id: Optional[str] = None
     type: str = "facebook_page"
@@ -1245,11 +1247,15 @@ class MetaPageCatalogOut(BaseModel):
     data: list[MetaPageOut]
     source: str
     count: int
+    provider: Optional[str] = None
+    integration_id: Optional[int] = None
+    suite_integration_id: Optional[int] = None
     direct_pages_count: int = 0
     business_pages_count: int = 0
     total_pages_count: int = 0
     business_management_scope_present: bool = False
     business_discovery_status: str = "skipped_missing_scope"
+    discovery_status: str = "idle"
     has_cached_data: bool
     status: str = "connected"
     connected: bool = True
