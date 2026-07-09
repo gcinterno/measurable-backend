@@ -7056,7 +7056,7 @@ def _canonical_meta_provider_status_out(
         asset_count=asset_count,
         missing_scopes=missing_scopes,
     )
-    connected = _meta_status_connected(status)
+    connected = _meta_status_connected(status) or (token_present and status == "checking")
     duration_ms = round((perf_counter() - started_at) * 1000, 2)
     _meta_oauth_log(
         "PROVIDER_STATUS_RESOLVED",
@@ -7211,7 +7211,10 @@ def _meta_business_suite_status_out(
     else:
         discovery_status = "idle"
 
-    connected = _meta_status_connected(suite_frontend_status)
+    if token_present and suite_frontend_status in {"available", "no_token", "disconnected"}:
+        suite_frontend_status = "connected"
+
+    connected = bool(token_present) or _meta_status_connected(suite_frontend_status)
     message: str | None = None
     if suite_frontend_status == "connected_no_assets":
         message = "Meta Business Suite connected, but no assets were found."
@@ -7219,6 +7222,41 @@ def _meta_business_suite_status_out(
         message = "Meta Business Suite connected. Asset discovery is pending."
     elif suite_frontend_status == "needs_permission":
         message = "Meta Business Suite needs additional Meta permissions."
+
+    if token_present and discovery_status == "pending":
+        _meta_oauth_log(
+            "META_SUITE_DISCOVERY_PENDING",
+            provider="meta_business_suite",
+            workspace_id=workspace_id,
+            integration_id=suite_integration_id,
+            status=suite_frontend_status,
+            connected=connected,
+            asset_count=asset_count,
+            missing_scopes=sorted(all_missing_scopes),
+            context=context,
+        )
+
+    _meta_oauth_log(
+        "META_SUITE_STATUS_RESOLVED",
+        provider="meta_business_suite",
+        workspace_id=workspace_id,
+        integration_id=suite_integration_id,
+        status=suite_frontend_status,
+        connected=connected,
+        token_present=token_present,
+        asset_count=asset_count,
+        missing_scopes=sorted(all_missing_scopes),
+        discovery_status=discovery_status,
+        child_statuses={
+            provider: child.status
+            for provider, child in children.items()
+        },
+        child_asset_counts={
+            provider: child.asset_count
+            for provider, child in children.items()
+        },
+        context=context,
+    )
 
     return MetaBusinessSuiteStatusOut(
         provider="meta_business_suite",
@@ -12143,6 +12181,19 @@ def _run_meta_pages_oauth_callback(
                 scope_validation_ms=scope_validation_ms,
                 duration_ms=round((perf_counter() - callback_started_at) * 1000, 2),
             )
+            _meta_oauth_log(
+                "META_SUITE_CALLBACK_TOKEN_PERSISTED",
+                provider=visible_provider,
+                integration_id=suite_token_integration.id,
+                visible_integration_id=integration.id,
+                workspace_id=workspace_id,
+                user_id=effective_user_id,
+                token_account_id=token_account.id,
+                saved_token_id=saved_token.id,
+                token_exchange_ms=token_exchange_ms,
+                scope_validation_ms=scope_validation_ms,
+                duration_ms=round((perf_counter() - callback_started_at) * 1000, 2),
+            )
             facebook_integration = _get_or_create_meta_integration_for_workspace(db, workspace_id)
             instagram_integration = _get_or_create_instagram_business_integration_for_workspace(db, workspace_id)
             meta_ads_integration = _get_or_create_meta_ads_integration_for_workspace(db, workspace_id)
@@ -12264,6 +12315,7 @@ def _run_meta_pages_oauth_callback(
                     )
                 status_persist_ms = round((perf_counter() - status_persist_started_at) * 1000, 2)
                 for provider_name, provider_integration, provider_status, provider_asset_count, provider_missing_scopes in provider_updates:
+                    provider_connected = _meta_status_connected(provider_status) or provider_status == "checking"
                     _meta_oauth_log(
                         "PROVIDER_STATUS_RESOLVED",
                         provider=provider_name,
@@ -12271,7 +12323,7 @@ def _run_meta_pages_oauth_callback(
                         workspace_id=workspace_id,
                         user_id=effective_user_id,
                         status=provider_status,
-                        connected=_meta_status_connected(provider_status),
+                        connected=provider_connected,
                         asset_count=provider_asset_count,
                         missing_scopes=provider_missing_scopes,
                         token_exchange_ms=token_exchange_ms,
@@ -12289,12 +12341,26 @@ def _run_meta_pages_oauth_callback(
                         workspace_id=workspace_id,
                         user_id=effective_user_id,
                         status=provider_status,
-                        connected=_meta_status_connected(provider_status),
+                        connected=provider_connected,
                         asset_count=provider_asset_count,
                         missing_scopes=provider_missing_scopes,
                         discovery_status="pending" if provider_status == "checking" else "idle",
                         source=state_source or provider_name,
                     )
+                    if provider_status == "checking":
+                        _meta_oauth_log(
+                            "META_SUITE_DISCOVERY_PENDING",
+                            provider=provider_name,
+                            integration_id=provider_integration.id,
+                            suite_integration_id=suite_token_integration.id,
+                            workspace_id=workspace_id,
+                            user_id=effective_user_id,
+                            status=provider_status,
+                            connected=provider_connected,
+                            asset_count=provider_asset_count,
+                            missing_scopes=provider_missing_scopes,
+                            source=state_source or provider_name,
+                        )
                 _meta_oauth_log(
                     "META_DISCOVERY_NOT_STARTED",
                     provider=callback_provider,
@@ -23484,7 +23550,7 @@ def meta_ads_status(
     selected_account = next((account for account in accounts if account.is_selected), None)
     missing_scopes = canonical_status.missing_scopes
     status = _canonical_meta_frontend_status(canonical_status.status)
-    connected = _meta_status_connected(status)
+    connected = canonical_status.connected
     account_names = [account.account_name for account in accounts if str(account.account_name or "").strip()]
     return MetaAdsStatusOut(
         integration_id=integration.id,
@@ -25413,7 +25479,7 @@ def instagram_business_status(
         final_status=normalized_status,
     )
     return InstagramBusinessStatusOut(
-        connected=_meta_status_connected(str(normalized_status)),
+        connected=canonical_status.connected,
         provider="instagram_business",
         integration_id=integration.id,
         asset_count=canonical_status.asset_count,

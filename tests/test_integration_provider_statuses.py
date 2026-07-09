@@ -478,7 +478,7 @@ def test_meta_ads_status_returns_checking_before_first_live_discovery(client, mo
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "checking"
-    assert payload["connected"] is False
+    assert payload["connected"] is True
     assert payload["asset_count"] == 0
     assert payload["discovery_status"] == "pending"
     assert payload["account_names"] == []
@@ -643,6 +643,31 @@ def test_instagram_business_suite_callback_returns_canonical_event_without_disco
         assert instagram.status == "checking"
     finally:
         db.close()
+
+    suite_status_response = client.get(
+        "/integrations/meta-business-suite/status",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    statuses_response = client.get(
+        "/integrations/meta/statuses",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert suite_status_response.status_code == 200
+    suite_payload = suite_status_response.json()
+    assert suite_payload["connected"] is True
+    assert suite_payload["status"] == "connected"
+    assert suite_payload["discovery_status"] == "pending"
+    assert suite_payload["children"]["instagram_business"]["status"] == "checking"
+    assert suite_payload["children"]["instagram_business"]["connected"] is True
+
+    assert statuses_response.status_code == 200
+    status_map = {item["provider"]: item for item in statuses_response.json()}
+    assert status_map["instagram_business"]["status"] == "checking"
+    assert status_map["instagram_business"]["connected"] is True
+    assert status_map["instagram_business"]["discovery_status"] == "pending"
 
 
 def test_meta_business_suite_callback_continues_when_client_ad_account_discovery_fails(client, monkeypatch):
@@ -856,7 +881,9 @@ def test_meta_business_suite_status_connects_facebook_child_from_cached_pages(cl
     assert payload["children"]["facebook_pages"]["status"] == "connected"
     assert payload["children"]["facebook_pages"]["asset_count"] == 1
     assert payload["children"]["instagram_business"]["status"] == "checking"
+    assert payload["children"]["instagram_business"]["connected"] is True
     assert payload["children"]["meta_ads"]["status"] == "checking"
+    assert payload["children"]["meta_ads"]["connected"] is True
 
 
 def test_meta_business_suite_status_connects_instagram_child_from_cached_accounts(client):
