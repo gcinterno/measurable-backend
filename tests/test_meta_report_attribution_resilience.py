@@ -25,6 +25,10 @@ from app.main import app
 from app.models import (
     Dataset,
     DatasetFile,
+    Integration,
+    IntegrationAccount,
+    IntegrationToken,
+    MetaPage,
     ReferralConversion,
     Report,
     ReportBlock,
@@ -36,6 +40,7 @@ from app.models import (
     WorkspaceMember,
 )
 from app.security import create_access_token, hash_password
+from app.main import META_RECORD_TYPE_INSTAGRAM_ACCOUNT
 
 
 @compiles(JSONB, "sqlite")
@@ -48,6 +53,10 @@ REPORT_TABLES = [
     Workspace.__table__,
     WorkspaceMember.__table__,
     Subscription.__table__,
+    Integration.__table__,
+    IntegrationAccount.__table__,
+    IntegrationToken.__table__,
+    MetaPage.__table__,
     Dataset.__table__,
     DatasetFile.__table__,
     UserAttribution.__table__,
@@ -214,6 +223,143 @@ def _seed_report_dataset(*, integration_type: str) -> dict[str, int]:
         db.close()
 
 
+def _seed_instagram_report_context(
+    *,
+    integration_provider: str,
+    include_dataset: bool = True,
+) -> dict[str, int | str]:
+    db = SessionLocal()
+    try:
+        user = User(
+            email=f"instagram-{integration_provider}@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Owner User",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        workspace = Workspace(name=f"Workspace {integration_provider}")
+        db.add_all([user, workspace])
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="core", status="active"))
+
+        suite_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta_business_suite",
+            name="Meta Business Suite",
+            status="connected",
+        )
+        instagram_integration = Integration(
+            workspace_id=workspace.id,
+            provider="instagram_business",
+            name="Instagram Business",
+            status="connected",
+        )
+        legacy_meta_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta",
+            name="Meta Pages",
+            status="connected",
+        )
+        db.add_all([suite_integration, instagram_integration, legacy_meta_integration])
+        db.flush()
+
+        suite_token_account = IntegrationAccount(
+            integration_id=suite_integration.id,
+            workspace_id=workspace.id,
+            external_account_id=f"__meta_token__:{suite_integration.id}",
+            display_name="Suite token",
+        )
+        db.add(suite_token_account)
+        db.flush()
+        db.add(
+            IntegrationToken(
+                account_id=suite_token_account.id,
+                workspace_id=workspace.id,
+                token_type="access_token",
+                access_token="suite-token",
+            )
+        )
+
+        selected_integration = {
+            "meta_business_suite": suite_integration,
+            "instagram_business": instagram_integration,
+            "meta": legacy_meta_integration,
+        }[integration_provider]
+        asset_integration = legacy_meta_integration if integration_provider == "meta" else instagram_integration
+        db.add(
+            MetaPage(
+                integration_id=asset_integration.id,
+                user_id=user.id,
+                record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+                page_id="17841400000000000",
+                parent_page_id="fb-linked-page-1",
+                name="Suite Instagram Account",
+                instagram_username="suiteig",
+                business_name="Linked Facebook Page",
+            )
+        )
+
+        dataset_id: int | None = None
+        if include_dataset:
+            dataset = Dataset(
+                workspace_id=workspace.id,
+                name="meta_instagram_17841400000000000_insights.csv",
+                description="Instagram sync dataset",
+                data={
+                    "integration_type": "instagram_business",
+                    "page_name": "Suite Instagram Account",
+                    "account_name": "Suite Instagram Account",
+                    "account_id": "17841400000000000",
+                    "username": "suiteig",
+                    "followers": 1200,
+                    "reach": 5400,
+                    "engagement": 320,
+                    "impressions": 8700,
+                    "profile_visits": 91,
+                    "link_clicks": 24,
+                    "content_interactions": 180,
+                    "timeframe": {
+                        "key": "custom",
+                        "preset": None,
+                        "since": "2026-04-01",
+                        "until": "2026-04-28",
+                        "label": "Custom (2026-04-01 to 2026-04-28)",
+                    },
+                    "normalized_report_metrics": {},
+                },
+            )
+            db.add(dataset)
+            db.flush()
+            db.add(
+                DatasetFile(
+                    dataset_id=dataset.id,
+                    workspace_id=workspace.id,
+                    s3_key="inputs/instagram-business.csv",
+                    size_bytes=128,
+                    content_type="text/csv",
+                )
+            )
+            dataset_id = dataset.id
+
+        db.commit()
+        return {
+            "user_id": user.id,
+            "workspace_id": workspace.id,
+            "suite_integration_id": suite_integration.id,
+            "instagram_integration_id": instagram_integration.id,
+            "legacy_meta_integration_id": legacy_meta_integration.id,
+            "selected_integration_id": selected_integration.id,
+            "dataset_id": dataset_id or 0,
+            "account_id": "17841400000000000",
+            "username": "suiteig",
+            "parent_page_id": "fb-linked-page-1",
+        }
+    finally:
+        db.close()
+
+
 def _drop_optional_referral_tables() -> None:
     UserAttribution.__table__.drop(bind=engine)
     ReferralConversion.__table__.drop(bind=engine)
@@ -239,6 +385,89 @@ def test_instagram_business_report_succeeds_when_attribution_tables_are_missing(
     assert payload["status"] == "ready"
     assert payload["dataset_id"] == refs["dataset_id"]
     assert payload["version"] == 1
+
+
+@pytest.mark.parametrize(
+    "integration_provider",
+    ["meta_business_suite", "instagram_business", "meta"],
+)
+def test_instagram_business_report_resolves_suite_child_and_legacy_integration_ids(client, integration_provider):
+    refs = _seed_instagram_report_context(integration_provider=integration_provider)
+
+    response = client.post(
+        "/reports/instagram-business",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "integration_id": refs["selected_integration_id"],
+            "workspace_id": refs["workspace_id"],
+            "account_id": refs["account_id"],
+            "timeframe": "custom",
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-28",
+            "requested_slides": 5,
+            "ai_mode": "standard",
+            "locale": "en",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["dataset_id"] == refs["dataset_id"]
+    assert payload["version"] == 1
+
+
+def test_instagram_business_report_resolves_account_id_aliases_from_suite_assets(client):
+    refs = _seed_instagram_report_context(integration_provider="meta_business_suite")
+
+    response = client.post(
+        "/reports/instagram-business",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "integration_id": refs["suite_integration_id"],
+            "workspace_id": refs["workspace_id"],
+            "account_id": refs["parent_page_id"],
+            "timeframe": "custom",
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-28",
+            "requested_slides": 5,
+            "ai_mode": "standard",
+            "locale": "en",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["dataset_id"] == refs["dataset_id"]
+
+
+def test_instagram_business_report_returns_actionable_error_when_account_has_no_dataset(client):
+    refs = _seed_instagram_report_context(integration_provider="meta_business_suite", include_dataset=False)
+
+    response = client.post(
+        "/reports/instagram-business",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "integration_id": refs["suite_integration_id"],
+            "workspace_id": refs["workspace_id"],
+            "account_id": refs["account_id"],
+            "timeframe": "custom",
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-28",
+            "requested_slides": 5,
+            "ai_mode": "standard",
+            "locale": "en",
+        },
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["status"] == "error"
+    assert detail["code"] == "instagram_dataset_not_synced"
+    assert "Sync data" in detail["message"]
+    assert detail["debug"]["workspace_id"] == refs["workspace_id"]
+    assert detail["debug"]["suite_integration_id"] == refs["suite_integration_id"]
+    assert detail["debug"]["instagram_child_integration_id"] == refs["instagram_integration_id"]
+    assert detail["debug"]["requested_integration_id"] == refs["suite_integration_id"]
 
 
 def test_meta_pages_report_succeeds_when_attribution_tables_are_missing(client):

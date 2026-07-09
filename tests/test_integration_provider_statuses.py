@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
@@ -41,7 +42,7 @@ from app.main import (
     META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
     app,
 )
-from app.models import Integration, IntegrationAccount, IntegrationToken, MetaAdAccount, MetaPage, Subscription, User, Workspace, WorkspaceMember
+from app.models import Dataset, DatasetFile, Integration, IntegrationAccount, IntegrationToken, MetaAdAccount, MetaPage, Subscription, User, Workspace, WorkspaceMember
 from app.security import create_access_token, hash_password
 
 
@@ -55,6 +56,8 @@ INTEGRATION_STATUS_TABLES = [
     Workspace.__table__,
     WorkspaceMember.__table__,
     Subscription.__table__,
+    Dataset.__table__,
+    DatasetFile.__table__,
     Integration.__table__,
     IntegrationAccount.__table__,
     IntegrationToken.__table__,
@@ -1091,6 +1094,8 @@ def _patch_instagram_business_sync(monkeypatch):
         ("/integrations/meta-business-suite/sync-instagram-business", "suite_integration_id"),
         ("/integrations/meta-business-suite/sync-instagram-business", "workspace_only"),
         ("/integrations/meta/sync-instagram-business", "legacy_alias"),
+        ("/integrations/meta-business-suite/sync-instagram-business", "parent_page_id_alias"),
+        ("/integrations/meta-business-suite/sync-instagram-business", "username_alias"),
     ],
 )
 def test_meta_business_suite_instagram_sync_resolves_child_integration(client, monkeypatch, route, payload_kind):
@@ -1113,6 +1118,14 @@ def test_meta_business_suite_instagram_sync_resolves_child_integration(client, m
     elif payload_kind == "legacy_alias":
         payload["integrationId"] = refs["suite_integration_id"]
         payload["pageId"] = payload.pop("instagram_account_id")
+    elif payload_kind == "parent_page_id_alias":
+        payload["integration_id"] = refs["suite_integration_id"]
+        payload["parent_page_id"] = "fb-page-1"
+        payload.pop("instagram_account_id")
+    elif payload_kind == "username_alias":
+        payload["integration_id"] = refs["instagram_integration_id"]
+        payload["instagram_username"] = "@atria"
+        payload.pop("instagram_account_id")
 
     response = client.post(
         route,
@@ -1132,6 +1145,200 @@ def test_meta_business_suite_instagram_sync_resolves_child_integration(client, m
     assert captured["timeframe_config"]["key"] == "custom"
     assert captured["timeframe_config"]["since"] == "2026-06-01"
     assert captured["timeframe_config"]["until"] == "2026-06-30"
+
+
+def test_meta_business_suite_instagram_sync_refreshes_once_when_assets_are_pending(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    captured = _patch_instagram_business_sync(monkeypatch)
+    discovery_calls: list[str] = []
+
+    def fake_suite_discovery(db, *, workspace_id, user_id, access_token=None, received_scopes=None, context="test"):
+        discovery_calls.append(context)
+        instagram_integration = db.get(Integration, refs["instagram_integration_id"])
+        assert instagram_integration is not None
+        instagram_integration.status = "connected"
+        db.add(
+            MetaPage(
+                integration_id=refs["instagram_integration_id"],
+                user_id=refs["user_id"],
+                record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+                page_id="17841400000000999",
+                parent_page_id="fb-refresh-1",
+                name="Fresh Instagram",
+                instagram_username="freshig",
+                business_name="Fresh Facebook Page",
+            )
+        )
+        db.commit()
+        return {
+            "status": "completed",
+            "instagram_accounts_count": 1,
+            "cached_instagram_records": [],
+            "failed": False,
+        }
+
+    monkeypatch.setattr(main_module, "_run_meta_business_suite_asset_discovery", fake_suite_discovery)
+
+    response = client.post(
+        "/integrations/meta-business-suite/sync-instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "workspace_id": refs["workspace_id"],
+            "integration_id": refs["suite_integration_id"],
+            "ig_user_id": "17841400000000999",
+        },
+    )
+
+    assert response.status_code == 200
+    assert discovery_calls == ["sync_instagram_business_resolution_retry"]
+    assert response.json()["account_id"] == "17841400000000999"
+    assert response.json()["account_name"] == "Fresh Instagram"
+    assert captured["integration_id"] == refs["instagram_integration_id"]
+    assert captured["selected_meta_record_id"] == "17841400000000999"
+
+
+def test_meta_business_suite_instagram_sync_returns_structured_resolution_error(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    discovery_calls: list[str] = []
+
+    def fake_suite_discovery(db, *, workspace_id, user_id, access_token=None, received_scopes=None, context="test"):
+        discovery_calls.append(context)
+        return {
+            "status": "completed",
+            "instagram_accounts_count": 0,
+            "cached_instagram_records": [],
+            "failed": False,
+        }
+
+    monkeypatch.setattr(main_module, "_run_meta_business_suite_asset_discovery", fake_suite_discovery)
+
+    response = client.post(
+        "/integrations/meta-business-suite/sync-instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "workspace_id": refs["workspace_id"],
+            "integration_id": refs["suite_integration_id"],
+            "instagram_username": "missingig",
+        },
+    )
+
+    assert response.status_code == 404
+    assert discovery_calls == ["sync_instagram_business_resolution_retry"]
+    detail = response.json()["detail"]
+    assert detail["status"] == "error"
+    assert detail["code"] == "instagram_account_not_resolved"
+    assert detail["debug"]["workspace_id"] == refs["workspace_id"]
+    assert detail["debug"]["suite_integration_id"] == refs["suite_integration_id"]
+    assert detail["debug"]["requested_integration_id"] == refs["suite_integration_id"]
+    assert detail["debug"]["selected_account_aliases"] == ["missingig"]
+    assert detail["debug"]["available_instagram_count"] == 0
+
+
+def test_instagram_business_sync_skips_unsupported_metric_without_failing(monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    requested_metrics: list[tuple[str, str | None]] = []
+
+    class FakeS3Client:
+        def put_object(self, **_kwargs):
+            return {}
+
+    monkeypatch.setattr(main_module.boto3, "client", lambda *_args, **_kwargs: FakeS3Client())
+    monkeypatch.setattr(main_module, "_refresh_meta_pages_authorized_cache", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        main_module,
+        "fetch_page_info_with_metadata",
+        lambda _token, instagram_user_id, fields=None: {
+            "id": instagram_user_id,
+            "username": "atria",
+            "name": "Atria Instagram",
+            "followers_count": 321,
+            "_meta_http_status_code": 200,
+            "_meta_raw_body": "{}",
+        },
+    )
+
+    def fake_fetch_instagram_metric(_token, _instagram_user_id, *, metric_name, since, until, metric_type=None):
+        requested_metrics.append((metric_name, metric_type))
+        if metric_name == "content_interactions":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "meta_api_error",
+                    "message": "Unsupported get request. Metric content_interactions is not available.",
+                    "response_body": "{}",
+                },
+            )
+        values = {
+            "reach": 100,
+            "impressions": 120,
+            "views": 130,
+            "total_interactions": 9,
+            "accounts_engaged": 7,
+            "profile_views": 5,
+            "website_clicks": 2,
+        }
+        return {
+            "_meta_http_status_code": 200,
+            "_meta_raw_body": "{}",
+            "data": [
+                {
+                    "name": metric_name,
+                    "values": [
+                        {
+                            "value": values.get(metric_name),
+                            "end_time": "2026-06-01T07:00:00+0000",
+                        }
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(main_module, "fetch_instagram_insights_metric_with_metadata", fake_fetch_instagram_metric)
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, refs["instagram_integration_id"])
+        selected_meta_record = (
+            db.query(MetaPage)
+            .filter(
+                MetaPage.integration_id == refs["instagram_integration_id"],
+                MetaPage.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+            )
+            .one()
+        )
+        selected_page = IntegrationAccount(
+            integration_id=refs["instagram_integration_id"],
+            workspace_id=refs["workspace_id"],
+            external_account_id="__meta_page__:fb-page-1",
+            display_name="Atria Facebook Page",
+        )
+        result = main_module._sync_meta_instagram_account(
+            db=db,
+            integration=integration,
+            selected_page=selected_page,
+            selected_meta_record=selected_meta_record,
+            timeframe_config=main_module.resolve_meta_pages_timeframe(
+                "custom",
+                start_date="2026-06-01",
+                end_date="2026-06-01",
+            ),
+            current_user=db.get(User, refs["user_id"]),
+        )
+        dataset = db.get(Dataset, result.dataset_id)
+        assert dataset is not None
+        assert result.status == "uploaded"
+        assert dataset.data["engagement"] == 9
+        assert dataset.data["content_interactions"] is None
+        assert "content_interactions" in dataset.data["unavailable_metrics"]
+    finally:
+        db.close()
+
+    metric_names = [metric for metric, _metric_type in requested_metrics]
+    assert "engagement" not in metric_names
+    assert "total_interactions" in metric_names
+    assert "accounts_engaged" in metric_names
+    assert "content_interactions" in metric_names
 
 
 def test_meta_business_suite_instagram_sync_requires_suite_connection(client):

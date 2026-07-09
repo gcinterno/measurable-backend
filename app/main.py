@@ -10973,68 +10973,256 @@ def _meta_page_out_from_cache(meta_page: MetaPage) -> MetaPageOut:
     )
 
 
+def _normalize_instagram_business_alias(value: object) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    if normalized.startswith("@"):
+        normalized = normalized[1:].strip()
+    return normalized.lower()
+
+
+def _instagram_business_record_aliases(meta_page: MetaPage) -> set[str]:
+    aliases: set[str] = set()
+    for value in (
+        meta_page.page_id,
+        meta_page.parent_page_id,
+        meta_page.instagram_username,
+        meta_page.name,
+        meta_page.business_name,
+    ):
+        normalized = _normalize_instagram_business_alias(value)
+        if normalized:
+            aliases.add(normalized)
+    return aliases
+
+
+def _collect_instagram_business_alias_values(*values: object) -> list[str]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+
+    def _append(value: object) -> None:
+        if value is None:
+            return
+        if isinstance(value, dict):
+            for key in (
+                "id",
+                "account_id",
+                "accountId",
+                "instagram_account_id",
+                "instagramAccountId",
+                "instagram_business_account_id",
+                "instagramBusinessAccountId",
+                "ig_user_id",
+                "igUserId",
+                "page_id",
+                "pageId",
+                "parent_page_id",
+                "parentPageId",
+                "facebook_page_id",
+                "facebookPageId",
+                "username",
+                "instagram_username",
+                "instagramUsername",
+                "name",
+            ):
+                _append(value.get(key))
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _append(item)
+            return
+        raw_value = str(value).strip()
+        normalized = _normalize_instagram_business_alias(raw_value)
+        if not raw_value or not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        aliases.append(raw_value)
+
+    for value in values:
+        _append(value)
+    return aliases
+
+
+def _instagram_business_aliases_from_payload(
+    raw_body: dict[str, Any],
+    raw_query_params: dict[str, Any],
+) -> list[str]:
+    alias_fields = (
+        "instagram_account_id",
+        "instagramAccountId",
+        "instagram_business_account_id",
+        "instagramBusinessAccountId",
+        "ig_user_id",
+        "igUserId",
+        "account_id",
+        "accountId",
+        "selected_instagram_account_id",
+        "selectedInstagramAccountId",
+        "selected_account_id",
+        "selectedAccountId",
+        "page_id",
+        "pageId",
+        "parent_page_id",
+        "parentPageId",
+        "facebook_page_id",
+        "facebookPageId",
+        "username",
+        "instagram_username",
+        "instagramUsername",
+        "selected_account",
+        "selectedAccount",
+        "account",
+    )
+    values: list[object] = []
+    for field in alias_fields:
+        if field in raw_body:
+            values.append(raw_body.get(field))
+        if field in raw_query_params:
+            values.append(raw_query_params.get(field))
+    return _collect_instagram_business_alias_values(*values)
+
+
+def _query_instagram_business_records_for_sync(db: Session, integration_id: int) -> list[MetaPage]:
+    return (
+        db.query(MetaPage)
+        .filter(
+            MetaPage.integration_id == integration_id,
+            MetaPage.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+        )
+        .order_by(MetaPage.updated_at.desc(), MetaPage.id.desc())
+        .all()
+    )
+
+
+def _match_instagram_business_record(
+    records: list[MetaPage],
+    selected_aliases: list[str],
+) -> MetaPage | None:
+    normalized_aliases = {
+        normalized
+        for normalized in (_normalize_instagram_business_alias(alias) for alias in selected_aliases)
+        if normalized
+    }
+    if not normalized_aliases:
+        return None
+    for record in records:
+        if _instagram_business_record_aliases(record) & normalized_aliases:
+            return record
+    return None
+
+
+def _instagram_account_not_resolved_error(
+    *,
+    workspace_id: int,
+    suite_integration_id: int | None,
+    requested_integration_id: int | None,
+    selected_account_aliases: list[str],
+    available_instagram_count: int,
+) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail={
+            "status": "error",
+            "code": "instagram_account_not_resolved",
+            "message": "Could not resolve the selected Instagram Business account. Refresh Meta assets and try again.",
+            "debug": {
+                "workspace_id": workspace_id,
+                "suite_integration_id": suite_integration_id,
+                "requested_integration_id": requested_integration_id,
+                "selected_account_aliases": selected_account_aliases,
+                "available_instagram_count": available_instagram_count,
+            },
+        },
+    )
+
+
 def _resolve_instagram_account_record_for_sync(
     db: Session,
     *,
     integration: Integration,
+    suite_integration: Integration | None = None,
     current_user: User,
     instagram_account_id: str,
+    instagram_account_aliases: list[str] | None = None,
+    requested_integration_id: int | None = None,
 ) -> MetaPage:
-    requested_account_id = str(instagram_account_id or "").strip()
-    if not requested_account_id:
+    selected_aliases = _collect_instagram_business_alias_values(
+        instagram_account_id,
+        instagram_account_aliases or [],
+    )
+    if not selected_aliases:
         raise http_error(
             400,
             "missing_instagram_account_id",
             "instagram_account_id is required.",
         )
 
-    stored_record = (
-        db.query(MetaPage)
-        .filter(
-            MetaPage.integration_id == integration.id,
-            MetaPage.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
-            MetaPage.page_id == requested_account_id,
-        )
-        .order_by(MetaPage.updated_at.desc(), MetaPage.id.desc())
-        .first()
-    )
+    instagram_records = _query_instagram_business_records_for_sync(db, integration.id)
+    stored_record = _match_instagram_business_record(instagram_records, selected_aliases)
     if stored_record:
         return stored_record
 
-    access_token = _get_meta_access_token(db, integration)
-    cached_pages, diagnostics, _ = _refresh_meta_pages_from_live_graph(
+    diagnostics: list[dict[str, Any]] = []
+    suite_token_integration, suite_access_token = _resolve_workspace_meta_business_suite_access_token(
         db,
-        integration,
-        access_token=access_token,
-        user_id=current_user.id,
-        selected_integration_type="instagram_accounts",
-        context="sync_instagram_business",
-        return_empty_on_error=True,
+        integration.workspace_id,
     )
-    instagram_records = _filter_meta_records(
-        cached_pages,
-        record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
-    )
-    for record in instagram_records:
-        if str(record.page_id or "").strip() == requested_account_id:
-            return record
+    suite_integration = suite_integration or suite_token_integration
+    if suite_access_token:
+        _run_meta_business_suite_asset_discovery(
+            db,
+            workspace_id=integration.workspace_id,
+            user_id=current_user.id,
+            access_token=suite_access_token,
+            context="sync_instagram_business_resolution_retry",
+        )
+        instagram_records = _query_instagram_business_records_for_sync(db, integration.id)
+    else:
+        access_token = _get_meta_access_token(db, integration)
+        cached_pages, diagnostics, _ = _refresh_meta_pages_from_live_graph(
+            db,
+            integration,
+            access_token=access_token,
+            user_id=current_user.id,
+            selected_integration_type="instagram_accounts",
+            context="sync_instagram_business_resolution_retry",
+            return_empty_on_error=True,
+        )
+        instagram_records = _filter_meta_records(
+            cached_pages,
+            record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+        )
+
+    refreshed_record = _match_instagram_business_record(instagram_records, selected_aliases)
+    if refreshed_record:
+        return refreshed_record
 
     logger.warning(
         "Meta Instagram sync requested account not found",
         extra={
             "integration_id": integration.id,
-            "requested_instagram_account_id": requested_account_id,
+            "suite_integration_id": suite_integration.id if suite_integration else None,
+            "requested_instagram_account_aliases": selected_aliases,
             "instagram_accounts_found_count": len(instagram_records),
+            "instagram_account_ids_found": [
+                record.page_id for record in instagram_records if record.page_id
+            ],
+            "instagram_parent_page_ids_found": [
+                record.parent_page_id for record in instagram_records if record.parent_page_id
+            ],
             "instagram_usernames_found": [
                 record.instagram_username for record in instagram_records if record.instagram_username
             ],
             "diagnostics_pages_checked": len(diagnostics),
         },
     )
-    raise http_error(
-        404,
-        "instagram_account_not_found",
-        "Instagram Business account not found for this integration.",
+    raise _instagram_account_not_resolved_error(
+        workspace_id=integration.workspace_id,
+        suite_integration_id=suite_integration.id if suite_integration else None,
+        requested_integration_id=requested_integration_id,
+        selected_account_aliases=selected_aliases,
+        available_instagram_count=len(instagram_records),
     )
 
 
@@ -19912,8 +20100,9 @@ def _resolve_instagram_business_report_dataset(
             )
         return dataset
 
-    requested_account_id = str(payload.account_id or payload.page_id or "").strip() or None
-    if not requested_account_id:
+    requested_account_aliases = _collect_instagram_business_alias_values(payload.account_id, payload.page_id)
+    requested_account_id = requested_account_aliases[0] if requested_account_aliases else None
+    if not requested_account_aliases:
         raise http_error(
             400,
             "missing_account_id",
@@ -19921,12 +20110,69 @@ def _resolve_instagram_business_report_dataset(
         )
 
     workspace_id: int | None = None
+    requested_integration: Integration | None = None
     if payload.integration_id is not None:
-        integration = _get_meta_integration(db, current_user, int(payload.integration_id))
-        workspace_id = integration.workspace_id
+        requested_integration = db.get(Integration, int(payload.integration_id))
+        if requested_integration is None:
+            if payload.workspace_id is None:
+                raise http_error(404, "integration_not_found", "Integration not found.")
+            workspace_id = int(payload.workspace_id)
+            _require_workspace_access(db, current_user.id, workspace_id)
+        else:
+            _require_workspace_access(db, current_user.id, requested_integration.workspace_id)
+            if requested_integration.provider not in {"meta_business_suite", "instagram_business", "meta"}:
+                raise http_error(
+                    400,
+                    "invalid_integration_provider",
+                    "Instagram Business reports require a Meta Business Suite or Instagram Business integration.",
+                )
+            workspace_id = int(requested_integration.workspace_id)
+            if payload.workspace_id is not None and int(payload.workspace_id) != workspace_id:
+                raise http_error(
+                    400,
+                    "workspace_mismatch",
+                    "workspace_id does not match the integration workspace.",
+                )
     elif payload.workspace_id is not None:
         workspace_id = int(payload.workspace_id)
         _require_workspace_access(db, current_user.id, workspace_id)
+
+    relevant_integration_ids: set[int] = set()
+    suite_integration_id: int | None = None
+    instagram_child_integration_id: int | None = None
+    if workspace_id is not None:
+        suite_integration = (
+            db.query(Integration)
+            .filter(
+                Integration.workspace_id == workspace_id,
+                Integration.provider == "meta_business_suite",
+            )
+            .order_by(Integration.id.asc())
+            .first()
+        )
+        instagram_child = (
+            db.query(Integration)
+            .filter(
+                Integration.workspace_id == workspace_id,
+                Integration.provider == "instagram_business",
+            )
+            .order_by(Integration.id.asc())
+            .first()
+        )
+        legacy_meta = (
+            db.query(Integration)
+            .filter(
+                Integration.workspace_id == workspace_id,
+                Integration.provider == "meta",
+            )
+            .order_by(Integration.id.asc())
+            .first()
+        )
+        suite_integration_id = suite_integration.id if suite_integration else None
+        instagram_child_integration_id = instagram_child.id if instagram_child else None
+        for integration in (instagram_child, legacy_meta, suite_integration, requested_integration):
+            if integration is not None:
+                relevant_integration_ids.add(int(integration.id))
 
     query = db.query(Dataset).order_by(Dataset.created_at.desc(), Dataset.id.desc())
     if workspace_id is not None:
@@ -19937,24 +20183,118 @@ def _resolve_instagram_business_report_dataset(
             .filter(WorkspaceMember.user_id == current_user.id)
         )
 
-    expected_filename = f"meta_instagram_{requested_account_id}_insights.csv"
+    account_records: list[MetaPage] = []
+    if relevant_integration_ids:
+        account_records = (
+            db.query(MetaPage)
+            .filter(
+                MetaPage.integration_id.in_(sorted(relevant_integration_ids)),
+                MetaPage.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+            )
+            .order_by(MetaPage.updated_at.desc(), MetaPage.id.desc())
+            .all()
+        )
+    matched_account = _match_instagram_business_record(account_records, requested_account_aliases)
+    account_aliases = list(requested_account_aliases)
+    if matched_account is not None:
+        account_aliases = _collect_instagram_business_alias_values(
+            account_aliases,
+            sorted(_instagram_business_record_aliases(matched_account)),
+        )
+
+    expected_filenames = {
+        f"meta_instagram_{alias}_insights.csv"
+        for alias in account_aliases
+        if str(alias or "").strip()
+    }
+    try:
+        requested_timeframe = resolve_meta_pages_timeframe(
+            payload.timeframe,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+        )
+    except HTTPException:
+        raise
+    strict_timeframe = bool(payload.start_date or payload.end_date or str(payload.timeframe or "").strip() == "custom")
+    matching_account_datasets: list[Dataset] = []
+    legacy_timeframe_datasets: list[Dataset] = []
     candidates = query.limit(200).all()
     for dataset in candidates:
         dataset_data = dataset.data if isinstance(dataset.data, dict) else {}
         if str(dataset_data.get("integration_type") or "").strip() != "instagram_business":
             continue
-        dataset_account_id = str(
-            dataset_data.get("account_id") or dataset_data.get("page_id") or ""
-        ).strip()
-        if dataset_account_id and dataset_account_id == requested_account_id:
+        dataset_aliases = _collect_instagram_business_alias_values(
+            dataset_data.get("account_id"),
+            dataset_data.get("page_id"),
+            dataset_data.get("instagram_account_id"),
+            dataset_data.get("instagram_business_account_id"),
+            dataset_data.get("ig_user_id"),
+            dataset_data.get("username"),
+            dataset_data.get("instagram_username"),
+            dataset_data.get("parent_page_id"),
+            dataset_data.get("facebook_page_id"),
+        )
+        dataset_alias_set = {
+            normalized
+            for normalized in (_normalize_instagram_business_alias(alias) for alias in dataset_aliases)
+            if normalized
+        }
+        requested_alias_set = {
+            normalized
+            for normalized in (_normalize_instagram_business_alias(alias) for alias in account_aliases)
+            if normalized
+        }
+        filename_matches = str(dataset.name or "").strip() in expected_filenames
+        if not filename_matches and not (dataset_alias_set & requested_alias_set):
+            continue
+        dataset_timeframe = dataset_data.get("timeframe") if isinstance(dataset_data.get("timeframe"), dict) else {}
+        timeframe_matches = (
+            str(dataset_timeframe.get("since") or "") == str(requested_timeframe.get("since") or "")
+            and str(dataset_timeframe.get("until") or "") == str(requested_timeframe.get("until") or "")
+        )
+        timeframe_key_matches = (
+            str(dataset_timeframe.get("key") or dataset_timeframe.get("timeframe") or dataset_timeframe.get("preset") or "")
+            == str(requested_timeframe.get("key") or requested_timeframe.get("timeframe") or requested_timeframe.get("preset") or "")
+        )
+        if timeframe_matches or (timeframe_key_matches and not strict_timeframe):
             return dataset
-        if str(dataset.name or "").strip() == expected_filename:
-            return dataset
+        if not dataset_timeframe:
+            legacy_timeframe_datasets.append(dataset)
+        matching_account_datasets.append(dataset)
+
+    if legacy_timeframe_datasets:
+        return legacy_timeframe_datasets[0]
+    if matching_account_datasets and not strict_timeframe:
+        return matching_account_datasets[0]
+
+    if matched_account is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "status": "error",
+                "code": "instagram_dataset_not_synced",
+                "message": "Sync data for the selected Instagram Business account and timeframe before generating a report.",
+                "debug": {
+                    "workspace_id": workspace_id,
+                    "suite_integration_id": suite_integration_id,
+                    "instagram_child_integration_id": instagram_child_integration_id,
+                    "requested_integration_id": payload.integration_id,
+                    "account_id": requested_account_id,
+                    "selected_account_aliases": account_aliases,
+                    "timeframe": {
+                        "key": requested_timeframe.get("key"),
+                        "since": requested_timeframe.get("since"),
+                        "until": requested_timeframe.get("until"),
+                    },
+                    "matching_account_dataset_count": len(matching_account_datasets),
+                },
+            },
+        )
 
     raise http_error(
         404,
-        "instagram_dataset_not_found",
-        "Instagram Business dataset not found for selected account.",
+        "instagram_account_not_found",
+        "Instagram Business account was not found. Sync Meta Business Suite assets and select an available account.",
     )
 
 
@@ -27975,14 +28315,16 @@ def _run_instagram_business_sync(
     current_user: User,
     integration_id: int | None,
     instagram_account_id: str,
+    instagram_account_aliases: list[str] | None = None,
     workspace_id: int | None = None,
     timeframe: str = "last_28_days",
     start_date: str | None = None,
     end_date: str | None = None,
     integration: Integration | None = None,
+    suite_integration: Integration | None = None,
 ) -> InstagramBusinessSyncOut:
     if integration is None:
-        integration, _suite_integration = _resolve_instagram_business_sync_integration(
+        integration, suite_integration = _resolve_instagram_business_sync_integration(
             db,
             current_user=current_user,
             integration_id=integration_id,
@@ -27998,8 +28340,11 @@ def _run_instagram_business_sync(
     selected_meta_record = _resolve_instagram_account_record_for_sync(
         db,
         integration=integration,
+        suite_integration=suite_integration,
         current_user=current_user,
         instagram_account_id=instagram_account_id,
+        instagram_account_aliases=instagram_account_aliases,
+        requested_integration_id=integration_id,
     )
     timeframe_config = resolve_meta_pages_timeframe(
         timeframe,
@@ -28094,22 +28439,8 @@ def _run_instagram_business_sync_request(
         _payload_value(raw_body, raw_query_params, "workspace_id", "workspaceId"),
         field_name="workspace_id",
     )
-    instagram_account_id_value = _payload_value(
-        raw_body,
-        raw_query_params,
-        "instagram_account_id",
-        "instagramAccountId",
-        "instagram_business_account_id",
-        "instagramBusinessAccountId",
-        "selected_instagram_account_id",
-        "selectedInstagramAccountId",
-        "account_id",
-        "accountId",
-        "page_id",
-        "pageId",
-        "selected_account_id",
-        "selectedAccountId",
-    )
+    instagram_account_aliases = _instagram_business_aliases_from_payload(raw_body, raw_query_params)
+    instagram_account_id_value = instagram_account_aliases[0] if instagram_account_aliases else None
     timeframe_value = (
         _body_timeframe_key(raw_body.get("timeframe"))
         or _body_timeframe_key(timeframe_selection)
@@ -28131,7 +28462,8 @@ def _run_instagram_business_sync_request(
         user_id=current_user.id,
         workspace_id=workspace_id,
         integration_id=integration_id,
-        account_id_present=bool(str(instagram_account_id_value or "").strip()),
+        account_id_present=bool(instagram_account_aliases),
+        selected_account_aliases=instagram_account_aliases,
         timeframe=str(timeframe_value or "last_28_days"),
     )
 
@@ -28142,13 +28474,13 @@ def _run_instagram_business_sync_request(
             integration_id=integration_id,
             workspace_id=workspace_id,
         )
-        if not str(instagram_account_id_value or "").strip():
+        if not instagram_account_aliases:
             raise http_error(
                 400,
                 "missing_instagram_account_id",
                 "Select an Instagram Business account to sync.",
             )
-        instagram_account_id = str(instagram_account_id_value).strip()
+        instagram_account_id = str(instagram_account_id_value or "").strip()
         _meta_oauth_log(
             "INSTAGRAM_BUSINESS_SYNC_INTEGRATION_RESOLVED",
             route=route_name,
@@ -28158,6 +28490,7 @@ def _run_instagram_business_sync_request(
             instagram_integration_id=integration.id,
             requested_integration_id=integration_id,
             instagram_account_id=instagram_account_id,
+            selected_account_aliases=instagram_account_aliases,
         )
         _meta_oauth_log(
             "INSTAGRAM_BUSINESS_SYNC_STARTED",
@@ -28167,18 +28500,21 @@ def _run_instagram_business_sync_request(
             suite_integration_id=suite_integration.id,
             instagram_integration_id=integration.id,
             instagram_account_id=instagram_account_id,
+            selected_account_aliases=instagram_account_aliases,
             timeframe=str(timeframe_value or "last_28_days").strip() or "last_28_days",
         )
         result = _run_instagram_business_sync(
             db=db,
             current_user=current_user,
-            integration_id=integration.id,
+            integration_id=integration_id,
             instagram_account_id=instagram_account_id,
+            instagram_account_aliases=instagram_account_aliases,
             workspace_id=integration.workspace_id,
             timeframe=str(timeframe_value or "last_28_days").strip() or "last_28_days",
             start_date=str(start_date_value) if start_date_value is not None else None,
             end_date=str(end_date_value) if end_date_value is not None else None,
             integration=integration,
+            suite_integration=suite_integration,
         )
         _meta_oauth_log(
             "INSTAGRAM_BUSINESS_SYNC_COMPLETED",

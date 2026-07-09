@@ -21,7 +21,7 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 from app.db import Base, SessionLocal, engine
 from app.deps import get_db
 from app.main import META_RECORD_TYPE_INSTAGRAM_ACCOUNT, app
-from app.models import Integration, MetaPage, Subscription, User, Workspace, WorkspaceMember
+from app.models import Integration, IntegrationAccount, IntegrationToken, MetaPage, Subscription, User, Workspace, WorkspaceMember
 from app.schemas import MetaPagesSyncOut
 from app.security import create_access_token, hash_password
 
@@ -37,6 +37,8 @@ SYNC_TABLES = [
     WorkspaceMember.__table__,
     Subscription.__table__,
     Integration.__table__,
+    IntegrationAccount.__table__,
+    IntegrationToken.__table__,
     MetaPage.__table__,
 ]
 
@@ -90,9 +92,36 @@ def _seed_instagram_integration() -> dict[str, int | str]:
             ]
         )
 
-        integration = Integration(workspace_id=workspace.id, provider="meta", name="Meta", status="connected")
-        db.add(integration)
+        suite_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta_business_suite",
+            name="Meta Business Suite",
+            status="connected",
+        )
+        integration = Integration(
+            workspace_id=workspace.id,
+            provider="instagram_business",
+            name="Instagram Business",
+            status="connected",
+        )
+        db.add_all([suite_integration, integration])
         db.flush()
+        suite_token_account = IntegrationAccount(
+            integration_id=suite_integration.id,
+            workspace_id=workspace.id,
+            external_account_id=f"__meta_token__:{suite_integration.id}",
+            display_name="Meta Business Suite token store",
+        )
+        db.add(suite_token_account)
+        db.flush()
+        db.add(
+            IntegrationToken(
+                account_id=suite_token_account.id,
+                workspace_id=workspace.id,
+                token_type="access_token",
+                access_token="suite-token",
+            )
+        )
 
         instagram_record = MetaPage(
             integration_id=integration.id,
@@ -110,6 +139,7 @@ def _seed_instagram_integration() -> dict[str, int | str]:
             "user_id": user.id,
             "workspace_id": workspace.id,
             "integration_id": integration.id,
+            "suite_integration_id": suite_integration.id,
             "instagram_account_id": instagram_record.page_id,
         }
     finally:
