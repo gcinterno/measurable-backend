@@ -30,6 +30,8 @@ from app.services import (
     MEASURABLE_WATERMARK_LABEL,
     MEASURABLE_WATERMARK_LOGO_DARK_URL,
     MEASURABLE_WATERMARK_LOGO_LIGHT_URL,
+    REPORT_EXPORT_FONT_FAMILY,
+    REPORT_EXPORT_FONT_STACK,
     build_export_payload,
 )
 
@@ -188,19 +190,34 @@ def test_free_workspace_reports_use_measurable_branding_for_read_and_export(clie
         if report_version is None:
             report_version = ReportVersion(report_id=report.id, version=1)
             db.add(report_version)
+        db.flush()
+        block = ReportBlock(
+            report_version_id=report_version.id,
+            type="metric",
+            order=1,
+            data_json=json.dumps({"title": "Reach"}),
+            editable_fields_json=json.dumps([]),
+        )
         export = Export(workspace_id=report.workspace_id, report_id=report.id, status="processing")
-        db.add(export)
+        db.add_all([block, export])
         db.commit()
         db.refresh(report_version)
+        db.refresh(block)
         db.refresh(export)
 
-        export_payload = build_export_payload(db, export, report, report_version, [])
+        export_payload = build_export_payload(db, export, report, report_version, [block])
         assert export_payload["report"]["branding"]["logo_url"] == MEASURABLE_BRANDING_LOGO_URL
         assert export_payload["report"]["branding"]["brand_name"] == MEASURABLE_REPORT_BRANDING_NAME
         assert export_payload["report"]["branding"]["resolved_brand_name"] == MEASURABLE_REPORT_BRANDING_NAME
         assert export_payload["report"]["branding"]["resolved_logo_url"] == MEASURABLE_BRANDING_LOGO_URL
         assert export_payload["report"]["branding"]["source"] == "measurable"
         assert export_payload["report"]["branding"]["watermark_enabled"] is True
+        assert export_payload["typography"]["fontFace"] == REPORT_EXPORT_FONT_FAMILY
+        assert export_payload["typography"]["fontStack"] == REPORT_EXPORT_FONT_STACK
+        assert export_payload["report"]["typography"]["fontFace"] == REPORT_EXPORT_FONT_FAMILY
+        assert export_payload["report_version"]["typography"]["fontFace"] == REPORT_EXPORT_FONT_FAMILY
+        assert export_payload["report"]["branding"]["typography"]["fontFace"] == REPORT_EXPORT_FONT_FAMILY
+        assert export_payload["blocks"][0]["data"]["typography"]["fontFace"] == REPORT_EXPORT_FONT_FAMILY
     finally:
         db.close()
 

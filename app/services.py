@@ -190,6 +190,37 @@ MEASURABLE_WATERMARK_LOGO_LIGHT_URL: str = str(
 MEASURABLE_WATERMARK_LOGO_DARK_URL: str = str(
     os.getenv("MEASURABLE_WATERMARK_LOGO_DARK_URL") or "/brand/measurable-logo-white.png"
 ).strip()
+REPORT_EXPORT_FONT_FAMILY = "Poppins"
+REPORT_EXPORT_FONT_FALLBACK = "sans-serif"
+REPORT_EXPORT_FONT_STACK = f'"{REPORT_EXPORT_FONT_FAMILY}", {REPORT_EXPORT_FONT_FALLBACK}'
+REPORT_EXPORT_TYPOGRAPHY = {
+    "font_family": REPORT_EXPORT_FONT_FAMILY,
+    "fontFamily": REPORT_EXPORT_FONT_FAMILY,
+    "font_face": REPORT_EXPORT_FONT_FAMILY,
+    "fontFace": REPORT_EXPORT_FONT_FAMILY,
+    "font_stack": REPORT_EXPORT_FONT_STACK,
+    "fontStack": REPORT_EXPORT_FONT_STACK,
+    "fallback": REPORT_EXPORT_FONT_FALLBACK,
+}
+REPORT_EXPORT_FONT_CSS = f"""
+html,
+body {{
+  font-family: {REPORT_EXPORT_FONT_STACK};
+}}
+
+:where(
+  [data-report-slide],
+  [data-report-slide] *,
+  [data-report-page],
+  [data-report-page] *,
+  .report-slide,
+  .report-slide *,
+  .pdf-page,
+  .pdf-page *
+) {{
+  font-family: {REPORT_EXPORT_FONT_STACK} !important;
+}}
+""".strip()
 
 
 def normalize_workspace_plan(plan: Any) -> str:
@@ -1842,6 +1873,10 @@ def measurable_branding() -> dict[str, Optional[str]]:
         "watermark_logo_light_url": MEASURABLE_WATERMARK_LOGO_LIGHT_URL,
         "watermark_logo_dark_url": MEASURABLE_WATERMARK_LOGO_DARK_URL,
         "has_custom_branding": False,
+        "font_family": REPORT_EXPORT_FONT_FAMILY,
+        "font_stack": REPORT_EXPORT_FONT_STACK,
+        "pptx_font_face": REPORT_EXPORT_FONT_FAMILY,
+        "typography": dict(REPORT_EXPORT_TYPOGRAPHY),
     }
 
 
@@ -1914,6 +1949,10 @@ def normalize_branding_payload(branding: Any) -> dict[str, Any]:
             "watermark_logo_light_url": None,
             "watermark_logo_dark_url": None,
             "has_custom_branding": False,
+            "font_family": REPORT_EXPORT_FONT_FAMILY,
+            "font_stack": REPORT_EXPORT_FONT_STACK,
+            "pptx_font_face": REPORT_EXPORT_FONT_FAMILY,
+            "typography": dict(REPORT_EXPORT_TYPOGRAPHY),
         }
     name = str(
         branding.get("resolved_brand_name")
@@ -1948,6 +1987,10 @@ def normalize_branding_payload(branding: Any) -> dict[str, Any]:
             str(branding.get("watermark_logo_dark_url") or "").strip() or None
         ),
         "has_custom_branding": bool(branding.get("has_custom_branding")),
+        "font_family": REPORT_EXPORT_FONT_FAMILY,
+        "font_stack": REPORT_EXPORT_FONT_STACK,
+        "pptx_font_face": REPORT_EXPORT_FONT_FAMILY,
+        "typography": dict(REPORT_EXPORT_TYPOGRAPHY),
     }
 
 
@@ -2146,6 +2189,10 @@ def resolve_report_branding(
             MEASURABLE_WATERMARK_LOGO_DARK_URL if watermark_enabled else None
         ),
         "has_custom_branding": has_custom_branding,
+        "font_family": REPORT_EXPORT_FONT_FAMILY,
+        "font_stack": REPORT_EXPORT_FONT_STACK,
+        "pptx_font_face": REPORT_EXPORT_FONT_FAMILY,
+        "typography": dict(REPORT_EXPORT_TYPOGRAPHY),
     }
 
 
@@ -3155,6 +3202,7 @@ def build_export_payload(
         preferred_branding=metadata_branding,
         report_metadata=report_metadata if isinstance(report_metadata, dict) else None,
     )
+    typography = dict(REPORT_EXPORT_TYPOGRAPHY)
     report_timeframe = (
         report_metadata.get("timeframe")
         if isinstance(report_metadata, dict) and isinstance(report_metadata.get("timeframe"), dict)
@@ -3182,6 +3230,7 @@ def build_export_payload(
     return {
         "export_id": export.id,
         "format": "pptx",
+        "typography": typography,
         "report": {
             "id": report.id,
             "workspace_id": report.workspace_id,
@@ -3189,6 +3238,7 @@ def build_export_payload(
             "title": report.name,
             "locale": report_locale,
             "branding": branding,
+            "typography": typography,
             "description": report.description,
             "description_json": report_metadata if isinstance(report_metadata, dict) else {},
             "timeframe": report_timeframe,
@@ -3201,6 +3251,7 @@ def build_export_payload(
             "version": report_version.version,
             "locale": report_locale,
             "branding": branding,
+            "typography": typography,
             "description": report_metadata if isinstance(report_metadata, dict) else {},
             "timeframe": report_timeframe,
             "created_at": report_version.created_at.isoformat()
@@ -3224,13 +3275,17 @@ def build_export_payload(
                         "brand_logo_url": branding.get("resolved_logo_url"),
                         "resolved_brand_name": branding.get("resolved_brand_name"),
                         "resolved_logo_url": branding.get("resolved_logo_url"),
+                        "typography": typography,
                     }
                     if block.type == "title"
                     and (
                         not str(_load_json(block.data_json, {}).get("semantic_name") or "").strip()
                         or str(_load_json(block.data_json, {}).get("semantic_name") or "").strip() == "cover"
                     )
-                    else _load_json(block.data_json, {})
+                    else {
+                        **_load_json(block.data_json, {}),
+                        "typography": typography,
+                    }
                 ),
                 "editable_fields": _load_json(block.editable_fields_json, []),
             }
@@ -3943,6 +3998,19 @@ def generate_pdf_from_export_page(
             main_response = page.goto(export_url, wait_until="domcontentloaded", timeout=timeout_ms)
             main_response_status = main_response.status if main_response is not None else None
             page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            try:
+                page.add_style_tag(content=REPORT_EXPORT_FONT_CSS)
+            except PlaywrightError:
+                logger.warning(
+                    "[PDFExport][font.css]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "font_family": REPORT_EXPORT_FONT_FAMILY,
+                        "reason": "font_css_injection_failed",
+                    },
+                    exc_info=True,
+                )
             page.evaluate("() => document.fonts.ready")
             try:
                 page.wait_for_selector(
@@ -4719,6 +4787,19 @@ def generate_pdf_from_export_page(
             main_response = page.goto(export_url, wait_until="domcontentloaded", timeout=timeout_ms)
             main_response_status = main_response.status if main_response is not None else None
             page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            try:
+                page.add_style_tag(content=REPORT_EXPORT_FONT_CSS)
+            except PlaywrightError:
+                logger.warning(
+                    "[PDFExport][font.css]",
+                    extra={
+                        "report_id": report_id,
+                        "export_url": export_url,
+                        "font_family": REPORT_EXPORT_FONT_FAMILY,
+                        "reason": "font_css_injection_failed",
+                    },
+                    exc_info=True,
+                )
             page.evaluate("() => document.fonts.ready")
             try:
                 page.wait_for_function(
@@ -4917,7 +4998,7 @@ def generate_pdf_from_export_page(
                   <head>
                     <style>
                       @page { size: 1600px 900px; margin: 0; }
-                      html, body { margin: 0; padding: 0; background: #ffffff; }
+                      html, body { margin: 0; padding: 0; background: #ffffff; font-family: __REPORT_EXPORT_FONT_STACK__; }
                       .page { width: 1600px; height: 900px; page-break-after: always; break-after: page; }
                       .page:last-child { page-break-after: auto; break-after: auto; }
                       img { display: block; width: 1600px; height: 900px; }
@@ -4925,6 +5006,7 @@ def generate_pdf_from_export_page(
                   </head>
                   <body>
                 """
+                .replace("__REPORT_EXPORT_FONT_STACK__", REPORT_EXPORT_FONT_STACK)
                 + "".join(
                     f'<div class="page"><img alt="Slide {item["slide_number"]}" src="data:{item["mime_type"]};base64,{item["base64"]}" /></div>'
                     for item in slide_images
