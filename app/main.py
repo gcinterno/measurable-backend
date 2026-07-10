@@ -9517,6 +9517,33 @@ def _refresh_meta_pages_from_live_graph(
     except HTTPException as exc:
         if not return_empty_on_error:
             raise
+        existing_pages = (
+            db.query(MetaPage)
+            .filter(MetaPage.integration_id == integration.id)
+            .order_by(MetaPage.record_type.asc(), MetaPage.name.asc(), MetaPage.page_id.asc())
+            .all()
+        )
+        if existing_pages:
+            existing_facebook_pages = _filter_meta_records(
+                existing_pages,
+                record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
+            )
+            existing_instagram_accounts = _filter_meta_records(
+                existing_pages,
+                record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+            )
+            logger.warning(
+                "Meta live refresh failed; preserving stored cache integration_id=%s workspace_id=%s user_id=%s context=%s stored_total_pages_count=%s stored_facebook_page_count=%s stored_instagram_account_count=%s error=%s",
+                integration.id,
+                integration.workspace_id,
+                user_id,
+                context,
+                len(existing_pages),
+                len(existing_facebook_pages),
+                len(existing_instagram_accounts),
+                str(exc.detail),
+            )
+            return existing_pages, [], existing_facebook_pages
         logger.warning(
             "Meta live refresh failed integration_id=%s workspace_id=%s user_id=%s context=%s error=%s",
             integration.id,

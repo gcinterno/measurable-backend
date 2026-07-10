@@ -40,7 +40,7 @@ from app.models import (
     WorkspaceMember,
 )
 from app.security import create_access_token, hash_password
-from app.main import META_RECORD_TYPE_INSTAGRAM_ACCOUNT
+from app.main import META_RECORD_TYPE_FACEBOOK_PAGE, META_RECORD_TYPE_INSTAGRAM_ACCOUNT
 
 
 @compiles(JSONB, "sqlite")
@@ -360,6 +360,121 @@ def _seed_instagram_report_context(
         db.close()
 
 
+def _seed_facebook_pages_suite_report_context() -> dict[str, int | str]:
+    db = SessionLocal()
+    try:
+        user = User(
+            email="facebook-suite-report@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Owner User",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        workspace = Workspace(name="Facebook Suite Report Workspace")
+        db.add_all([user, workspace])
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="core", status="active"))
+
+        suite_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta_business_suite",
+            name="Meta Business Suite",
+            status="connected",
+        )
+        facebook_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta",
+            name="Facebook Pages",
+            status="checking",
+        )
+        instagram_integration = Integration(
+            workspace_id=workspace.id,
+            provider="instagram_business",
+            name="Instagram Business",
+            status="connected_no_assets",
+        )
+        meta_ads_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta_ads",
+            name="Meta Ads",
+            status="connected_no_assets",
+        )
+        db.add_all([suite_integration, facebook_integration, instagram_integration, meta_ads_integration])
+        db.flush()
+
+        suite_token_account = IntegrationAccount(
+            integration_id=suite_integration.id,
+            workspace_id=workspace.id,
+            external_account_id=f"__meta_token__:{suite_integration.id}",
+            display_name="Suite token",
+        )
+        db.add(suite_token_account)
+        db.flush()
+        db.add(
+            IntegrationToken(
+                account_id=suite_token_account.id,
+                workspace_id=workspace.id,
+                token_type="access_token",
+                access_token="suite-token",
+            )
+        )
+        db.add(
+            MetaPage(
+                integration_id=facebook_integration.id,
+                user_id=user.id,
+                record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
+                page_id="fb-suite-report-1",
+                name="Suite Report Facebook Page",
+            )
+        )
+        dataset = Dataset(
+            workspace_id=workspace.id,
+            name="facebook_pages dataset",
+            description="Facebook Pages sync dataset",
+            data={
+                "integration_type": "facebook_pages",
+                "page_name": "Suite Report Facebook Page",
+                "page_id": "fb-suite-report-1",
+                "followers": 1200,
+                "reach": 5400,
+                "engagement": 320,
+                "impressions": 8700,
+                "page_views": 91,
+                "timeframe": {
+                    "key": "last_28_days",
+                    "preset": "last_28_days",
+                    "since": "2026-04-01",
+                    "until": "2026-04-28",
+                    "label": "Last 28 days",
+                },
+                "normalized_report_metrics": {},
+            },
+        )
+        db.add(dataset)
+        db.flush()
+        db.add(
+            DatasetFile(
+                dataset_id=dataset.id,
+                workspace_id=workspace.id,
+                s3_key="inputs/facebook-pages.csv",
+                size_bytes=128,
+                content_type="text/csv",
+            )
+        )
+        db.commit()
+        return {
+            "user_id": user.id,
+            "workspace_id": workspace.id,
+            "suite_integration_id": suite_integration.id,
+            "facebook_integration_id": facebook_integration.id,
+            "dataset_id": dataset.id,
+        }
+    finally:
+        db.close()
+
+
 def _drop_optional_referral_tables() -> None:
     UserAttribution.__table__.drop(bind=engine)
     ReferralConversion.__table__.drop(bind=engine)
@@ -490,3 +605,46 @@ def test_meta_pages_report_succeeds_when_attribution_tables_are_missing(client):
     assert payload["status"] == "ready"
     assert payload["dataset_id"] == refs["dataset_id"]
     assert payload["version"] == 1
+
+
+def test_meta_suite_facebook_pages_status_survives_report_creation(client):
+    refs = _seed_facebook_pages_suite_report_context()
+
+    before_status = client.get(
+        "/integrations/meta-business-suite/status",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert before_status.status_code == 200
+    before_payload = before_status.json()
+    assert before_payload["children"]["facebook_pages"]["status"] == "connected"
+    assert before_payload["children"]["facebook_pages"]["asset_count"] == 1
+    assert before_payload["children"]["facebook_pages"]["discovery_status"] == "succeeded"
+
+    report_response = client.post(
+        "/reports/meta-pages",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "dataset_id": refs["dataset_id"],
+            "title": "Facebook Pages Report",
+            "locale": "en",
+            "requested_slides": 5,
+        },
+    )
+
+    assert report_response.status_code == 200
+    assert report_response.json()["status"] == "ready"
+
+    after_status = client.get(
+        "/integrations/meta-business-suite/status",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert after_status.status_code == 200
+    after_payload = after_status.json()
+    assert after_payload["children"]["facebook_pages"]["status"] == "connected"
+    assert after_payload["children"]["facebook_pages"]["asset_count"] == 1
+    assert after_payload["children"]["facebook_pages"]["discovery_status"] == "succeeded"
+    assert after_payload["discovery_status"] == "completed"

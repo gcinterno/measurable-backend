@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy.dialects.postgresql import JSONB
@@ -455,6 +456,58 @@ def test_refresh_pages_does_not_require_instagram_to_save_facebook_pages(client,
         assert len(instagram_records) == 0
         assert [page.name for page in facebook_pages] == ["Page Without IG", "Second Page Without IG"]
         assert any(item.get("page_name") == "Page Without IG" for item in diagnostics)
+    finally:
+        db.close()
+
+
+def test_live_refresh_error_preserves_existing_facebook_pages_cache(client, monkeypatch):
+    refs = _seed_meta_fixture()
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, refs["integration_id"])
+        assert integration is not None
+        db.add(
+            _create_meta_page(
+                integration_id=refs["integration_id"],
+                user_id=refs["user_id"],
+                record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
+                page_id="fb-1",
+                name="Persisted Facebook Page",
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        db.commit()
+
+        def fail_collection(*_args, **_kwargs):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "meta_api_error", "message": "Temporary Meta failure"},
+            )
+
+        monkeypatch.setattr(main_module, "_collect_meta_instagram_diagnostics", fail_collection)
+
+        cached_pages, diagnostics, facebook_pages = main_module._refresh_meta_pages_from_live_graph(
+            db,
+            integration,
+            access_token="meta-token",
+            user_id=refs["user_id"],
+            selected_integration_type="facebook_pages",
+            context="test_preserve_cache_on_error",
+            return_empty_on_error=True,
+        )
+
+        assert diagnostics == []
+        assert [page.page_id for page in facebook_pages] == ["fb-1"]
+        assert [page.page_id for page in cached_pages if page.record_type == META_RECORD_TYPE_FACEBOOK_PAGE] == ["fb-1"]
+        assert (
+            db.query(MetaPage)
+            .filter(
+                MetaPage.integration_id == refs["integration_id"],
+                MetaPage.record_type == META_RECORD_TYPE_FACEBOOK_PAGE,
+            )
+            .count()
+            == 1
+        )
     finally:
         db.close()
 
