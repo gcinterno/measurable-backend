@@ -1464,6 +1464,24 @@ class InstagramBusinessReportCreateIn(BaseModel):
     ai_mode: Literal["standard", "agents"] = "standard"
 
 
+class MetaAdsReportCreateIn(BaseModel):
+    workspace_id: Optional[int | str] = None
+    integration_id: Optional[int | str] = None
+    dataset_id: Optional[int | str] = None
+    ad_account_id: Optional[str] = None
+    account_id: Optional[str] = None
+    title: Optional[str] = None
+    locale: str = "en"
+    timeframe: Optional[str] = "last_30d"
+    start_date: Optional[str | date] = None
+    end_date: Optional[str | date] = None
+    requested_slides: Optional[int] = None
+    slide_count: Optional[int] = None
+    slides: Optional[int] = None
+    template: Optional[str] = None
+    ai_mode: Optional[str] = "standard"
+
+
 class ReportOut(BaseSchema):
     id: int
     workspace_id: int

@@ -234,6 +234,7 @@ from .schemas import (
     MetaAdsAccountOut,
     MetaAdsConnectOut,
     MetaAdsDisconnectOut,
+    MetaAdsReportCreateIn,
     MetaAdsSelectAccountIn,
     MetaAdsStatusOut,
     MetaAdsSyncIn,
@@ -20424,6 +20425,245 @@ def _resolve_instagram_business_report_dataset(
     )
 
 
+def _meta_ads_report_optional_int(value: Any, *, field_name: str) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise http_error(422, f"invalid_{field_name}", f"{field_name} must be an integer.")
+
+
+def _meta_ads_report_date_value(value: Any) -> str | None:
+    if value is None or str(value).strip() == "":
+        return None
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
+def _meta_ads_dataset_data(dataset: Dataset) -> dict[str, Any]:
+    return dataset.data if isinstance(dataset.data, dict) else {}
+
+
+def _is_meta_ads_dataset(dataset: Dataset) -> bool:
+    dataset_data = _meta_ads_dataset_data(dataset)
+    provider_value = str(
+        dataset_data.get("integration_type")
+        or dataset_data.get("source")
+        or dataset_data.get("source_type")
+        or dataset_data.get("provider")
+        or ""
+    ).strip()
+    return provider_value in {"meta_ads", "meta-ads"}
+
+
+def _meta_ads_dataset_account_aliases(dataset_data: dict[str, Any]) -> set[str]:
+    aliases: set[str] = set()
+    for value in (
+        dataset_data.get("account_id"),
+        dataset_data.get("ad_account_id"),
+        dataset_data.get("meta_ad_account_id"),
+        dataset_data.get("external_account_id"),
+    ):
+        normalized = _normalize_meta_ad_account_id(value)
+        if normalized:
+            aliases.add(normalized)
+    return aliases
+
+
+def _meta_ads_report_error_dataset_not_synced(
+    *,
+    workspace_id: int | None,
+    integration_id: int | None,
+    account_id: str | None,
+    requested_integration_id: Any,
+    timeframe: dict[str, Any] | None,
+    matching_account_dataset_count: int = 0,
+) -> None:
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "status": "error",
+            "code": "meta_ads_dataset_not_synced",
+            "message": "Sync Meta Ads data before generating the report.",
+            "debug": {
+                "workspace_id": workspace_id,
+                "meta_ads_integration_id": integration_id,
+                "requested_integration_id": requested_integration_id,
+                "ad_account_id": account_id,
+                "timeframe": {
+                    "key": timeframe.get("key") if isinstance(timeframe, dict) else None,
+                    "since": timeframe.get("since") if isinstance(timeframe, dict) else None,
+                    "until": timeframe.get("until") if isinstance(timeframe, dict) else None,
+                },
+                "matching_account_dataset_count": matching_account_dataset_count,
+            },
+        },
+    )
+
+
+def _resolve_meta_ads_report_dataset(
+    db: Session,
+    current_user: User,
+    payload: MetaAdsReportCreateIn,
+) -> Dataset:
+    dataset_id = _meta_ads_report_optional_int(payload.dataset_id, field_name="dataset_id")
+    workspace_id = _meta_ads_report_optional_int(payload.workspace_id, field_name="workspace_id")
+    integration_id = _meta_ads_report_optional_int(payload.integration_id, field_name="integration_id")
+    selected_account_value = payload.ad_account_id or payload.account_id
+
+    if dataset_id is not None:
+        dataset = db.get(Dataset, dataset_id)
+        if not dataset:
+            raise http_error(404, "dataset_not_found", "Dataset not found.")
+        _require_workspace_access(db, current_user.id, dataset.workspace_id)
+        if workspace_id is not None and workspace_id != dataset.workspace_id:
+            raise http_error(400, "workspace_mismatch", "workspace_id does not match the dataset workspace.")
+        if not _is_meta_ads_dataset(dataset):
+            raise http_error(400, "invalid_meta_ads_dataset", "Dataset is not a Meta Ads dataset.")
+        if selected_account_value:
+            integration = _resolve_meta_ads_status_integration(
+                db,
+                current_user,
+                integration_id=integration_id,
+                workspace_id=workspace_id or dataset.workspace_id,
+            )
+            selected_account, _matched_local_row_id = _resolve_meta_ads_cached_account_selection(
+                db,
+                integration=integration,
+                selected_account_id=selected_account_value,
+            )
+            resolved_account_id = (
+                _normalize_meta_ad_account_id(selected_account.account_id)
+                if selected_account is not None
+                else _normalize_meta_ad_account_id(selected_account_value)
+            )
+            if resolved_account_id and resolved_account_id not in _meta_ads_dataset_account_aliases(
+                _meta_ads_dataset_data(dataset)
+            ):
+                _meta_ads_report_error_dataset_not_synced(
+                    workspace_id=dataset.workspace_id,
+                    integration_id=integration.id,
+                    account_id=resolved_account_id,
+                    requested_integration_id=payload.integration_id,
+                    timeframe=None,
+                    matching_account_dataset_count=0,
+                )
+        return dataset
+
+    if integration_id is None and workspace_id is None:
+        raise http_error(
+            400,
+            "missing_meta_ads_report_reference",
+            "dataset_id, integration_id, or workspace_id is required.",
+        )
+
+    integration = _resolve_meta_ads_status_integration(
+        db,
+        current_user,
+        integration_id=integration_id,
+        workspace_id=workspace_id,
+    )
+    if workspace_id is not None and workspace_id != integration.workspace_id:
+        raise http_error(400, "workspace_mismatch", "workspace_id does not match the integration workspace.")
+
+    selected_account: MetaAdAccount | None = None
+    if selected_account_value:
+        selected_account, _matched_local_row_id = _resolve_meta_ads_cached_account_selection(
+            db,
+            integration=integration,
+            selected_account_id=selected_account_value,
+        )
+    if selected_account is None:
+        selected_account = _get_selected_meta_ads_account(db, integration.id)
+    if selected_account is None:
+        _meta_ads_report_error_dataset_not_synced(
+            workspace_id=integration.workspace_id,
+            integration_id=integration.id,
+            account_id=_normalize_meta_ad_account_id(selected_account_value),
+            requested_integration_id=payload.integration_id,
+            timeframe=None,
+        )
+
+    resolved_account_id = _normalize_meta_ad_account_id(selected_account.account_id)
+    requested_timeframe = resolve_meta_pages_timeframe(
+        payload.timeframe,
+        start_date=_meta_ads_report_date_value(payload.start_date),
+        end_date=_meta_ads_report_date_value(payload.end_date),
+    )
+    strict_timeframe = bool(
+        payload.start_date
+        or payload.end_date
+        or str(payload.timeframe or "").strip() == "custom"
+    )
+    matching_account_datasets: list[Dataset] = []
+    legacy_timeframe_datasets: list[Dataset] = []
+    candidates = (
+        db.query(Dataset)
+        .filter(Dataset.workspace_id == integration.workspace_id)
+        .order_by(Dataset.created_at.desc(), Dataset.id.desc())
+        .limit(200)
+        .all()
+    )
+    expected_filename_prefix = f"meta_ads_{resolved_account_id}_"
+    allowed_dataset_integration_ids = {integration.id}
+    if integration_id is not None:
+        allowed_dataset_integration_ids.add(integration_id)
+    related_integrations = (
+        db.query(Integration)
+        .filter(
+            Integration.workspace_id == integration.workspace_id,
+            Integration.provider.in_(["meta_ads", "meta_business_suite", "meta"]),
+        )
+        .all()
+    )
+    allowed_dataset_integration_ids.update(related.id for related in related_integrations)
+    for dataset in candidates:
+        dataset_data = _meta_ads_dataset_data(dataset)
+        if not _is_meta_ads_dataset(dataset):
+            continue
+        dataset_integration_id = _meta_ads_report_optional_int(
+            dataset_data.get("integration_id"),
+            field_name="integration_id",
+        )
+        if (
+            dataset_integration_id is not None
+            and dataset_integration_id not in allowed_dataset_integration_ids
+        ):
+            continue
+        filename_matches = str(dataset.name or "").strip().startswith(expected_filename_prefix)
+        account_matches = resolved_account_id in _meta_ads_dataset_account_aliases(dataset_data)
+        if not account_matches and not filename_matches:
+            continue
+        dataset_timeframe = dataset_data.get("timeframe") if isinstance(dataset_data.get("timeframe"), dict) else {}
+        timeframe_matches = (
+            str(dataset_timeframe.get("since") or "") == str(requested_timeframe.get("since") or "")
+            and str(dataset_timeframe.get("until") or "") == str(requested_timeframe.get("until") or "")
+        )
+        timeframe_key_matches = (
+            str(dataset_timeframe.get("key") or dataset_timeframe.get("timeframe") or dataset_timeframe.get("preset") or "")
+            == str(requested_timeframe.get("key") or requested_timeframe.get("timeframe") or requested_timeframe.get("preset") or "")
+        )
+        if timeframe_matches or (timeframe_key_matches and not strict_timeframe):
+            return dataset
+        if not dataset_timeframe:
+            legacy_timeframe_datasets.append(dataset)
+        matching_account_datasets.append(dataset)
+
+    if legacy_timeframe_datasets:
+        return legacy_timeframe_datasets[0]
+
+    _meta_ads_report_error_dataset_not_synced(
+        workspace_id=integration.workspace_id,
+        integration_id=integration.id,
+        account_id=resolved_account_id,
+        requested_integration_id=payload.integration_id,
+        timeframe=requested_timeframe,
+        matching_account_dataset_count=len(matching_account_datasets),
+    )
+
+
 @app.post("/reports/shopify", response_model=MetaPagesReportCreateOut)
 def create_shopify_report(
     payload: ShopifyReportCreateIn,
@@ -20805,7 +21045,7 @@ def create_multi_source_report(
 def _create_meta_dataset_report(
     *,
     dataset: Dataset,
-    payload: MetaPagesReportCreateIn | InstagramBusinessReportCreateIn,
+    payload: MetaPagesReportCreateIn | InstagramBusinessReportCreateIn | MetaAdsReportCreateIn,
     current_user: User,
     request: Request | None,
     db: Session,
@@ -21702,6 +21942,39 @@ def create_instagram_business_report(
             },
         )
         raise
+
+
+@app.post("/reports/meta-ads", response_model=MetaPagesReportCreateOut)
+def create_meta_ads_report(
+    payload: MetaAdsReportCreateIn,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MetaPagesReportCreateOut:
+    if payload.slide_count is None and payload.slides is not None:
+        payload.slide_count = payload.slides
+    dataset = _resolve_meta_ads_report_dataset(db, current_user, payload)
+    dataset_data = dataset.data if isinstance(dataset.data, dict) else {}
+    logger.info(
+        "meta_ads_report_dataset_resolved",
+        extra={
+            "dataset_id": dataset.id,
+            "dataset_name": dataset.name,
+            "workspace_id": dataset.workspace_id,
+            "integration_type": dataset_data.get("integration_type"),
+            "account_id": dataset_data.get("account_id") or payload.ad_account_id or payload.account_id,
+            "timeframe": dataset_data.get("timeframe") if isinstance(dataset_data.get("timeframe"), dict) else None,
+        },
+    )
+    return _create_meta_dataset_report(
+        dataset=dataset,
+        payload=payload,
+        current_user=current_user,
+        request=request,
+        db=db,
+        report_source="meta_ads",
+        generation_mode="meta_ads",
+    )
 
 
 @app.get("/reports", response_model=list[ReportListItemOut])

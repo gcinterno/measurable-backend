@@ -21,6 +21,7 @@ os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 
 from app.db import Base, SessionLocal, engine
 from app.deps import get_db
+import app.main as main_module
 from app.main import app
 from app.models import (
     Dataset,
@@ -28,6 +29,7 @@ from app.models import (
     Integration,
     IntegrationAccount,
     IntegrationToken,
+    MetaAdAccount,
     MetaPage,
     ReferralConversion,
     Report,
@@ -56,6 +58,7 @@ REPORT_TABLES = [
     Integration.__table__,
     IntegrationAccount.__table__,
     IntegrationToken.__table__,
+    MetaAdAccount.__table__,
     MetaPage.__table__,
     Dataset.__table__,
     DatasetFile.__table__,
@@ -71,8 +74,10 @@ REPORT_TABLES = [
 def report_schema():
     Base.metadata.drop_all(bind=engine, tables=REPORT_TABLES)
     Base.metadata.create_all(bind=engine, tables=REPORT_TABLES)
+    main_module._table_names.cache_clear()
     yield
     Base.metadata.drop_all(bind=engine, tables=REPORT_TABLES)
+    main_module._table_names.cache_clear()
 
 
 @pytest.fixture()
@@ -475,6 +480,147 @@ def _seed_facebook_pages_suite_report_context() -> dict[str, int | str]:
         db.close()
 
 
+def _seed_meta_ads_report_context(*, include_dataset: bool = True) -> dict[str, int | str]:
+    db = SessionLocal()
+    try:
+        user = User(
+            email=f"meta-ads-report-{'dataset' if include_dataset else 'missing'}@example.com",
+            password_hash=hash_password("Password123!"),
+            full_name="Owner User",
+            email_verified=True,
+            auth_provider="email",
+            is_active=True,
+        )
+        workspace = Workspace(name="Meta Ads Report Workspace")
+        db.add_all([user, workspace])
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.add(Subscription(workspace_id=workspace.id, plan="core", status="active"))
+
+        suite_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta_business_suite",
+            name="Meta Business Suite",
+            status="connected",
+        )
+        meta_ads_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta_ads",
+            name="Meta Ads",
+            status="connected",
+        )
+        legacy_meta_integration = Integration(
+            workspace_id=workspace.id,
+            provider="meta",
+            name="Meta Pages",
+            status="connected",
+        )
+        db.add_all([suite_integration, meta_ads_integration, legacy_meta_integration])
+        db.flush()
+
+        suite_token_account = IntegrationAccount(
+            integration_id=suite_integration.id,
+            workspace_id=workspace.id,
+            external_account_id=f"__meta_token__:{suite_integration.id}",
+            display_name="Suite token",
+        )
+        db.add(suite_token_account)
+        db.flush()
+        db.add(
+            IntegrationToken(
+                account_id=suite_token_account.id,
+                workspace_id=workspace.id,
+                token_type="access_token",
+                access_token="suite-token",
+            )
+        )
+
+        ad_account = MetaAdAccount(
+            integration_id=meta_ads_integration.id,
+            workspace_id=workspace.id,
+            account_id="123456789012345",
+            account_name="11:11 Day&Night Ads",
+            currency="USD",
+            timezone_name="America/Mexico_City",
+            account_status="ACTIVE",
+            is_selected=True,
+        )
+        db.add(ad_account)
+        db.flush()
+
+        dataset_id: int | None = None
+        if include_dataset:
+            dataset = Dataset(
+                workspace_id=workspace.id,
+                name="meta_ads_123456789012345_2026-04-01_2026-04-28.csv",
+                description="Meta Ads sync dataset",
+                data={
+                    "integration_type": "meta_ads",
+                    "source": "meta_ads",
+                    "provider": "meta_ads",
+                    "channel": "meta_ads",
+                    "social_network": "meta_ads",
+                    "account_id": "123456789012345",
+                    "account_name": "11:11 Day&Night Ads",
+                    "currency": "USD",
+                    "total_spend": 120.5,
+                    "total_impressions": 3000,
+                    "total_reach": 2400,
+                    "total_clicks": 120,
+                    "inline_link_clicks": 84,
+                    "average_ctr": 4.0,
+                    "average_cpc": 1.0,
+                    "average_cpm": 40.1667,
+                    "total_results": 16,
+                    "cost_per_result": 7.5313,
+                    "timeframe": {
+                        "key": "custom",
+                        "preset": None,
+                        "since": "2026-04-01",
+                        "until": "2026-04-28",
+                        "label": "Custom (2026-04-01 to 2026-04-28)",
+                    },
+                    "normalized_report_metrics": {},
+                    "daily_trend": [
+                        {
+                            "date": "2026-04-01",
+                            "spend": 120.5,
+                            "impressions": 3000,
+                            "reach": 2400,
+                            "clicks": 120,
+                            "results": 16,
+                        }
+                    ],
+                },
+            )
+            db.add(dataset)
+            db.flush()
+            db.add(
+                DatasetFile(
+                    dataset_id=dataset.id,
+                    workspace_id=workspace.id,
+                    s3_key="inputs/meta-ads.csv",
+                    size_bytes=128,
+                    content_type="text/csv",
+                )
+            )
+            dataset_id = dataset.id
+
+        db.commit()
+        return {
+            "user_id": user.id,
+            "workspace_id": workspace.id,
+            "suite_integration_id": suite_integration.id,
+            "meta_ads_integration_id": meta_ads_integration.id,
+            "legacy_meta_integration_id": legacy_meta_integration.id,
+            "ad_account_row_id": ad_account.id,
+            "ad_account_id": "123456789012345",
+            "dataset_id": dataset_id or 0,
+        }
+    finally:
+        db.close()
+
+
 def _drop_optional_referral_tables() -> None:
     UserAttribution.__table__.drop(bind=engine)
     ReferralConversion.__table__.drop(bind=engine)
@@ -495,7 +641,7 @@ def test_instagram_business_report_succeeds_when_attribution_tables_are_missing(
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.json()
     payload = response.json()
     assert payload["status"] == "ready"
     assert payload["dataset_id"] == refs["dataset_id"]
@@ -525,7 +671,7 @@ def test_instagram_business_report_resolves_suite_child_and_legacy_integration_i
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.json()
     payload = response.json()
     assert payload["status"] == "ready"
     assert payload["dataset_id"] == refs["dataset_id"]
@@ -551,7 +697,7 @@ def test_instagram_business_report_resolves_account_id_aliases_from_suite_assets
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.json()
     assert response.json()["dataset_id"] == refs["dataset_id"]
 
 
@@ -600,7 +746,7 @@ def test_meta_pages_report_succeeds_when_attribution_tables_are_missing(client):
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.json()
     payload = response.json()
     assert payload["status"] == "ready"
     assert payload["dataset_id"] == refs["dataset_id"]
@@ -648,3 +794,109 @@ def test_meta_suite_facebook_pages_status_survives_report_creation(client):
     assert after_payload["children"]["facebook_pages"]["asset_count"] == 1
     assert after_payload["children"]["facebook_pages"]["discovery_status"] == "succeeded"
     assert after_payload["discovery_status"] == "completed"
+
+
+def test_meta_ads_report_creates_report_with_account_id_fallback_from_suite(client):
+    refs = _seed_meta_ads_report_context()
+
+    response = client.post(
+        "/reports/meta-ads",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "integration_id": refs["suite_integration_id"],
+            "workspace_id": refs["workspace_id"],
+            "account_id": refs["ad_account_id"],
+            "timeframe": "custom",
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-28",
+            "requested_slides": 5,
+            "ai_mode": "standard",
+            "locale": "en",
+        },
+    )
+
+    assert response.status_code == 200, response.json()
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["dataset_id"] == refs["dataset_id"]
+    assert payload["version"] == 1
+
+
+def test_meta_ads_report_accepts_ad_account_id_from_child_integration(client):
+    refs = _seed_meta_ads_report_context()
+
+    response = client.post(
+        "/reports/meta-ads",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "integration_id": refs["meta_ads_integration_id"],
+            "workspace_id": refs["workspace_id"],
+            "ad_account_id": f"act_{refs['ad_account_id']}",
+            "timeframe": "custom",
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-28",
+            "requested_slides": 5,
+            "ai_mode": "standard",
+            "locale": "en",
+        },
+    )
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["dataset_id"] == refs["dataset_id"]
+
+
+def test_meta_ads_report_resolves_local_ad_account_row_id_from_legacy_meta_id(client):
+    refs = _seed_meta_ads_report_context()
+
+    response = client.post(
+        "/reports/meta-ads",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "integration_id": refs["legacy_meta_integration_id"],
+            "workspace_id": refs["workspace_id"],
+            "account_id": str(refs["ad_account_row_id"]),
+            "timeframe": "custom",
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-28",
+            "requested_slides": 5,
+            "ai_mode": "standard",
+            "locale": "en",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["dataset_id"] == refs["dataset_id"]
+
+
+def test_meta_ads_report_returns_actionable_error_when_account_has_no_dataset(client):
+    refs = _seed_meta_ads_report_context(include_dataset=False)
+
+    response = client.post(
+        "/reports/meta-ads",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "integration_id": refs["suite_integration_id"],
+            "workspace_id": refs["workspace_id"],
+            "account_id": refs["ad_account_id"],
+            "timeframe": "custom",
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-28",
+            "requested_slides": 5,
+            "ai_mode": "standard",
+            "locale": "en",
+        },
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["status"] == "error"
+    assert detail["code"] == "meta_ads_dataset_not_synced"
+    assert detail["message"] == "Sync Meta Ads data before generating the report."
+    assert detail["debug"]["workspace_id"] == refs["workspace_id"]
+    assert detail["debug"]["meta_ads_integration_id"] == refs["meta_ads_integration_id"]
+
+    db = SessionLocal()
+    try:
+        assert db.query(Report).count() == 0
+    finally:
+        db.close()
