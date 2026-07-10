@@ -6823,6 +6823,26 @@ def _find_meta_ads_cached_account(
     return None
 
 
+def _resolve_meta_ads_cached_account_selection(
+    db: Session,
+    *,
+    integration: Integration,
+    selected_account_id: Any,
+) -> tuple[MetaAdAccount | None, bool]:
+    requested_raw_id = str(selected_account_id or "").strip()
+    requested_meta_id = _normalize_meta_ad_account_id(requested_raw_id)
+    if not requested_meta_id:
+        return None, False
+    cached_accounts = _get_meta_ads_cached_accounts(db, integration)
+    for account in cached_accounts:
+        if _normalize_meta_ad_account_id(account.account_id) == requested_meta_id:
+            return account, False
+    for account in cached_accounts:
+        if str(account.id) == requested_raw_id:
+            return account, True
+    return None, False
+
+
 def _meta_ads_account_id_sample_from_payloads(accounts: list[dict[str, Any]], *, limit: int = 10) -> list[str]:
     sample: list[str] = []
     seen: set[str] = set()
@@ -24118,22 +24138,49 @@ def meta_ads_select_account(
             "meta_ads_schema_missing",
             "Meta Ads database tables are not available yet. Apply database migrations.",
         )
-    normalized_selected_id = _normalize_meta_ad_account_id(payload.ad_account_id)
+    raw_selected_id = str(payload.ad_account_id or "").strip()
+    normalized_selected_id = _normalize_meta_ad_account_id(raw_selected_id)
     if not normalized_selected_id:
         raise http_error(400, "invalid_ad_account", "Meta Ads account id is required.")
 
     suite_integration, _suite_token = _get_meta_business_suite_token_for_workspace(db, integration.workspace_id)
     access_token = _get_meta_ads_access_token(db, integration)
-    cached_account = _find_meta_ads_cached_account(
+    cached_account, matched_local_row_id = _resolve_meta_ads_cached_account_selection(
         db,
         integration=integration,
-        ad_account_id=normalized_selected_id,
+        selected_account_id=raw_selected_id,
+    )
+    resolved_ad_account_id = (
+        _normalize_meta_ad_account_id(cached_account.account_id)
+        if cached_account is not None
+        else normalized_selected_id
     )
     if cached_account is not None:
+        cached_payloads = [_meta_ads_account_payload_from_record(account) for account in _get_meta_ads_cached_accounts(db, integration)]
         selected_account = _save_meta_ads_selected_account(
             db,
             integration=integration,
             account_payload=_meta_ads_account_payload_from_record(cached_account),
+        )
+        logger.info(
+            "META_ADS_SELECT_ACCOUNT_RESOLVED %s",
+            json.dumps(
+                {
+                    "raw_selected_account_id": raw_selected_id,
+                    "normalized_selected_account_id": normalized_selected_id,
+                    "matched_local_row_id": matched_local_row_id,
+                    "resolved_ad_account_id": resolved_ad_account_id,
+                    "available_account_ids_sample": _meta_ads_account_id_sample_from_payloads(cached_payloads),
+                    "integration_id_used": integration.id,
+                    "suite_integration_id_used": suite_integration.id if suite_integration is not None else None,
+                    "token_present": bool(access_token),
+                    "source": "persisted_db",
+                    "final_selection_status": "selected",
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
         )
         return _meta_ads_account_out(selected_account, source="persisted_db")
 
@@ -24142,7 +24189,7 @@ def meta_ads_select_account(
         integration_id=integration.id,
         workspace_id=integration.workspace_id,
     )
-    account_payload = _meta_ads_find_account_payload(accounts, payload.ad_account_id)
+    account_payload = _meta_ads_find_account_payload(accounts, resolved_ad_account_id)
     if account_payload is None:
         cached_payloads = [
             _meta_ads_account_payload_from_record(account)
@@ -24155,12 +24202,15 @@ def meta_ads_select_account(
             "message": "The requested Meta ad account is not available for this token.",
             "selected_ad_account_id": payload.ad_account_id,
             "normalized_selected_ad_account_id": normalized_selected_id,
+            "matched_local_row_id": matched_local_row_id,
+            "resolved_ad_account_id": resolved_ad_account_id,
             "available_account_ids_count": len(available_account_ids),
             "available_account_ids_sample": _meta_ads_account_id_sample_from_payloads(available_payloads),
             "integration_id_used": integration.id,
             "suite_integration_id_used": suite_integration.id if suite_integration is not None else None,
             "token_present": bool(access_token),
             "source": "live_graph",
+            "final_selection_status": "rejected",
         }
         logger.warning(
             "META_ADS_SELECT_ACCOUNT_UNAVAILABLE %s",
@@ -24178,6 +24228,30 @@ def meta_ads_select_account(
         db,
         integration=integration,
         account_payload=account_payload,
+    )
+    logger.info(
+        "META_ADS_SELECT_ACCOUNT_RESOLVED %s",
+        json.dumps(
+            {
+                "raw_selected_account_id": raw_selected_id,
+                "normalized_selected_account_id": normalized_selected_id,
+                "matched_local_row_id": matched_local_row_id,
+                "resolved_ad_account_id": _normalize_meta_ad_account_id(
+                    account_payload.get("account_id") or account_payload.get("id") or resolved_ad_account_id
+                ),
+                "available_account_ids_sample": _meta_ads_account_id_sample_from_payloads(
+                    [account for account in accounts if isinstance(account, dict)]
+                ),
+                "integration_id_used": integration.id,
+                "suite_integration_id_used": suite_integration.id if suite_integration is not None else None,
+                "token_present": bool(access_token),
+                "source": "live_graph",
+                "final_selection_status": "selected",
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
     )
     return _meta_ads_account_out(selected_account, source="live_graph")
 

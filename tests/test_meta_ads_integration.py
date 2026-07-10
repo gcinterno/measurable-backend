@@ -537,6 +537,59 @@ def test_meta_ads_select_normalizes_act_prefixed_cached_account_with_suite_id(cl
     assert select_payload["is_selected"] is True
 
 
+def test_meta_ads_select_resolves_internal_row_id_to_real_ad_account_id(client, monkeypatch):
+    refs = _seed_workspace()
+    real_ad_account_id = "123456789012345"
+    ids = _create_meta_suite_ads_connection(
+        workspace_id=refs["workspace_id"],
+        account_id=real_ad_account_id,
+        account_name="11:11 Day&Night Ads",
+    )
+    db = SessionLocal()
+    try:
+        account = (
+            db.query(MetaAdAccount)
+            .filter(
+                MetaAdAccount.integration_id == ids["meta_ads_integration_id"],
+                MetaAdAccount.account_id == real_ad_account_id,
+            )
+            .one()
+        )
+        local_row_id = account.id
+    finally:
+        db.close()
+    monkeypatch.setattr(
+        "app.main.list_ad_accounts",
+        lambda _token: pytest.fail("select-account should resolve valid cached local row ids without live Graph"),
+    )
+
+    response = client.post(
+        "/integrations/meta-ads/select-account",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "workspace_id": refs["workspace_id"],
+            "integration_id": ids["suite_integration_id"],
+            "ad_account_id": str(local_row_id),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == local_row_id
+    assert payload["account_id"] == real_ad_account_id
+    assert payload["name"] == "11:11 Day&Night Ads"
+    assert payload["is_selected"] is True
+
+    db = SessionLocal()
+    try:
+        selected_account = db.get(MetaAdAccount, local_row_id)
+        assert selected_account is not None
+        assert selected_account.account_id == real_ad_account_id
+        assert selected_account.is_selected is True
+    finally:
+        db.close()
+
+
 def test_meta_ads_accounts_normalizes_numeric_live_account_and_select_accepts_string(client, monkeypatch):
     refs = _seed_workspace()
     _create_meta_suite_ads_connection(workspace_id=refs["workspace_id"])
