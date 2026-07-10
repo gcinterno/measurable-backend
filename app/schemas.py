@@ -1014,7 +1014,8 @@ class InstagramBusinessStatusOut(BaseModel):
 
 
 class MetaAdsSelectAccountIn(BaseModel):
-    integration_id: int
+    integration_id: Optional[int] = None
+    workspace_id: Optional[int] = None
     ad_account_id: str
 
 

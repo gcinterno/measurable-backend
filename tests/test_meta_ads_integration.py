@@ -138,6 +138,62 @@ def _create_meta_ads_integration(*, workspace_id: int, status: str = "connected"
         db.close()
 
 
+def _create_meta_suite_ads_connection(
+    *,
+    workspace_id: int,
+    account_id: str | None = None,
+    account_name: str = "Suite Ads Account",
+) -> dict[str, int]:
+    db = SessionLocal()
+    try:
+        suite_integration = Integration(
+            workspace_id=workspace_id,
+            provider="meta_business_suite",
+            name="Meta Business Suite",
+            status="connected",
+        )
+        ads_integration = Integration(
+            workspace_id=workspace_id,
+            provider="meta_ads",
+            name="Meta Ads",
+            status="connected",
+        )
+        db.add_all([suite_integration, ads_integration])
+        db.flush()
+        suite_token_account = IntegrationAccount(
+            integration_id=suite_integration.id,
+            workspace_id=workspace_id,
+            external_account_id=f"__meta_token__:{suite_integration.id}",
+            display_name="Meta Business Suite token store",
+        )
+        db.add(suite_token_account)
+        db.flush()
+        db.add(
+            IntegrationToken(
+                account_id=suite_token_account.id,
+                workspace_id=workspace_id,
+                token_type="access_token",
+                access_token="suite-access-token",
+            )
+        )
+        if account_id is not None:
+            db.add(
+                MetaAdAccount(
+                    integration_id=ads_integration.id,
+                    workspace_id=workspace_id,
+                    account_id=account_id,
+                    account_name=account_name,
+                )
+            )
+        db.commit()
+        return {
+            "suite_integration_id": suite_integration.id,
+            "meta_ads_integration_id": ads_integration.id,
+        }
+    finally:
+        db.close()
+
+
 class _FakeS3Client:
     def put_object(self, **_kwargs):
         return None
@@ -400,6 +456,148 @@ def test_meta_ads_connect_accepts_legacy_fallback_env_family(client, monkeypatch
     query = parse_qs(urlparse(payload["auth_url"]).query)
     assert query["scope"] == [meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE]
     assert query["redirect_uri"] == ["http://localhost:8000/integrations/meta/callback-pages"]
+
+
+def test_meta_ads_select_accepts_cached_account_returned_by_accounts_with_child_id(client, monkeypatch):
+    refs = _seed_workspace()
+    ids = _create_meta_suite_ads_connection(
+        workspace_id=refs["workspace_id"],
+        account_id="265",
+        account_name="Cached Ads Account",
+    )
+    monkeypatch.setattr(
+        "app.main.list_ad_accounts",
+        lambda _token: pytest.fail("select-account should not require live Graph when account is cached"),
+    )
+
+    accounts_response = client.get(
+        "/integrations/meta-ads/accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={
+            "workspace_id": refs["workspace_id"],
+            "integration_id": ids["meta_ads_integration_id"],
+        },
+    )
+    assert accounts_response.status_code == 200
+    assert accounts_response.json()[0]["account_id"] == "265"
+
+    select_response = client.post(
+        "/integrations/meta-ads/select-account",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "workspace_id": refs["workspace_id"],
+            "integration_id": ids["meta_ads_integration_id"],
+            "ad_account_id": "265",
+        },
+    )
+
+    assert select_response.status_code == 200
+    select_payload = select_response.json()
+    assert select_payload["account_id"] == "265"
+    assert select_payload["is_selected"] is True
+    assert select_payload["source"] == "persisted_db"
+
+
+def test_meta_ads_select_normalizes_act_prefixed_cached_account_with_suite_id(client, monkeypatch):
+    refs = _seed_workspace()
+    ids = _create_meta_suite_ads_connection(
+        workspace_id=refs["workspace_id"],
+        account_id="act_265",
+        account_name="Legacy Cached Ads Account",
+    )
+    monkeypatch.setattr(
+        "app.main.list_ad_accounts",
+        lambda _token: pytest.fail("select-account should accept persisted act_ account without live Graph"),
+    )
+
+    accounts_response = client.get(
+        "/integrations/meta-ads/accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={
+            "workspace_id": refs["workspace_id"],
+            "integration_id": ids["suite_integration_id"],
+        },
+    )
+    assert accounts_response.status_code == 200
+    assert accounts_response.json()[0]["account_id"] == "act_265"
+
+    select_response = client.post(
+        "/integrations/meta-ads/select-account",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "workspace_id": refs["workspace_id"],
+            "integration_id": ids["suite_integration_id"],
+            "ad_account_id": "265",
+        },
+    )
+
+    assert select_response.status_code == 200
+    select_payload = select_response.json()
+    assert select_payload["account_id"] == "265"
+    assert select_payload["is_selected"] is True
+
+
+def test_meta_ads_accounts_normalizes_numeric_live_account_and_select_accepts_string(client, monkeypatch):
+    refs = _seed_workspace()
+    _create_meta_suite_ads_connection(workspace_id=refs["workspace_id"])
+    monkeypatch.setattr(
+        "app.main.list_ad_accounts",
+        lambda _token: [
+            {
+                "id": "act_265",
+                "account_id": 265,
+                "name": "Live Numeric Ads Account",
+            }
+        ],
+    )
+    monkeypatch.setattr("app.main.get_businesses", lambda _token: [])
+
+    accounts_response = client.get(
+        "/integrations/meta-ads/accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    assert accounts_response.status_code == 200
+    assert accounts_response.json()[0]["account_id"] == "265"
+
+    select_response = client.post(
+        "/integrations/meta-ads/select-account",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "workspace_id": refs["workspace_id"],
+            "ad_account_id": "265",
+        },
+    )
+
+    assert select_response.status_code == 200
+    assert select_response.json()["account_id"] == "265"
+
+
+def test_meta_ads_select_returns_structured_unavailable_error(client, monkeypatch):
+    refs = _seed_workspace()
+    ids = _create_meta_suite_ads_connection(workspace_id=refs["workspace_id"])
+    monkeypatch.setattr("app.main.list_ad_accounts", lambda _token: [])
+    monkeypatch.setattr("app.main.get_businesses", lambda _token: [])
+
+    response = client.post(
+        "/integrations/meta-ads/select-account",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "workspace_id": refs["workspace_id"],
+            "integration_id": ids["suite_integration_id"],
+            "ad_account_id": "act_999",
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "meta_ad_account_not_available"
+    assert detail["selected_ad_account_id"] == "act_999"
+    assert detail["normalized_selected_ad_account_id"] == "999"
+    assert detail["available_account_ids_count"] == 0
+    assert detail["integration_id_used"] == ids["meta_ads_integration_id"]
+    assert detail["suite_integration_id_used"] == ids["suite_integration_id"]
+    assert detail["token_present"] is True
 
 
 def test_meta_ads_accounts_select_sync_and_disconnect(client, monkeypatch):

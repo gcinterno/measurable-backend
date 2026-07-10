@@ -6764,16 +6764,92 @@ def _get_selected_meta_ads_account(db: Session, integration_id: int) -> MetaAdAc
     )
 
 
-def _meta_ads_find_account_payload(accounts: list[dict[str, Any]], ad_account_id: str) -> dict[str, Any] | None:
+def _meta_ads_find_account_payload(accounts: list[dict[str, Any]], ad_account_id: Any) -> dict[str, Any] | None:
     requested_id = _normalize_meta_ad_account_id(ad_account_id)
     for account in accounts:
         account_ids = {
-            _normalize_meta_ad_account_id(str(account.get("id") or "")),
-            _normalize_meta_ad_account_id(str(account.get("account_id") or "")),
+            _normalize_meta_ad_account_id(account.get("id")),
+            _normalize_meta_ad_account_id(account.get("account_id")),
+            _normalize_meta_ad_account_id(account.get("ad_account_id")),
         }
         if requested_id in account_ids:
             return account
     return None
+
+
+def _meta_ads_account_payload_from_record(record: MetaAdAccount) -> dict[str, Any]:
+    business_payload: dict[str, Any] | None = None
+    if record.business_id or record.business_name:
+        business_payload = {
+            "id": record.business_id,
+            "name": record.business_name,
+        }
+    payload: dict[str, Any] = {
+        "id": f"act_{_normalize_meta_ad_account_id(record.account_id)}",
+        "account_id": _normalize_meta_ad_account_id(record.account_id),
+        "name": record.account_name,
+        "currency": record.currency,
+        "timezone_name": record.timezone_name,
+        "account_status": record.account_status,
+    }
+    if business_payload:
+        payload["business"] = business_payload
+    return payload
+
+
+def _get_meta_ads_cached_accounts(db: Session, integration: Integration) -> list[MetaAdAccount]:
+    if not _table_available("meta_ad_accounts"):
+        return []
+    return (
+        db.query(MetaAdAccount)
+        .filter(MetaAdAccount.integration_id == integration.id)
+        .order_by(MetaAdAccount.is_selected.desc(), MetaAdAccount.account_name.asc(), MetaAdAccount.id.asc())
+        .all()
+    )
+
+
+def _find_meta_ads_cached_account(
+    db: Session,
+    *,
+    integration: Integration,
+    ad_account_id: Any,
+) -> MetaAdAccount | None:
+    requested_id = _normalize_meta_ad_account_id(ad_account_id)
+    if not requested_id:
+        return None
+    for account in _get_meta_ads_cached_accounts(db, integration):
+        if _normalize_meta_ad_account_id(account.account_id) == requested_id:
+            return account
+    return None
+
+
+def _meta_ads_account_id_sample_from_payloads(accounts: list[dict[str, Any]], *, limit: int = 10) -> list[str]:
+    sample: list[str] = []
+    seen: set[str] = set()
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        for value in (account.get("account_id"), account.get("id"), account.get("ad_account_id")):
+            normalized = _normalize_meta_ad_account_id(value)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                sample.append(normalized)
+                break
+        if len(sample) >= limit:
+            break
+    return sample
+
+
+def _meta_ads_account_ids_from_payloads(accounts: list[dict[str, Any]]) -> set[str]:
+    account_ids: set[str] = set()
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        for value in (account.get("account_id"), account.get("id"), account.get("ad_account_id")):
+            normalized = _normalize_meta_ad_account_id(value)
+            if normalized:
+                account_ids.add(normalized)
+    return account_ids
 
 
 def _meta_ads_status_message(*, status: str, connected: bool, accounts_count: int) -> str | None:
@@ -9627,8 +9703,11 @@ def _refresh_meta_pages_from_live_graph(
     return cached_pages, diagnostics, facebook_pages
 
 
-def _normalize_meta_ad_account_id(ad_account_id: str) -> str:
-    return ad_account_id.removeprefix("act_")
+def _normalize_meta_ad_account_id(ad_account_id: Any) -> str:
+    value = str(ad_account_id or "").strip()
+    if value.lower().startswith("act_"):
+        return value[4:]
+    return value
 
 
 def _first_non_none(*values):
@@ -23308,6 +23387,9 @@ def _resolve_meta_ads_status_integration(
         if integration is not None and integration.provider == "meta_business_suite":
             _require_workspace_access(db, current_user.id, integration.workspace_id)
             return _get_or_create_meta_ads_integration_for_workspace(db, integration.workspace_id)
+        if integration is not None and integration.provider == "meta":
+            _require_workspace_access(db, current_user.id, integration.workspace_id)
+            return _get_or_create_meta_ads_integration_for_workspace(db, integration.workspace_id)
         return _get_meta_ads_integration(db, current_user, integration_id)
     resolved_workspace_id = _resolve_meta_connect_workspace_id(
         db,
@@ -23955,16 +24037,31 @@ def meta_ads_status(
 
 @app.get("/integrations/meta-ads/accounts", response_model=list[MetaAdsAccountOut])
 def meta_ads_accounts(
-    integration_id: int,
+    integration_id: int | None = Query(default=None),
+    workspace_id: int | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[MetaAdsAccountOut]:
-    integration = _get_meta_ads_integration(db, current_user, integration_id)
+    integration = _resolve_meta_ads_status_integration(
+        db,
+        current_user,
+        integration_id=integration_id,
+        workspace_id=workspace_id,
+    )
     if not _meta_ads_reporting_tables_available():
         return []
     access_token = _get_meta_ads_access_token(db, integration)
+
+    cached_accounts = _get_meta_ads_cached_accounts(db, integration)
+    if cached_accounts:
+        return [_meta_ads_account_out(account, source="persisted_db") for account in cached_accounts]
+
     try:
-        accounts = list_ad_accounts(access_token)
+        accounts, _ad_account_results, _discovery_error, business_management_required = _discover_meta_ads_accounts_for_suite(
+            access_token,
+            integration_id=integration.id,
+            workspace_id=integration.workspace_id,
+        )
     except HTTPException as exc:
         if _is_meta_ads_permission_error(exc):
             integration.status = "reauthorization_required"
@@ -23977,20 +24074,22 @@ def meta_ads_accounts(
             ) from exc
         raise
 
-    selected_record = _get_selected_meta_ads_account(db, integration.id)
-    for account_payload in accounts:
-        is_selected = (
-            selected_record is not None
-            and _normalize_meta_ad_account_id(str(account_payload.get("account_id") or account_payload.get("id") or ""))
-            == selected_record.account_id
+    if business_management_required and not accounts:
+        integration.status = "needs_permission"
+        db.add(integration)
+        db.commit()
+        raise http_error(
+            400,
+            "meta_ads_permissions_missing",
+            "Meta Ads permissions are missing for this connection.",
         )
-        _upsert_meta_ads_account(
-            db,
-            integration=integration,
-            account_payload=account_payload,
-            is_selected=is_selected,
-        )
-    db.commit()
+
+    _persist_meta_ads_accounts(
+        db,
+        integration=integration,
+        accounts=accounts,
+        clear_missing=False,
+    )
 
     stored_accounts = (
         db.query(MetaAdAccount)
@@ -24007,28 +24106,80 @@ def meta_ads_select_account(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> MetaAdsAccountOut:
-    integration = _get_meta_ads_integration(db, current_user, payload.integration_id)
+    integration = _resolve_meta_ads_status_integration(
+        db,
+        current_user,
+        integration_id=payload.integration_id,
+        workspace_id=payload.workspace_id,
+    )
     if not _meta_ads_reporting_tables_available():
         raise http_error(
             503,
             "meta_ads_schema_missing",
             "Meta Ads database tables are not available yet. Apply database migrations.",
         )
+    normalized_selected_id = _normalize_meta_ad_account_id(payload.ad_account_id)
+    if not normalized_selected_id:
+        raise http_error(400, "invalid_ad_account", "Meta Ads account id is required.")
+
+    suite_integration, _suite_token = _get_meta_business_suite_token_for_workspace(db, integration.workspace_id)
     access_token = _get_meta_ads_access_token(db, integration)
-    accounts = list_ad_accounts(access_token)
+    cached_account = _find_meta_ads_cached_account(
+        db,
+        integration=integration,
+        ad_account_id=normalized_selected_id,
+    )
+    if cached_account is not None:
+        selected_account = _save_meta_ads_selected_account(
+            db,
+            integration=integration,
+            account_payload=_meta_ads_account_payload_from_record(cached_account),
+        )
+        return _meta_ads_account_out(selected_account, source="persisted_db")
+
+    accounts, _ad_account_results, _discovery_error, _business_management_required = _discover_meta_ads_accounts_for_suite(
+        access_token,
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+    )
     account_payload = _meta_ads_find_account_payload(accounts, payload.ad_account_id)
     if account_payload is None:
-        raise http_error(
-            400,
-            "meta_ads_account_not_authorized",
-            "The requested Meta ad account is not available for this token.",
+        cached_payloads = [
+            _meta_ads_account_payload_from_record(account)
+            for account in _get_meta_ads_cached_accounts(db, integration)
+        ]
+        available_payloads = cached_payloads + [account for account in accounts if isinstance(account, dict)]
+        available_account_ids = _meta_ads_account_ids_from_payloads(available_payloads)
+        detail = {
+            "code": "meta_ad_account_not_available",
+            "message": "The requested Meta ad account is not available for this token.",
+            "selected_ad_account_id": payload.ad_account_id,
+            "normalized_selected_ad_account_id": normalized_selected_id,
+            "available_account_ids_count": len(available_account_ids),
+            "available_account_ids_sample": _meta_ads_account_id_sample_from_payloads(available_payloads),
+            "integration_id_used": integration.id,
+            "suite_integration_id_used": suite_integration.id if suite_integration is not None else None,
+            "token_present": bool(access_token),
+            "source": "live_graph",
+        }
+        logger.warning(
+            "META_ADS_SELECT_ACCOUNT_UNAVAILABLE %s",
+            json.dumps(detail, ensure_ascii=False, default=str, sort_keys=True),
         )
+        raise HTTPException(status_code=400, detail=detail)
+
+    _persist_meta_ads_accounts(
+        db,
+        integration=integration,
+        accounts=accounts,
+        clear_missing=False,
+    )
     selected_account = _save_meta_ads_selected_account(
         db,
         integration=integration,
         account_payload=account_payload,
     )
-    return _meta_ads_account_out(selected_account, source="meta_api")
+    return _meta_ads_account_out(selected_account, source="live_graph")
 
 
 @app.post("/integrations/meta-ads/sync", response_model=MetaAdsSyncOut)
