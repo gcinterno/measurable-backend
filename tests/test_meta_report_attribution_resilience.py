@@ -562,6 +562,7 @@ def _seed_meta_ads_report_context(*, include_dataset: bool = True) -> dict[str, 
                     "social_network": "meta_ads",
                     "account_id": "123456789012345",
                     "account_name": "11:11 Day&Night Ads",
+                    "business_name": "Measurable Business",
                     "currency": "USD",
                     "total_spend": 120.5,
                     "total_impressions": 3000,
@@ -572,7 +573,17 @@ def _seed_meta_ads_report_context(*, include_dataset: bool = True) -> dict[str, 
                     "average_cpc": 1.0,
                     "average_cpm": 40.1667,
                     "total_results": 16,
+                    "primary_result_type": "lead",
                     "cost_per_result": 7.5313,
+                    "top_campaigns": [
+                        {
+                            "campaign_id": "cmp-1",
+                            "campaign_name": "Launch",
+                            "spend": 120.5,
+                            "clicks": 120,
+                            "results": 16,
+                        }
+                    ],
                     "timeframe": {
                         "key": "custom",
                         "preset": None,
@@ -580,7 +591,13 @@ def _seed_meta_ads_report_context(*, include_dataset: bool = True) -> dict[str, 
                         "until": "2026-04-28",
                         "label": "Custom (2026-04-01 to 2026-04-28)",
                     },
-                    "normalized_report_metrics": {},
+                    "normalized_report_metrics": {
+                        "daily_spend": [{"date": "2026-04-01", "label": "Apr 1", "value": 120.5}],
+                        "daily_impressions": [{"date": "2026-04-01", "label": "Apr 1", "value": 3000}],
+                        "daily_reach": [{"date": "2026-04-01", "label": "Apr 1", "value": 2400}],
+                        "daily_clicks": [{"date": "2026-04-01", "label": "Apr 1", "value": 120}],
+                        "daily_results": [{"date": "2026-04-01", "label": "Apr 1", "value": 16}],
+                    },
                     "daily_trend": [
                         {
                             "date": "2026-04-01",
@@ -589,6 +606,12 @@ def _seed_meta_ads_report_context(*, include_dataset: bool = True) -> dict[str, 
                             "reach": 2400,
                             "clicks": 120,
                             "results": 16,
+                        }
+                    ],
+                    "insights_rows": [
+                        {
+                            "frequency": "1.25",
+                            "cost_per_action_type": [{"action_type": "lead", "value": "7.5313"}],
                         }
                     ],
                 },
@@ -626,6 +649,27 @@ def _drop_optional_referral_tables() -> None:
     ReferralConversion.__table__.drop(bind=engine)
 
 
+def _report_block_payloads(report_id: int) -> list[dict]:
+    db = SessionLocal()
+    try:
+        version = (
+            db.query(ReportVersion)
+            .filter(ReportVersion.report_id == report_id)
+            .order_by(ReportVersion.version.desc(), ReportVersion.id.desc())
+            .first()
+        )
+        assert version is not None
+        blocks = (
+            db.query(ReportBlock)
+            .filter(ReportBlock.report_version_id == version.id)
+            .order_by(ReportBlock.order.asc())
+            .all()
+        )
+        return [json.loads(block.data_json) for block in blocks]
+    finally:
+        db.close()
+
+
 def test_instagram_business_report_succeeds_when_attribution_tables_are_missing(client):
     refs = _seed_report_dataset(integration_type="instagram_business")
     _drop_optional_referral_tables()
@@ -646,6 +690,9 @@ def test_instagram_business_report_succeeds_when_attribution_tables_are_missing(
     assert payload["status"] == "ready"
     assert payload["dataset_id"] == refs["dataset_id"]
     assert payload["version"] == 1
+    blocks = _report_block_payloads(payload["report_id"])
+    assert [block.get("title") for block in blocks] == [f"Slide {index}" for index in range(1, 6)]
+    assert "meta_ads_spend_delivery" not in json.dumps(blocks)
 
 
 @pytest.mark.parametrize(
@@ -676,6 +723,9 @@ def test_instagram_business_report_resolves_suite_child_and_legacy_integration_i
     assert payload["status"] == "ready"
     assert payload["dataset_id"] == refs["dataset_id"]
     assert payload["version"] == 1
+    blocks = _report_block_payloads(payload["report_id"])
+    assert [block.get("title") for block in blocks] == [f"Slide {index}" for index in range(1, 6)]
+    assert "meta_ads_spend_delivery" not in json.dumps(blocks)
 
 
 def test_instagram_business_report_resolves_account_id_aliases_from_suite_assets(client):
@@ -751,6 +801,12 @@ def test_meta_pages_report_succeeds_when_attribution_tables_are_missing(client):
     assert payload["status"] == "ready"
     assert payload["dataset_id"] == refs["dataset_id"]
     assert payload["version"] == 1
+    blocks = _report_block_payloads(payload["report_id"])
+    assert [block.get("slide_type") for block in blocks] == main_module.FACEBOOK_PAGES_FIVE_SLIDE_TYPES
+    block_payload = json.dumps(blocks)
+    assert "organic_impressions_overview" in block_payload
+    assert "page_views_overview" in block_payload
+    assert "meta_ads_spend_delivery" not in block_payload
 
 
 def test_meta_suite_facebook_pages_status_survives_report_creation(client):
@@ -820,6 +876,29 @@ def test_meta_ads_report_creates_report_with_account_id_fallback_from_suite(clie
     assert payload["status"] == "ready"
     assert payload["dataset_id"] == refs["dataset_id"]
     assert payload["version"] == 1
+    blocks = _report_block_payloads(payload["report_id"])
+    titles = [str(block.get("title") or block.get("text") or "") for block in blocks]
+    assert titles == [
+        "Meta Ads Performance Report",
+        "Spend & Delivery",
+        "Traffic Performance",
+        "Results / Cost Efficiency",
+        "Executive Summary",
+    ]
+    block_payload = json.dumps(blocks)
+    for forbidden_label in (
+        "Organic Visibility",
+        "Organic Impressions",
+        "Page Views",
+        "Followers",
+        "Fans",
+        "Reactions",
+        "Page Likes",
+    ):
+        assert forbidden_label not in block_payload
+    assert "meta_ads_spend_delivery" in block_payload
+    assert "meta_ads_traffic_performance" in block_payload
+    assert "meta_ads_results_cost_efficiency" in block_payload
 
 
 def test_meta_ads_report_accepts_ad_account_id_from_child_integration(client):

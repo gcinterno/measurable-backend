@@ -14939,6 +14939,562 @@ def _build_meta_ads_dataset_data(
     }
 
 
+def _is_meta_ads_report_context(report_source: str, generation_mode: str, row: dict[str, Any]) -> bool:
+    return (
+        str(report_source or "").strip() == "meta_ads"
+        or str(generation_mode or "").strip() == "meta_ads"
+        or str(row.get("integration_type") or "").strip() == "meta_ads"
+    )
+
+
+def _meta_ads_normalized_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    metrics = row.get("normalized_report_metrics")
+    return metrics if isinstance(metrics, dict) else {}
+
+
+def _meta_ads_format_number(value: Any) -> str:
+    numeric = _meta_number(value)
+    if numeric is None:
+        return "N/A"
+    if numeric.is_integer():
+        return f"{int(numeric):,}"
+    return f"{numeric:,.2f}"
+
+
+def _meta_ads_format_percent(value: Any) -> str:
+    numeric = _meta_number(value)
+    if numeric is None:
+        return "N/A"
+    return f"{numeric:.2f}%"
+
+
+def _meta_ads_currency_prefix(currency: Any) -> str:
+    code = str(currency or "").strip().upper()
+    return {
+        "USD": "$",
+        "MXN": "$",
+        "CAD": "$",
+        "AUD": "$",
+        "EUR": "EUR ",
+        "GBP": "GBP ",
+    }.get(code, f"{code} " if code else "$")
+
+
+def _meta_ads_format_currency(value: Any, currency: Any) -> str:
+    numeric = _meta_number(value)
+    if numeric is None:
+        return "N/A"
+    return f"{_meta_ads_currency_prefix(currency)}{numeric:,.2f}"
+
+
+def _meta_ads_metric_card(
+    *,
+    key: str,
+    label: str,
+    value: Any,
+    formatted_value: str,
+    source_metric: str,
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "value": value,
+        "formatted_value": formatted_value,
+        "is_available": value not in (None, ""),
+        "source_metric": source_metric,
+    }
+
+
+def _meta_ads_daily_series(row: dict[str, Any], *, normalized_key: str, trend_key: str) -> list[dict[str, Any]]:
+    normalized_metrics = _meta_ads_normalized_metrics(row)
+    points = _meta_series_points(normalized_metrics.get(normalized_key))
+    if points:
+        return points
+    daily_trend = row.get("daily_trend") if isinstance(row.get("daily_trend"), list) else []
+    normalized_points: list[dict[str, Any]] = []
+    for point in daily_trend:
+        if not isinstance(point, dict):
+            continue
+        point_date = str(point.get("date") or point.get("date_start") or "").strip()
+        if not point_date:
+            continue
+        value = _meta_number(point.get(trend_key))
+        if value is None:
+            continue
+        normalized_points.append(
+            {
+                "date": point_date,
+                "label": point.get("label") or _meta_point_label(point_date),
+                "value": value,
+            }
+        )
+    return normalized_points
+
+
+def _meta_ads_chart(*, label: str, metric: str, points: list[dict[str, Any]], timeframe: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "label": label,
+        "metric": metric,
+        "points": points,
+        "data": points,
+        "series": points,
+        "timeframe": timeframe,
+        "is_available": bool(points),
+    }
+
+
+def _meta_ads_average_frequency(row: dict[str, Any]) -> float | None:
+    normalized_metrics = _meta_ads_normalized_metrics(row)
+    direct = _meta_number(row.get("frequency"))
+    if direct is None:
+        direct = _meta_number(normalized_metrics.get("frequency"))
+    if direct is not None:
+        return round(float(direct), 4)
+    rows = row.get("insights_rows") if isinstance(row.get("insights_rows"), list) else []
+    values = [
+        float(value)
+        for item in rows
+        if isinstance(item, dict)
+        for value in [_meta_number(item.get("frequency"))]
+        if value is not None
+    ]
+    if not values:
+        return None
+    return round(sum(values) / len(values), 4)
+
+
+def _meta_ads_cost_per_action_types(row: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[Any] = []
+    if isinstance(row.get("cost_per_action_type"), list):
+        candidates.extend(row.get("cost_per_action_type") or [])
+    insight_rows = row.get("insights_rows") if isinstance(row.get("insights_rows"), list) else []
+    for insight_row in insight_rows:
+        if isinstance(insight_row, dict) and isinstance(insight_row.get("cost_per_action_type"), list):
+            candidates.extend(insight_row.get("cost_per_action_type") or [])
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        action_type = str(item.get("action_type") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not action_type and not value:
+            continue
+        key = (action_type, value)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append({"action_type": action_type or None, "value": item.get("value")})
+    return deduped
+
+
+def _meta_ads_top_campaign_summary(row: dict[str, Any], currency: Any) -> str:
+    campaigns = row.get("top_campaigns") if isinstance(row.get("top_campaigns"), list) else []
+    first_campaign = next((item for item in campaigns if isinstance(item, dict)), None)
+    if first_campaign is None:
+        return "Top campaign data was not available for this period."
+    name = str(first_campaign.get("campaign_name") or first_campaign.get("campaign_id") or "Top campaign").strip()
+    spend = _meta_ads_format_currency(first_campaign.get("spend"), currency)
+    results = _meta_ads_format_number(first_campaign.get("results"))
+    clicks = _meta_ads_format_number(first_campaign.get("clicks"))
+    return f"{name} led campaign spend at {spend}, with {clicks} clicks and {results} results."
+
+
+def _meta_ads_executive_summary(row: dict[str, Any], timeframe: dict[str, Any]) -> str:
+    currency = row.get("currency")
+    period_label = str(timeframe.get("label") or "the selected period")
+    spend = _meta_ads_format_currency(row.get("total_spend"), currency)
+    impressions = _meta_ads_format_number(row.get("total_impressions"))
+    reach = _meta_ads_format_number(row.get("total_reach"))
+    clicks = _meta_ads_format_number(row.get("total_clicks"))
+    ctr = _meta_ads_format_percent(row.get("average_ctr"))
+    cpc = _meta_ads_format_currency(row.get("average_cpc"), currency)
+    cpm = _meta_ads_format_currency(row.get("average_cpm"), currency)
+    results = _meta_ads_format_number(row.get("total_results"))
+    cost_per_result = _meta_ads_format_currency(row.get("cost_per_result"), currency)
+    return (
+        f"During {period_label}, Meta Ads spent {spend} to deliver {impressions} impressions, "
+        f"reach {reach}, and generate {clicks} clicks. CTR averaged {ctr}, with {cpc} CPC "
+        f"and {cpm} CPM. Results totaled {results} at {cost_per_result} per result. "
+        f"{_meta_ads_top_campaign_summary(row, currency)}"
+    )
+
+
+def _build_meta_ads_5_blocks(
+    *,
+    dataset_data: dict[str, Any],
+    report_timeframe: dict[str, Any],
+    branding: dict[str, Any],
+    locale: str,
+    ai_mode: str,
+    template: str | None,
+) -> list[dict[str, Any]]:
+    currency = dataset_data.get("currency")
+    account_name = str(dataset_data.get("account_name") or dataset_data.get("account_id") or "Meta Ads").strip()
+    business_name = str(dataset_data.get("business_name") or "").strip() or None
+    frequency = _meta_ads_average_frequency(dataset_data)
+    daily_spend = _meta_ads_daily_series(dataset_data, normalized_key="daily_spend", trend_key="spend")
+    daily_impressions = _meta_ads_daily_series(dataset_data, normalized_key="daily_impressions", trend_key="impressions")
+    daily_reach = _meta_ads_daily_series(dataset_data, normalized_key="daily_reach", trend_key="reach")
+    daily_clicks = _meta_ads_daily_series(dataset_data, normalized_key="daily_clicks", trend_key="clicks")
+    daily_results = _meta_ads_daily_series(dataset_data, normalized_key="daily_results", trend_key="results")
+    cost_per_action_type = _meta_ads_cost_per_action_types(dataset_data)
+
+    spend_metrics = [
+        _meta_ads_metric_card(
+            key="total_spend",
+            label="Spend",
+            value=dataset_data.get("total_spend"),
+            formatted_value=_meta_ads_format_currency(dataset_data.get("total_spend"), currency),
+            source_metric="spend",
+        ),
+        _meta_ads_metric_card(
+            key="total_impressions",
+            label="Impressions",
+            value=dataset_data.get("total_impressions"),
+            formatted_value=_meta_ads_format_number(dataset_data.get("total_impressions")),
+            source_metric="impressions",
+        ),
+        _meta_ads_metric_card(
+            key="total_reach",
+            label="Reach",
+            value=dataset_data.get("total_reach"),
+            formatted_value=_meta_ads_format_number(dataset_data.get("total_reach")),
+            source_metric="reach",
+        ),
+        _meta_ads_metric_card(
+            key="average_cpm",
+            label="CPM",
+            value=dataset_data.get("average_cpm"),
+            formatted_value=_meta_ads_format_currency(dataset_data.get("average_cpm"), currency),
+            source_metric="cpm",
+        ),
+        _meta_ads_metric_card(
+            key="frequency",
+            label="Frequency",
+            value=frequency,
+            formatted_value=_meta_ads_format_number(frequency),
+            source_metric="frequency",
+        ),
+    ]
+    traffic_metrics = [
+        _meta_ads_metric_card(
+            key="total_clicks",
+            label="Clicks",
+            value=dataset_data.get("total_clicks"),
+            formatted_value=_meta_ads_format_number(dataset_data.get("total_clicks")),
+            source_metric="clicks",
+        ),
+        _meta_ads_metric_card(
+            key="inline_link_clicks",
+            label="Link Clicks",
+            value=dataset_data.get("inline_link_clicks"),
+            formatted_value=_meta_ads_format_number(dataset_data.get("inline_link_clicks")),
+            source_metric="inline_link_clicks",
+        ),
+        _meta_ads_metric_card(
+            key="average_ctr",
+            label="CTR",
+            value=dataset_data.get("average_ctr"),
+            formatted_value=_meta_ads_format_percent(dataset_data.get("average_ctr")),
+            source_metric="ctr",
+        ),
+        _meta_ads_metric_card(
+            key="average_cpc",
+            label="CPC",
+            value=dataset_data.get("average_cpc"),
+            formatted_value=_meta_ads_format_currency(dataset_data.get("average_cpc"), currency),
+            source_metric="cpc",
+        ),
+    ]
+    result_metrics = [
+        _meta_ads_metric_card(
+            key="total_results",
+            label="Results",
+            value=dataset_data.get("total_results"),
+            formatted_value=_meta_ads_format_number(dataset_data.get("total_results")),
+            source_metric="actions",
+        ),
+        _meta_ads_metric_card(
+            key="primary_result_type",
+            label="Result Type",
+            value=dataset_data.get("primary_result_type"),
+            formatted_value=str(dataset_data.get("primary_result_type") or "N/A"),
+            source_metric="actions",
+        ),
+        _meta_ads_metric_card(
+            key="cost_per_result",
+            label="Cost per Result",
+            value=dataset_data.get("cost_per_result"),
+            formatted_value=_meta_ads_format_currency(dataset_data.get("cost_per_result"), currency),
+            source_metric="cost_per_action_type",
+        ),
+    ]
+
+    return [
+        _meta_report_block(
+            "title",
+            1,
+            {
+                "slide_number": 1,
+                "slide_type": "meta_ads_cover",
+                "semantic_name": "meta_ads_cover",
+                "title": "Meta Ads Performance Report",
+                "text": "Meta Ads Performance Report",
+                "account_name": account_name,
+                "business_name": business_name,
+                "channel": "Meta Ads",
+                "platform": "Meta Ads",
+                "provider": "meta_ads",
+                "timeframe": report_timeframe,
+                "period_label": report_timeframe.get("label"),
+                "period_since": report_timeframe.get("since"),
+                "period_until": report_timeframe.get("until"),
+                "branding": branding,
+                "locale": locale,
+                "ai_mode": ai_mode,
+                "template": template,
+                "source_metrics_used": [],
+            },
+            ["title", "account_name"],
+        ),
+        _meta_report_block(
+            "stat",
+            2,
+            {
+                "slide_number": 2,
+                "slide_type": "meta_ads_spend_delivery",
+                "semantic_name": "meta_ads_spend_delivery",
+                "title": "Spend & Delivery",
+                "label": "Spend & Delivery",
+                "value": dataset_data.get("total_spend"),
+                "current_value": dataset_data.get("total_spend"),
+                "formatted_value": _meta_ads_format_currency(dataset_data.get("total_spend"), currency),
+                "metrics": spend_metrics,
+                "chart": _meta_ads_chart(label="Daily Spend", metric="spend", points=daily_spend, timeframe=report_timeframe),
+                "secondary_charts": [
+                    _meta_ads_chart(
+                        label="Daily Impressions",
+                        metric="impressions",
+                        points=daily_impressions,
+                        timeframe=report_timeframe,
+                    ),
+                    _meta_ads_chart(label="Daily Reach", metric="reach", points=daily_reach, timeframe=report_timeframe),
+                ],
+                "daily_spend": daily_spend,
+                "daily_impressions": daily_impressions,
+                "daily_reach": daily_reach,
+                "provider": "meta_ads",
+                "source_metrics_used": ["spend", "impressions", "reach", "cpm", "frequency"],
+            },
+        ),
+        _meta_report_block(
+            "stat",
+            3,
+            {
+                "slide_number": 3,
+                "slide_type": "meta_ads_traffic_performance",
+                "semantic_name": "meta_ads_traffic_performance",
+                "title": "Traffic Performance",
+                "label": "Traffic Performance",
+                "value": dataset_data.get("total_clicks"),
+                "current_value": dataset_data.get("total_clicks"),
+                "formatted_value": _meta_ads_format_number(dataset_data.get("total_clicks")),
+                "metrics": traffic_metrics,
+                "chart": _meta_ads_chart(label="Daily Clicks", metric="clicks", points=daily_clicks, timeframe=report_timeframe),
+                "daily_clicks": daily_clicks,
+                "provider": "meta_ads",
+                "source_metrics_used": ["clicks", "inline_link_clicks", "ctr", "cpc"],
+            },
+        ),
+        _meta_report_block(
+            "stat",
+            4,
+            {
+                "slide_number": 4,
+                "slide_type": "meta_ads_results_cost_efficiency",
+                "semantic_name": "meta_ads_results_cost_efficiency",
+                "title": "Results / Cost Efficiency",
+                "label": "Results / Cost Efficiency",
+                "value": dataset_data.get("total_results"),
+                "current_value": dataset_data.get("total_results"),
+                "formatted_value": _meta_ads_format_number(dataset_data.get("total_results")),
+                "metrics": result_metrics,
+                "chart": _meta_ads_chart(label="Daily Results", metric="results", points=daily_results, timeframe=report_timeframe),
+                "top_campaigns": dataset_data.get("top_campaigns") if isinstance(dataset_data.get("top_campaigns"), list) else [],
+                "daily_results": daily_results,
+                "cost_per_action_type": cost_per_action_type,
+                "provider": "meta_ads",
+                "source_metrics_used": ["actions", "cost_per_action_type", "campaign_id", "campaign_name"],
+            },
+        ),
+        _meta_report_block(
+            "text",
+            5,
+            {
+                "slide_number": 5,
+                "slide_type": "meta_ads_executive_summary",
+                "semantic_name": "meta_ads_executive_summary",
+                "title": "Executive Summary",
+                "label": "Executive Summary",
+                "text": _meta_ads_executive_summary(dataset_data, report_timeframe),
+                "summary": _meta_ads_executive_summary(dataset_data, report_timeframe),
+                "metrics_summary": {
+                    "total_spend": _meta_ads_format_currency(dataset_data.get("total_spend"), currency),
+                    "total_impressions": _meta_ads_format_number(dataset_data.get("total_impressions")),
+                    "total_reach": _meta_ads_format_number(dataset_data.get("total_reach")),
+                    "total_clicks": _meta_ads_format_number(dataset_data.get("total_clicks")),
+                    "average_ctr": _meta_ads_format_percent(dataset_data.get("average_ctr")),
+                    "average_cpc": _meta_ads_format_currency(dataset_data.get("average_cpc"), currency),
+                    "average_cpm": _meta_ads_format_currency(dataset_data.get("average_cpm"), currency),
+                    "total_results": _meta_ads_format_number(dataset_data.get("total_results")),
+                    "cost_per_result": _meta_ads_format_currency(dataset_data.get("cost_per_result"), currency),
+                },
+                "top_campaigns": dataset_data.get("top_campaigns") if isinstance(dataset_data.get("top_campaigns"), list) else [],
+                "provider": "meta_ads",
+                "source_metrics_used": [
+                    "spend",
+                    "impressions",
+                    "reach",
+                    "clicks",
+                    "ctr",
+                    "cpc",
+                    "cpm",
+                    "actions",
+                    "cost_per_action_type",
+                ],
+            },
+            ["text"],
+        ),
+    ]
+
+
+def _create_meta_ads_dataset_report(
+    *,
+    dataset: Dataset,
+    payload: MetaAdsReportCreateIn,
+    current_user: User,
+    request: Request | None,
+    db: Session,
+    report_source: str,
+    generation_mode: str,
+    locale: str,
+    ai_mode: str,
+    slide_limits: dict[str, Any],
+    report_timeframe: dict[str, Any],
+    report_row: dict[str, Any],
+) -> MetaPagesReportCreateOut:
+    ai_plan_context = build_ai_agent_plan_context(
+        plan=slide_limits["plan"],
+        effective_slide_limit=slide_limits["effective_slide_limit"],
+        dataset_context={"dataset_id": dataset.id},
+        report_context={"generation_mode": generation_mode, "ai_mode": ai_mode},
+    )
+    if ai_mode == "agents" and not ai_plan_context["allow_ai_agents"]:
+        raise http_error(
+            403,
+            "plan_restricted",
+            "AI agents are not available for current plan.",
+        )
+    ai_agent_metadata = build_ai_agent_metadata(
+        ai_mode=ai_mode,
+        allow_ai_agents=bool(ai_plan_context["allow_ai_agents"]),
+    )
+    title = payload.title or "Meta Ads Performance Report"
+    report_branding = resolve_report_branding_for_workspace(db, dataset.workspace_id)
+    block_specs = _build_meta_ads_5_blocks(
+        dataset_data=report_row,
+        report_timeframe=report_timeframe,
+        branding=report_branding,
+        locale=locale,
+        ai_mode=ai_mode,
+        template=str(payload.template or "").strip() or None,
+    )
+    block_specs = block_specs[: int(slide_limits["effective_slide_limit"])]
+
+    report = Report(
+        workspace_id=dataset.workspace_id,
+        dataset_id=dataset.id,
+        name=title,
+        description=json.dumps(
+            {
+                "source": report_source,
+                "locale": locale,
+                "timeframe": report_timeframe,
+                "branding": report_branding,
+                "requested_slides": slide_limits["requested_slides"],
+                "effective_slide_limit": slide_limits["effective_slide_limit"],
+                "plan_at_generation": slide_limits["plan"],
+                "generation_mode": generation_mode,
+                "plan_capabilities": slide_limits["capabilities"],
+                **ai_agent_metadata,
+            }
+        ),
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    record_first_report_conversion(db, user_id=current_user.id)
+    db.commit()
+
+    report_version = ReportVersion(report_id=report.id, version=1)
+    db.add(report_version)
+    db.commit()
+    db.refresh(report_version)
+
+    blocks = [
+        ReportBlock(
+            report_version_id=report_version.id,
+            type=str(block_spec["type"]),
+            order=int(block_spec["order"]),
+            data_json=str(block_spec["data_json"]),
+            editable_fields_json=str(block_spec["editable_fields_json"]),
+        )
+        for block_spec in block_specs
+    ]
+    for block in blocks:
+        db.add(block)
+    db.commit()
+
+    try:
+        _generate_and_store_report_thumbnail(
+            db=db,
+            report=report,
+            report_version=report_version,
+            user_id=current_user.id,
+            sync_branding_from_user=False,
+        )
+    except HTTPException:
+        logger.exception("Meta Ads thumbnail generation failed", extra={"report_id": report.id})
+    except Exception:
+        logger.exception("Unexpected Meta Ads thumbnail generation failure", extra={"report_id": report.id})
+
+    _track_meta_event(
+        event_name="ReportCreated",
+        user=current_user,
+        request=request,
+        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
+        custom_data={
+            "report_id": report.id,
+            "workspace_id": dataset.workspace_id,
+            "dataset_id": dataset.id,
+            "generation_mode": generation_mode,
+            "report_source": report_source,
+        },
+    )
+    integration_metadata = derive_report_integration_metadata(db, report, dataset=dataset)
+    return MetaPagesReportCreateOut(
+        report_id=report.id,
+        version_id=report_version.id,
+        version=report_version.version,
+        dataset_id=dataset.id,
+        title=title,
+        locale=locale,
+        status="ready",
+        selected_integration_metadata=integration_metadata,
+    )
+
+
 def _multi_source_source_label(source_type: str) -> str:
     normalized = str(source_type or "").strip().lower()
     return {
@@ -21145,6 +21701,22 @@ def _create_meta_dataset_report(
         report_row["timeframe_preset"] = report_timeframe["preset"]
     if normalized_metrics:
         report_row["normalized_report_metrics"] = normalized_metrics
+
+    if _is_meta_ads_report_context(report_source, generation_mode, report_row):
+        return _create_meta_ads_dataset_report(
+            dataset=dataset,
+            payload=payload,
+            current_user=current_user,
+            request=request,
+            db=db,
+            report_source=report_source,
+            generation_mode=generation_mode,
+            locale=locale,
+            ai_mode=ai_mode,
+            slide_limits=slide_limits,
+            report_timeframe=report_timeframe,
+            report_row=report_row,
+        )
 
     report_inputs = extract_meta_pages_report_inputs(report_row)
     if str(report_inputs.get("integration_type") or "").strip() == "instagram_business":
