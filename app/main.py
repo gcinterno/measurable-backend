@@ -24265,6 +24265,186 @@ def _resolve_meta_ads_status_integration(
     return _get_or_create_meta_ads_integration_for_workspace(db, resolved_workspace_id)
 
 
+META_ADS_INSIGHT_DAILY_UPDATE_FIELDS = (
+    "integration_id",
+    "workspace_id",
+    "date_stop",
+    "spend",
+    "impressions",
+    "reach",
+    "clicks",
+    "inline_link_clicks",
+    "ctr",
+    "cpc",
+    "cpm",
+    "frequency",
+    "actions",
+    "cost_per_action_type",
+    "campaign_name",
+    "adset_name",
+    "ad_name",
+)
+
+
+def _meta_ads_optional_text(value: Any) -> str | None:
+    return str(value or "").strip() or None
+
+
+def _meta_ads_insight_grain_key(values: dict[str, Any]) -> tuple[int, date, str | None, str | None, str | None]:
+    return (
+        int(values["meta_ad_account_id"]),
+        values["date_start"],
+        values.get("campaign_id"),
+        values.get("adset_id"),
+        values.get("ad_id"),
+    )
+
+
+def _meta_ads_insight_grain_key_from_model(
+    row: MetaAdsInsightDaily,
+) -> tuple[int, date, str | None, str | None, str | None]:
+    return (
+        int(row.meta_ad_account_id),
+        row.date_start,
+        row.campaign_id,
+        row.adset_id,
+        row.ad_id,
+    )
+
+
+def _meta_ads_insight_daily_values(
+    *,
+    integration: Integration,
+    account: MetaAdAccount,
+    row: dict[str, Any],
+) -> dict[str, Any] | None:
+    date_start_raw = str(row.get("date_start") or "").strip()
+    date_stop_raw = str(row.get("date_stop") or date_start_raw).strip()
+    if not date_start_raw or not date_stop_raw:
+        return None
+    try:
+        row_date_start = date.fromisoformat(date_start_raw)
+        row_date_stop = date.fromisoformat(date_stop_raw)
+    except ValueError:
+        return None
+
+    return {
+        "integration_id": integration.id,
+        "workspace_id": integration.workspace_id,
+        "meta_ad_account_id": account.id,
+        "date_start": row_date_start,
+        "date_stop": row_date_stop,
+        "spend": _meta_number(row.get("spend")),
+        "impressions": _meta_ads_int(row.get("impressions")) or None,
+        "reach": _meta_ads_int(row.get("reach")) or None,
+        "clicks": _meta_ads_int(row.get("clicks")) or None,
+        "inline_link_clicks": _meta_ads_int(row.get("inline_link_clicks")) or None,
+        "ctr": _meta_number(row.get("ctr")),
+        "cpc": _meta_number(row.get("cpc")),
+        "cpm": _meta_number(row.get("cpm")),
+        "frequency": _meta_number(row.get("frequency")),
+        "actions": row.get("actions") if isinstance(row.get("actions"), list) else None,
+        "cost_per_action_type": (
+            row.get("cost_per_action_type")
+            if isinstance(row.get("cost_per_action_type"), list)
+            else None
+        ),
+        "campaign_id": _meta_ads_optional_text(row.get("campaign_id")),
+        "campaign_name": _meta_ads_optional_text(row.get("campaign_name")),
+        "adset_id": _meta_ads_optional_text(row.get("adset_id")),
+        "adset_name": _meta_ads_optional_text(row.get("adset_name")),
+        "ad_id": _meta_ads_optional_text(row.get("ad_id")),
+        "ad_name": _meta_ads_optional_text(row.get("ad_name")),
+    }
+
+
+def _meta_ads_dataset_row_from_insight_values(values: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "date_start": values["date_start"].isoformat(),
+        "date_stop": values["date_stop"].isoformat(),
+        "spend": round(_meta_ads_decimal(values.get("spend")), 2),
+        "impressions": _meta_ads_int(values.get("impressions")),
+        "reach": _meta_ads_int(values.get("reach")),
+        "clicks": _meta_ads_int(values.get("clicks")),
+        "inline_link_clicks": _meta_ads_int(values.get("inline_link_clicks")),
+        "ctr": _meta_number(values.get("ctr")),
+        "cpc": _meta_number(values.get("cpc")),
+        "cpm": _meta_number(values.get("cpm")),
+        "frequency": _meta_number(values.get("frequency")),
+        "actions": values.get("actions") if isinstance(values.get("actions"), list) else [],
+        "cost_per_action_type": (
+            values.get("cost_per_action_type")
+            if isinstance(values.get("cost_per_action_type"), list)
+            else []
+        ),
+        "campaign_id": values.get("campaign_id"),
+        "campaign_name": values.get("campaign_name"),
+        "adset_id": values.get("adset_id"),
+        "adset_name": values.get("adset_name"),
+        "ad_id": values.get("ad_id"),
+        "ad_name": values.get("ad_name"),
+    }
+
+
+def _upsert_meta_ads_insight_daily_rows(
+    db: Session,
+    *,
+    account: MetaAdAccount,
+    rows: list[dict[str, Any]],
+) -> None:
+    if not rows:
+        return
+
+    updated_at = datetime.now(timezone.utc)
+    date_starts = sorted({row["date_start"] for row in rows})
+    existing_rows = (
+        db.query(MetaAdsInsightDaily)
+        .filter(
+            MetaAdsInsightDaily.meta_ad_account_id == account.id,
+            MetaAdsInsightDaily.date_start.in_(date_starts),
+        )
+        .all()
+    )
+    existing_by_key = {
+        _meta_ads_insight_grain_key_from_model(row): row
+        for row in existing_rows
+    }
+    rows_to_insert: list[dict[str, Any]] = []
+    for values in rows:
+        existing = existing_by_key.get(_meta_ads_insight_grain_key(values))
+        if existing is None:
+            rows_to_insert.append(values)
+            continue
+        for field in META_ADS_INSIGHT_DAILY_UPDATE_FIELDS:
+            setattr(existing, field, values[field])
+        existing.updated_at = updated_at
+        db.add(existing)
+
+    if not rows_to_insert:
+        return
+
+    if db.get_bind().dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        insert_stmt = pg_insert(MetaAdsInsightDaily).values(rows_to_insert)
+        excluded = insert_stmt.excluded
+        update_values = {
+            field: getattr(excluded, field)
+            for field in META_ADS_INSIGHT_DAILY_UPDATE_FIELDS
+        }
+        update_values["updated_at"] = updated_at
+        db.execute(
+            insert_stmt.on_conflict_do_update(
+                constraint="uq_meta_ads_insights_daily_grain",
+                set_=update_values,
+            )
+        )
+        return
+
+    for values in rows_to_insert:
+        db.add(MetaAdsInsightDaily(**values))
+
+
 def _run_meta_ads_sync(
     *,
     db: Session,
@@ -24287,81 +24467,19 @@ def _run_meta_ads_sync(
         until=str(timeframe_config["until"]),
     )
 
-    db.query(MetaAdsInsightDaily).filter(
-        MetaAdsInsightDaily.meta_ad_account_id == account.id,
-        MetaAdsInsightDaily.date_start >= date.fromisoformat(str(timeframe_config["since"])),
-        MetaAdsInsightDaily.date_start <= date.fromisoformat(str(timeframe_config["until"])),
-    ).delete(synchronize_session=False)
-
-    persisted_rows: list[dict[str, Any]] = []
+    deduped_insight_rows: dict[tuple[int, date, str | None, str | None, str | None], dict[str, Any]] = {}
     for row in insights:
-        date_start_raw = str(row.get("date_start") or "").strip()
-        date_stop_raw = str(row.get("date_stop") or date_start_raw).strip()
-        if not date_start_raw or not date_stop_raw:
+        values = _meta_ads_insight_daily_values(integration=integration, account=account, row=row)
+        if values is None:
             continue
-        try:
-            row_date_start = date.fromisoformat(date_start_raw)
-            row_date_stop = date.fromisoformat(date_stop_raw)
-        except ValueError:
-            continue
+        deduped_insight_rows[_meta_ads_insight_grain_key(values)] = values
 
-        db.add(
-            MetaAdsInsightDaily(
-                integration_id=integration.id,
-                workspace_id=integration.workspace_id,
-                meta_ad_account_id=account.id,
-                date_start=row_date_start,
-                date_stop=row_date_stop,
-                spend=_meta_number(row.get("spend")),
-                impressions=_meta_ads_int(row.get("impressions")) or None,
-                reach=_meta_ads_int(row.get("reach")) or None,
-                clicks=_meta_ads_int(row.get("clicks")) or None,
-                inline_link_clicks=_meta_ads_int(row.get("inline_link_clicks")) or None,
-                ctr=_meta_number(row.get("ctr")),
-                cpc=_meta_number(row.get("cpc")),
-                cpm=_meta_number(row.get("cpm")),
-                frequency=_meta_number(row.get("frequency")),
-                actions=row.get("actions") if isinstance(row.get("actions"), list) else None,
-                cost_per_action_type=(
-                    row.get("cost_per_action_type")
-                    if isinstance(row.get("cost_per_action_type"), list)
-                    else None
-                ),
-                campaign_id=str(row.get("campaign_id") or "").strip() or None,
-                campaign_name=str(row.get("campaign_name") or "").strip() or None,
-                adset_id=str(row.get("adset_id") or "").strip() or None,
-                adset_name=str(row.get("adset_name") or "").strip() or None,
-                ad_id=str(row.get("ad_id") or "").strip() or None,
-                ad_name=str(row.get("ad_name") or "").strip() or None,
-            )
-        )
-        persisted_rows.append(
-            {
-                "date_start": row_date_start.isoformat(),
-                "date_stop": row_date_stop.isoformat(),
-                "spend": round(_meta_ads_decimal(row.get("spend")), 2),
-                "impressions": _meta_ads_int(row.get("impressions")),
-                "reach": _meta_ads_int(row.get("reach")),
-                "clicks": _meta_ads_int(row.get("clicks")),
-                "inline_link_clicks": _meta_ads_int(row.get("inline_link_clicks")),
-                "ctr": _meta_number(row.get("ctr")),
-                "cpc": _meta_number(row.get("cpc")),
-                "cpm": _meta_number(row.get("cpm")),
-                "frequency": _meta_number(row.get("frequency")),
-                "actions": row.get("actions") if isinstance(row.get("actions"), list) else [],
-                "cost_per_action_type": (
-                    row.get("cost_per_action_type")
-                    if isinstance(row.get("cost_per_action_type"), list)
-                    else []
-                ),
-                "campaign_id": str(row.get("campaign_id") or "").strip() or None,
-                "campaign_name": str(row.get("campaign_name") or "").strip() or None,
-                "adset_id": str(row.get("adset_id") or "").strip() or None,
-                "adset_name": str(row.get("adset_name") or "").strip() or None,
-                "ad_id": str(row.get("ad_id") or "").strip() or None,
-                "ad_name": str(row.get("ad_name") or "").strip() or None,
-            }
-        )
+    insight_rows = list(deduped_insight_rows.values())
+    _upsert_meta_ads_insight_daily_rows(db, account=account, rows=insight_rows)
+    persisted_rows = [
+        _meta_ads_dataset_row_from_insight_values(values)
+        for values in insight_rows
+    ]
 
     account.last_synced_at = datetime.now(timezone.utc)
     integration.status = "connected"

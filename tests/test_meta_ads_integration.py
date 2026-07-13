@@ -731,53 +731,55 @@ def test_meta_ads_accounts_select_sync_and_disconnect(client, monkeypatch):
     monkeypatch.setattr(main_module, "_meta_ads_reporting_tables_available", lambda: True)
     monkeypatch.setattr(main_module, "_table_available", lambda _name: True)
     monkeypatch.setattr("app.main.boto3.client", lambda *_args, **_kwargs: _FakeS3Client())
-    monkeypatch.setattr(
-        "app.main.fetch_campaign_insights",
-        lambda *_args, **_kwargs: [
-            {
-                "date_start": "2026-06-01",
-                "date_stop": "2026-06-01",
-                "spend": "125.50",
-                "impressions": "1000",
-                "reach": "850",
-                "clicks": "42",
-                "inline_link_clicks": "21",
-                "ctr": "4.2",
-                "cpc": "2.9881",
-                "cpm": "125.5",
-                "frequency": "1.18",
-                "actions": [{"action_type": "lead", "value": "3"}],
-                "cost_per_action_type": [{"action_type": "lead", "value": "41.8333"}],
-                "campaign_id": "cmp-1",
-                "campaign_name": "Launch",
-                "adset_id": "aset-1",
-                "adset_name": "Audience A",
-                "ad_id": "ad-1",
-                "ad_name": "Creative A",
-            },
-            {
-                "date_start": "2026-06-02",
-                "date_stop": "2026-06-02",
-                "spend": "74.50",
-                "impressions": "500",
-                "reach": "410",
-                "clicks": "18",
-                "inline_link_clicks": "9",
-                "ctr": "3.6",
-                "cpc": "4.1389",
-                "cpm": "149.0",
-                "frequency": "1.22",
-                "actions": [{"action_type": "lead", "value": "2"}],
-                "cost_per_action_type": [{"action_type": "lead", "value": "37.25"}],
-                "campaign_id": "cmp-1",
-                "campaign_name": "Launch",
-                "adset_id": "aset-1",
-                "adset_name": "Audience A",
-                "ad_id": "ad-2",
-                "ad_name": "Creative B",
-            },
-        ],
-    )
+    insight_rows = [
+        {
+            "date_start": "2026-06-01",
+            "date_stop": "2026-06-01",
+            "spend": "125.50",
+            "impressions": "1000",
+            "reach": "850",
+            "clicks": "42",
+            "inline_link_clicks": "21",
+            "ctr": "4.2",
+            "cpc": "2.9881",
+            "cpm": "125.5",
+            "frequency": "1.18",
+            "actions": [{"action_type": "lead", "value": "3"}],
+            "cost_per_action_type": [{"action_type": "lead", "value": "41.8333"}],
+            "campaign_id": "cmp-1",
+            "campaign_name": "Launch",
+            "adset_id": "aset-1",
+            "adset_name": "Audience A",
+            "ad_id": "ad-1",
+            "ad_name": "Creative A",
+        },
+        {
+            "date_start": "2026-06-02",
+            "date_stop": "2026-06-02",
+            "spend": "74.50",
+            "impressions": "500",
+            "reach": "410",
+            "clicks": "18",
+            "inline_link_clicks": "9",
+            "ctr": "3.6",
+            "cpc": "4.1389",
+            "cpm": "149.0",
+            "frequency": "1.22",
+            "actions": [{"action_type": "lead", "value": "2"}],
+            "cost_per_action_type": [{"action_type": "lead", "value": "37.25"}],
+            "campaign_id": "cmp-1",
+            "campaign_name": "Launch",
+            "adset_id": "aset-1",
+            "adset_name": "Audience A",
+            "ad_id": "ad-2",
+            "ad_name": "Creative B",
+        },
+    ]
+
+    def fake_fetch_campaign_insights(*_args, **_kwargs):
+        return [dict(row) for row in insight_rows]
+
+    monkeypatch.setattr("app.main.fetch_campaign_insights", fake_fetch_campaign_insights)
     monkeypatch.setattr(main_module, "_revoke_meta_permissions", lambda _token: "success")
 
     accounts_response = client.get(
@@ -831,6 +833,106 @@ def test_meta_ads_accounts_select_sync_and_disconnect(client, monkeypatch):
         assert dataset.data["top_campaigns"][0]["campaign_id"] == "cmp-1"
         assert len(dataset.data["daily_trend"]) == 2
         assert db.query(MetaAdsInsightDaily).filter(MetaAdsInsightDaily.integration_id == integration_id).count() == 2
+    finally:
+        db.close()
+
+    insight_rows[:] = [
+        {
+            "date_start": "2026-06-01",
+            "date_stop": "2026-06-01",
+            "spend": "130.00",
+            "impressions": "1100",
+            "reach": "900",
+            "clicks": "45",
+            "inline_link_clicks": "24",
+            "ctr": "4.09",
+            "cpc": "2.8889",
+            "cpm": "118.1818",
+            "frequency": "1.20",
+            "actions": [{"action_type": "lead", "value": "3"}],
+            "cost_per_action_type": [{"action_type": "lead", "value": "43.3333"}],
+            "campaign_id": "cmp-1",
+            "campaign_name": "Launch",
+            "adset_id": "aset-1",
+            "adset_name": "Audience A",
+            "ad_id": "ad-1",
+            "ad_name": "Creative A",
+        },
+        {
+            "date_start": "2026-06-01",
+            "date_stop": "2026-06-01",
+            "spend": "150.00",
+            "impressions": "1200",
+            "reach": "950",
+            "clicks": "50",
+            "inline_link_clicks": "28",
+            "ctr": "4.1667",
+            "cpc": "3.0000",
+            "cpm": "125.0",
+            "frequency": "1.26",
+            "actions": [{"action_type": "lead", "value": "4"}],
+            "cost_per_action_type": [{"action_type": "lead", "value": "37.5"}],
+            "campaign_id": "cmp-1",
+            "campaign_name": "Launch Updated",
+            "adset_id": "aset-1",
+            "adset_name": "Audience A Updated",
+            "ad_id": "ad-1",
+            "ad_name": "Creative A Updated",
+        },
+        {
+            "date_start": "2026-06-02",
+            "date_stop": "2026-06-02",
+            "spend": "74.50",
+            "impressions": "500",
+            "reach": "410",
+            "clicks": "18",
+            "inline_link_clicks": "9",
+            "ctr": "3.6",
+            "cpc": "4.1389",
+            "cpm": "149.0",
+            "frequency": "1.22",
+            "actions": [{"action_type": "lead", "value": "2"}],
+            "cost_per_action_type": [{"action_type": "lead", "value": "37.25"}],
+            "campaign_id": "cmp-1",
+            "campaign_name": "Launch",
+            "adset_id": "aset-1",
+            "adset_name": "Audience A",
+            "ad_id": "ad-2",
+            "ad_name": "Creative B",
+        },
+    ]
+    second_sync_response = client.post(
+        "/integrations/meta-ads/sync",
+        headers=_auth_headers(refs["user_id"]),
+        json={"integration_id": integration_id, "timeframe": "last_7d"},
+    )
+    assert second_sync_response.status_code == 200
+    second_sync_payload = second_sync_response.json()
+    assert second_sync_payload["status"] == "synced"
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(MetaAdsInsightDaily)
+            .filter(MetaAdsInsightDaily.integration_id == integration_id)
+            .order_by(MetaAdsInsightDaily.date_start.asc(), MetaAdsInsightDaily.ad_id.asc())
+            .all()
+        )
+        assert len(rows) == 2
+        updated_row = next(row for row in rows if row.ad_id == "ad-1")
+        assert float(updated_row.spend) == 150.0
+        assert updated_row.impressions == 1200
+        assert updated_row.clicks == 50
+        assert updated_row.campaign_name == "Launch Updated"
+        assert updated_row.adset_name == "Audience A Updated"
+        assert updated_row.ad_name == "Creative A Updated"
+        assert updated_row.actions == [{"action_type": "lead", "value": "4"}]
+
+        second_dataset = db.get(Dataset, second_sync_payload["dataset_id"])
+        assert second_dataset is not None
+        assert second_dataset.data["integration_type"] == "meta_ads"
+        assert second_dataset.data["total_spend"] == 224.5
+        assert second_dataset.data["total_results"] == 6.0
     finally:
         db.close()
 
