@@ -116,6 +116,19 @@ class Settings(BaseSettings):
     instagram_app_id: str | None = Field(default=None, validation_alias="INSTAGRAM_APP_ID")
     instagram_app_secret: str | None = Field(default=None, validation_alias="INSTAGRAM_APP_SECRET")
     instagram_redirect_uri: str | None = Field(default=None, validation_alias="INSTAGRAM_REDIRECT_URI")
+    instagram_business_login_app_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("INSTAGRAM_BUSINESS_LOGIN_APP_ID", "INSTAGRAM_APP_ID"),
+    )
+    instagram_business_login_app_secret: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("INSTAGRAM_BUSINESS_LOGIN_APP_SECRET", "INSTAGRAM_APP_SECRET"),
+    )
+    instagram_business_login_redirect_uri: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("INSTAGRAM_BUSINESS_LOGIN_REDIRECT_URI", "INSTAGRAM_REDIRECT_URI"),
+    )
+    instagram_graph_api_version: str = Field(default="v19.0", validation_alias="INSTAGRAM_GRAPH_API_VERSION")
     instagram_oauth_authorize_url: str = Field(
         default="https://api.instagram.com/oauth/authorize",
         validation_alias="INSTAGRAM_OAUTH_AUTHORIZE_URL",

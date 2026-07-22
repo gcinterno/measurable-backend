@@ -1013,6 +1013,40 @@ class InstagramBusinessStatusOut(BaseModel):
     ] = "disconnected"
 
 
+class InstagramBusinessLoginConnectOut(BaseModel):
+    provider: str = "instagram_business_login"
+    integration_id: int
+    auth_url: str
+    scope: str
+    scopes: list[str] = Field(default_factory=list)
+    message: str
+
+
+class InstagramBusinessLoginStatusOut(BaseModel):
+    provider: str = "instagram_business_login"
+    connected: bool = False
+    status: Literal["connected", "needs_permission", "no_token", "disconnected", "error"] = "disconnected"
+    integration_id: Optional[int] = None
+    account_count: int = 0
+    missing_scopes: list[str] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
+class InstagramBusinessLoginAccountOut(BaseModel):
+    id: str
+    instagram_user_id: str
+    username: Optional[str] = None
+    name: Optional[str] = None
+    account_type: Optional[str] = None
+    integration_id: int
+
+
+class InstagramBusinessLoginAccountsOut(BaseModel):
+    provider: str = "instagram_business_login"
+    integration_id: Optional[int] = None
+    accounts: list[InstagramBusinessLoginAccountOut] = Field(default_factory=list)
+
+
 class MetaAdsSelectAccountIn(BaseModel):
     integration_id: Optional[int] = None
     workspace_id: Optional[int] = None
@@ -1339,6 +1373,16 @@ class InstagramBusinessSyncIn(BaseModel):
     end_date: Optional[str] = None
 
 
+class InstagramBusinessLoginSyncIn(BaseModel):
+    workspace_id: Optional[int] = None
+    integration_id: Optional[int] = None
+    instagram_account_id: str
+    timeframe: str = "last_30d"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    force_live: bool = True
+
+
 class InstagramBusinessSyncOut(BaseModel):
     integration_id: int
     dataset_id: int
@@ -1348,6 +1392,22 @@ class InstagramBusinessSyncOut(BaseModel):
     account_id: str
     account_name: str
     status: str
+    timeframe: Optional[dict] = None
+
+
+class InstagramBusinessLoginSyncOut(BaseModel):
+    integration_id: int
+    dataset_id: int
+    dataset_file_id: int
+    provider: str = "instagram_business_login"
+    source_type: str = "instagram_business"
+    record_type: str = "instagram_account"
+    account_id: str
+    account_name: str
+    status: str
+    has_data: bool = False
+    metrics_successful: list[str] = Field(default_factory=list)
+    metrics_failed: list[str] = Field(default_factory=list)
     timeframe: Optional[dict] = None
 
 

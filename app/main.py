@@ -114,12 +114,26 @@ from .integrations.shopify import (
 )
 from .integrations.meta_capi import send_meta_capi_event
 from .integrations.instagram_business import (
+    INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+    INSTAGRAM_BUSINESS_LOGIN_CALLBACK_PATH,
+    INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+    INSTAGRAM_BUSINESS_LOGIN_OAUTH_SCOPE,
+    INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+    INSTAGRAM_BUSINESS_LOGIN_SCOPES,
     INSTAGRAM_BUSINESS_CALLBACK_PATH,
+    build_instagram_business_login_auth_url,
+    decode_instagram_business_login_state,
     decode_instagram_business_state,
+    encode_instagram_business_login_state,
     encode_instagram_business_state,
+    exchange_instagram_business_login_code_for_token,
     exchange_instagram_business_code_for_token,
+    fetch_instagram_business_login_insights_metric_with_metadata,
+    fetch_instagram_business_login_profile,
     fetch_instagram_business_profile,
+    get_missing_instagram_business_login_config_fields,
     get_missing_instagram_business_config_fields,
+    get_instagram_business_login_redirect_uri,
     get_instagram_business_redirect_uri,
 )
 from .report_metric_catalog import (
@@ -201,6 +215,12 @@ from .schemas import (
     DatasetDetailOut,
     DatasetUploadOut,
     InstagramBusinessReportCreateIn,
+    InstagramBusinessLoginAccountsOut,
+    InstagramBusinessLoginAccountOut,
+    InstagramBusinessLoginConnectOut,
+    InstagramBusinessLoginStatusOut,
+    InstagramBusinessLoginSyncIn,
+    InstagramBusinessLoginSyncOut,
     InstagramBusinessSyncOut,
     OnboardingCompleteOut,
     OnboardingStateOut,
@@ -6482,6 +6502,10 @@ def _instagram_business_token_account_external_id(integration_id: int) -> str:
     return f"instagram_business_token_{integration_id}"
 
 
+def _instagram_business_login_token_account_external_id(integration_id: int) -> str:
+    return f"instagram_business_login_token_{integration_id}"
+
+
 def _meta_page_account_external_id(page_id: str) -> str:
     return f"{META_PAGE_ACCOUNT_PREFIX}{page_id}"
 
@@ -6566,6 +6590,28 @@ def _get_or_create_instagram_business_integration_for_workspace(db: Session, wor
         workspace_id=workspace_id,
         provider="instagram_business",
         name="Instagram Business",
+        status="disconnected",
+    )
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+    return integration
+
+
+def _get_or_create_instagram_business_login_integration_for_workspace(db: Session, workspace_id: int) -> Integration:
+    integration = (
+        db.query(Integration)
+        .filter(Integration.workspace_id == workspace_id, Integration.provider == INSTAGRAM_BUSINESS_LOGIN_PROVIDER)
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    if integration:
+        return integration
+
+    integration = Integration(
+        workspace_id=workspace_id,
+        provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        name="Instagram Business Login",
         status="disconnected",
     )
     db.add(integration)
@@ -11574,6 +11620,97 @@ def _meta_oauth_popup_response(
     return HTMLResponse(content=html, status_code=200)
 
 
+def _instagram_business_login_popup_response(
+    *,
+    status: str,
+    integration_id: int | None = None,
+    workspace_id: int | None = None,
+    error: str | None = None,
+    message: str | None = None,
+    missing_scopes: list[str] | None = None,
+) -> HTMLResponse:
+    target_url = _meta_oauth_frontend_callback_url(
+        status=status,
+        source=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        integration_id=integration_id,
+        error=error,
+        message=message,
+        provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        missing_scopes=missing_scopes,
+        callback_path=INSTAGRAM_BUSINESS_LOGIN_CALLBACK_PATH,
+    )
+    frontend_origin = _meta_frontend_origin()
+    success_statuses = {"connected", "connected_no_assets"}
+    event_type = "MEASURABLE_META_CONNECT_SUCCESS" if status in success_statuses else "MEASURABLE_META_CONNECT_ERROR"
+    canonical_status = status if status in {"connected", "needs_permission"} else "error"
+    canonical_payload: dict[str, Any] = {
+        "type": "measurable:integration-oauth-complete",
+        "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        "status": canonical_status,
+        "integrationId": integration_id,
+        "workspaceId": workspace_id,
+        "message": message,
+        "error": error,
+    }
+    legacy_payload: dict[str, Any] = {
+        "type": event_type,
+        "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        "status": status,
+    }
+    if integration_id is not None:
+        legacy_payload["integrationId"] = integration_id
+    if workspace_id is not None:
+        legacy_payload["workspaceId"] = workspace_id
+    if missing_scopes:
+        legacy_payload["missingScopes"] = missing_scopes
+        canonical_payload["missingScopes"] = missing_scopes
+    if message:
+        legacy_payload["message"] = message
+    if error:
+        legacy_payload["error"] = error
+
+    fallback_message = (
+        "Connection completed. You can close this window."
+        if status in success_statuses
+        else "We could not complete the connection. You can close this window and try again."
+    )
+    html = f"""<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Instagram Business connection</title>
+  </head>
+  <body>
+    <main style="font-family: Arial, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5;">
+      <h1 style="font-size: 1.25rem;">{fallback_message}</h1>
+      <p>{message or "If this window does not close automatically, you can return to Measurable."}</p>
+      <p><a href="{target_url}">Volver a Measurable</a></p>
+    </main>
+    <script>
+      (function () {{
+        const canonicalPayload = {json.dumps(canonical_payload)};
+        const legacyPayload = {json.dumps(legacy_payload)};
+        const targetOrigin = {json.dumps(frontend_origin)};
+        const fallbackUrl = {json.dumps(target_url)};
+        try {{
+          if (window.opener && !window.opener.closed) {{
+            window.opener.postMessage(canonicalPayload, targetOrigin);
+            window.opener.postMessage(legacyPayload, targetOrigin);
+            window.setTimeout(function () {{ window.close(); }}, 600);
+            return;
+          }}
+        }} catch (error) {{
+          console.error("Instagram Business Login popup callback failed", error);
+        }}
+        window.location.replace(fallbackUrl);
+      }})();
+    </script>
+  </body>
+</html>"""
+    return HTMLResponse(content=html, status_code=200)
+
+
 def _meta_api_error_details(exc: HTTPException) -> dict[str, Any]:
     detail = exc.detail if isinstance(exc.detail, dict) else {}
     meta_error = detail.get("meta_error") if isinstance(detail.get("meta_error"), dict) else {}
@@ -14055,6 +14192,43 @@ def _get_instagram_business_token_account(db: Session, integration_id: int) -> I
         )
         .first()
     )
+
+
+def _get_instagram_business_login_token_account(db: Session, integration_id: int) -> IntegrationAccount | None:
+    return (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration_id,
+            IntegrationAccount.external_account_id == _instagram_business_login_token_account_external_id(integration_id),
+        )
+        .first()
+    )
+
+
+def _ensure_instagram_business_login_token_account(db: Session, integration: Integration) -> IntegrationAccount:
+    token_account = _get_instagram_business_login_token_account(db, integration.id)
+    if token_account is not None:
+        return token_account
+
+    token_account = IntegrationAccount(
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+        external_account_id=_instagram_business_login_token_account_external_id(integration.id),
+        display_name="Instagram Business Login token store",
+    )
+    db.add(token_account)
+    db.commit()
+    db.refresh(token_account)
+    return token_account
+
+
+def _resolve_instagram_business_login_access_token(
+    db: Session,
+    integration: Integration,
+) -> tuple[bool, bool, str | None]:
+    token_account = _get_instagram_business_login_token_account(db, integration.id)
+    latest_token = _get_latest_integration_token(db, token_account.id) if token_account else None
+    return _resolve_integration_token_value(latest_token)
 
 
 def _get_meta_business_suite_token_account(db: Session, integration_id: int) -> IntegrationAccount | None:
@@ -20803,7 +20977,12 @@ def _resolve_instagram_business_report_dataset(
             _require_workspace_access(db, current_user.id, workspace_id)
         else:
             _require_workspace_access(db, current_user.id, requested_integration.workspace_id)
-            if requested_integration.provider not in {"meta_business_suite", "instagram_business", "meta"}:
+            if requested_integration.provider not in {
+                "meta_business_suite",
+                "instagram_business",
+                INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "meta",
+            }:
                 raise http_error(
                     400,
                     "invalid_integration_provider",
@@ -20842,6 +21021,15 @@ def _resolve_instagram_business_report_dataset(
             .order_by(Integration.id.asc())
             .first()
         )
+        instagram_login = (
+            db.query(Integration)
+            .filter(
+                Integration.workspace_id == workspace_id,
+                Integration.provider == INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            )
+            .order_by(Integration.id.asc())
+            .first()
+        )
         legacy_meta = (
             db.query(Integration)
             .filter(
@@ -20853,7 +21041,7 @@ def _resolve_instagram_business_report_dataset(
         )
         suite_integration_id = suite_integration.id if suite_integration else None
         instagram_child_integration_id = instagram_child.id if instagram_child else None
-        for integration in (instagram_child, legacy_meta, suite_integration, requested_integration):
+        for integration in (instagram_child, instagram_login, legacy_meta, suite_integration, requested_integration):
             if integration is not None:
                 relevant_integration_ids.add(int(integration.id))
 
@@ -27195,6 +27383,1079 @@ def instagram_business_status(
             ],
             normalized_status,
         ),
+    )
+
+
+def _mask_instagram_business_login_user_id(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= 6:
+        return "***"
+    return f"{text[:3]}...{text[-3:]}"
+
+
+def _instagram_business_login_scopes_from_token_payload(payload: dict[str, Any]) -> list[str]:
+    raw_scopes = payload.get("scope") or payload.get("scopes") or payload.get("permissions")
+    if isinstance(raw_scopes, str):
+        return [scope.strip() for scope in raw_scopes.replace(" ", ",").split(",") if scope.strip()]
+    if isinstance(raw_scopes, list):
+        return [str(scope).strip() for scope in raw_scopes if str(scope).strip()]
+    return []
+
+
+def _instagram_business_login_missing_scopes(granted_scopes: list[str]) -> list[str]:
+    if not granted_scopes:
+        return []
+    granted = {str(scope).strip() for scope in granted_scopes if str(scope).strip()}
+    return [scope for scope in INSTAGRAM_BUSINESS_LOGIN_SCOPES if scope not in granted]
+
+
+def _resolve_instagram_business_login_workspace_id(
+    db: Session,
+    current_user: User,
+    *,
+    workspace_id: int | None,
+) -> int:
+    resolved_workspace_id = _resolve_meta_connect_workspace_id(
+        db,
+        user_id=current_user.id,
+        requested_workspace_id=workspace_id,
+    )
+    _require_workspace_access(db, current_user.id, resolved_workspace_id)
+    return resolved_workspace_id
+
+
+def _resolve_instagram_business_login_integration(
+    db: Session,
+    current_user: User,
+    *,
+    integration_id: int | None,
+    workspace_id: int | None,
+) -> Integration:
+    if integration_id is not None:
+        integration = db.get(Integration, int(integration_id))
+        if integration is None or integration.provider != INSTAGRAM_BUSINESS_LOGIN_PROVIDER:
+            raise http_error(404, "integration_not_found", "Instagram Business Login integration not found.")
+        _require_workspace_access(db, current_user.id, integration.workspace_id)
+        if workspace_id is not None and int(workspace_id) != int(integration.workspace_id):
+            raise http_error(400, "workspace_mismatch", "workspace_id does not match the integration workspace.")
+        return integration
+
+    resolved_workspace_id = _resolve_instagram_business_login_workspace_id(
+        db,
+        current_user,
+        workspace_id=workspace_id,
+    )
+    return _get_or_create_instagram_business_login_integration_for_workspace(db, resolved_workspace_id)
+
+
+def _instagram_business_login_account_records(db: Session, integration: Integration) -> list[MetaPage]:
+    return (
+        db.query(MetaPage)
+        .filter(
+            MetaPage.integration_id == integration.id,
+            MetaPage.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+        )
+        .order_by(MetaPage.updated_at.desc(), MetaPage.id.desc())
+        .all()
+    )
+
+
+def _instagram_business_login_account_out(record: MetaPage) -> InstagramBusinessLoginAccountOut:
+    return InstagramBusinessLoginAccountOut(
+        id=record.page_id,
+        instagram_user_id=record.page_id,
+        username=record.instagram_username,
+        name=record.name,
+        account_type=record.category,
+        integration_id=record.integration_id,
+    )
+
+
+def _instagram_business_login_status_payload(
+    db: Session,
+    integration: Integration | None,
+) -> InstagramBusinessLoginStatusOut:
+    if integration is None:
+        return InstagramBusinessLoginStatusOut(
+            provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            connected=False,
+            status="disconnected",
+            integration_id=None,
+            account_count=0,
+            missing_scopes=[],
+            message="Connect Instagram Business with Instagram Login.",
+        )
+
+    token_present, token_decrypt_ok, access_token = _resolve_instagram_business_login_access_token(db, integration)
+    account_records = _instagram_business_login_account_records(db, integration)
+    account_count = len(account_records)
+    granted_scopes: list[str] = []
+    for record in account_records:
+        if isinstance(record.perms, list):
+            granted_scopes.extend(str(scope).strip() for scope in record.perms if str(scope).strip())
+    missing_scopes = _instagram_business_login_missing_scopes(list(dict.fromkeys(granted_scopes)))
+
+    if not token_present or not access_token:
+        return InstagramBusinessLoginStatusOut(
+            provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            connected=False,
+            status="no_token",
+            integration_id=integration.id,
+            account_count=account_count,
+            missing_scopes=[],
+            message="Connect Instagram Business with Instagram Login.",
+        )
+    if not token_decrypt_ok:
+        return InstagramBusinessLoginStatusOut(
+            provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            connected=False,
+            status="error",
+            integration_id=integration.id,
+            account_count=account_count,
+            missing_scopes=[],
+            message="Instagram Business Login token could not be read.",
+        )
+    if missing_scopes:
+        return InstagramBusinessLoginStatusOut(
+            provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            connected=False,
+            status="needs_permission",
+            integration_id=integration.id,
+            account_count=account_count,
+            missing_scopes=missing_scopes,
+            message="Reconnect Instagram Business Login to grant required permissions.",
+        )
+    return InstagramBusinessLoginStatusOut(
+        provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        connected=True,
+        status="connected",
+        integration_id=integration.id,
+        account_count=account_count,
+        missing_scopes=[],
+        message=None,
+    )
+
+
+@app.get("/integrations/instagram-business-login/connect", response_model=InstagramBusinessLoginConnectOut)
+def instagram_business_login_connect(
+    workspace_id: int | None = Query(default=None),
+    reconnect: bool = Query(default=False),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramBusinessLoginConnectOut:
+    missing_config = get_missing_instagram_business_login_config_fields()
+    if missing_config:
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_OAUTH_STARTED %s",
+            json.dumps(
+                {
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                    "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "missing_config": missing_config,
+                    "workspace_id": workspace_id,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        raise http_error(
+            409,
+            "instagram_business_login_config_missing",
+            "Instagram Business Login OAuth is not fully configured.",
+        )
+
+    resolved_workspace_id = _resolve_instagram_business_login_workspace_id(
+        db,
+        current_user,
+        workspace_id=workspace_id,
+    )
+    integration = _get_or_create_instagram_business_login_integration_for_workspace(db, resolved_workspace_id)
+    state = encode_instagram_business_login_state(
+        {
+            "workspace_id": resolved_workspace_id,
+            "user_id": current_user.id,
+            "integration_id": integration.id,
+            "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            "source": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            "integration_type": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+            "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+            "requested_scopes": INSTAGRAM_BUSINESS_LOGIN_SCOPES,
+            "reconnect": bool(reconnect),
+        }
+    )
+    auth_url = build_instagram_business_login_auth_url(state)
+    logger.info(
+        "INSTAGRAM_BUSINESS_LOGIN_OAUTH_STARTED %s",
+        json.dumps(
+            {
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                "workspace_id": resolved_workspace_id,
+                "integration_id": integration.id,
+                "scopes_requested": INSTAGRAM_BUSINESS_LOGIN_SCOPES,
+                "redirect_uri": get_instagram_business_login_redirect_uri(),
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
+    return InstagramBusinessLoginConnectOut(
+        provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        integration_id=integration.id,
+        auth_url=auth_url,
+        scope=INSTAGRAM_BUSINESS_LOGIN_OAUTH_SCOPE,
+        scopes=INSTAGRAM_BUSINESS_LOGIN_SCOPES,
+        message="Connect Instagram Business with Instagram Login.",
+    )
+
+
+@app.get("/integrations/instagram-business-login/status", response_model=InstagramBusinessLoginStatusOut)
+def instagram_business_login_status(
+    workspace_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramBusinessLoginStatusOut:
+    integration = _resolve_instagram_business_login_integration(
+        db,
+        current_user,
+        integration_id=None,
+        workspace_id=workspace_id,
+    )
+    status = _instagram_business_login_status_payload(db, integration)
+    logger.info(
+        "INSTAGRAM_BUSINESS_LOGIN_STATUS_RESOLVED %s",
+        json.dumps(
+            {
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "workspace_id": integration.workspace_id,
+                "integration_id": integration.id,
+                "status": status.status,
+                "connected": status.connected,
+                "account_count": status.account_count,
+                "missing_scopes": status.missing_scopes,
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
+    return status
+
+
+@app.get("/integrations/instagram-business-login/accounts", response_model=InstagramBusinessLoginAccountsOut)
+def instagram_business_login_accounts(
+    workspace_id: int | None = Query(default=None),
+    integration_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramBusinessLoginAccountsOut:
+    integration = _resolve_instagram_business_login_integration(
+        db,
+        current_user,
+        integration_id=integration_id,
+        workspace_id=workspace_id,
+    )
+    records = _instagram_business_login_account_records(db, integration)
+    return InstagramBusinessLoginAccountsOut(
+        provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        integration_id=integration.id,
+        accounts=[_instagram_business_login_account_out(record) for record in records],
+    )
+
+
+@app.get("/integrations/instagram-business-login/callback")
+def instagram_business_login_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_reason: str | None = None,
+    error_description: str | None = None,
+    db: Session = Depends(get_db),
+) -> Response:
+    if error:
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_CALLBACK_RECEIVED %s",
+            json.dumps(
+                {
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "callback_route": INSTAGRAM_BUSINESS_LOGIN_CALLBACK_PATH,
+                    "code_received": bool(code),
+                    "state_received": bool(state),
+                    "error": str(error or "").strip() or None,
+                    "error_reason": str(error_reason or "").strip() or None,
+                    "error_description": str(error_description or "").strip() or None,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return _instagram_business_login_popup_response(
+            status="error",
+            error=str(error_reason or error or "oauth_error"),
+            message=str(error_description or "Instagram Business Login returned an OAuth error."),
+        )
+
+    if not code or not state:
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_CALLBACK_RECEIVED %s",
+            json.dumps(
+                {
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "callback_route": INSTAGRAM_BUSINESS_LOGIN_CALLBACK_PATH,
+                    "code_received": bool(code),
+                    "state_received": bool(state),
+                    "error": "missing_required_query_params",
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return _instagram_business_login_popup_response(
+            status="error",
+            error="invalid_state",
+            message="The Instagram Business Login connection could not be verified. Please try again.",
+        )
+
+    try:
+        state_payload = decode_instagram_business_login_state(state)
+    except ValueError:
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_CALLBACK_RECEIVED %s",
+            json.dumps(
+                {
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "callback_route": INSTAGRAM_BUSINESS_LOGIN_CALLBACK_PATH,
+                    "code_received": bool(code),
+                    "state_received": bool(state),
+                    "error": "invalid_state",
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return _instagram_business_login_popup_response(
+            status="error",
+            error="invalid_state",
+            message="The Instagram Business Login connection request expired. Please try again.",
+        )
+
+    workspace_id = int(state_payload.get("workspace_id") or 0)
+    user_id = int(state_payload.get("user_id") or 0)
+    integration_id = int(state_payload.get("integration_id") or 0)
+    reconnect_requested = bool(state_payload.get("reconnect"))
+    integration = db.get(Integration, integration_id) if integration_id > 0 else None
+    if (
+        workspace_id <= 0
+        or user_id <= 0
+        or integration is None
+        or integration.provider != INSTAGRAM_BUSINESS_LOGIN_PROVIDER
+        or int(integration.workspace_id) != workspace_id
+    ):
+        return _instagram_business_login_popup_response(
+            status="error",
+            integration_id=integration_id if integration_id > 0 else None,
+            workspace_id=workspace_id if workspace_id > 0 else None,
+            error="invalid_state",
+            message="The Instagram Business Login connection request is invalid.",
+        )
+
+    logger.info(
+        "INSTAGRAM_BUSINESS_LOGIN_CALLBACK_RECEIVED %s",
+        json.dumps(
+            {
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "integration_id": integration_id,
+                "code_received": bool(code),
+                "state_received": bool(state),
+                "reconnect_requested": reconnect_requested,
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
+
+    try:
+        token_payload = exchange_instagram_business_login_code_for_token(code)
+        access_token = str(token_payload.get("access_token") or "").strip()
+        refresh_token = str(token_payload.get("refresh_token") or "").strip() or None
+        expires_in = token_payload.get("expires_in")
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+            if isinstance(expires_in, int) or (isinstance(expires_in, str) and str(expires_in).isdigit())
+            else None
+        )
+        if not access_token:
+            raise http_error(
+                400,
+                "instagram_business_login_token_exchange_failed",
+                "Instagram Business Login did not return an access token.",
+            )
+
+        granted_scopes = _instagram_business_login_scopes_from_token_payload(token_payload)
+        effective_scopes = granted_scopes or list(INSTAGRAM_BUSINESS_LOGIN_SCOPES)
+        missing_scopes = _instagram_business_login_missing_scopes(granted_scopes)
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_TOKEN_SCOPES_RECEIVED %s",
+            json.dumps(
+                {
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                    "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "workspace_id": workspace_id,
+                    "integration_id": integration_id,
+                    "granted_scopes": granted_scopes,
+                    "effective_scopes": effective_scopes,
+                    "expected_scopes": INSTAGRAM_BUSINESS_LOGIN_SCOPES,
+                    "missing_scopes": missing_scopes,
+                    "scope_source": "token_payload" if granted_scopes else "not_returned_by_token_exchange",
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+
+        profile_payload = fetch_instagram_business_login_profile(access_token)
+        instagram_user_id = str(profile_payload.get("user_id") or profile_payload.get("id") or "").strip()
+        username = str(profile_payload.get("username") or "").strip() or None
+        account_type = str(profile_payload.get("account_type") or "").strip() or None
+        display_name = str(profile_payload.get("name") or username or instagram_user_id).strip() or instagram_user_id
+        profile_picture_url = str(profile_payload.get("profile_picture_url") or "").strip() or None
+        followers_count = _normalize_instagram_insight_value(profile_payload.get("followers_count"))
+        if not instagram_user_id:
+            raise http_error(
+                400,
+                "instagram_business_login_account_missing",
+                "Instagram Business Login did not return an authorized professional account.",
+            )
+
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_PROFILE_FETCHED %s",
+            json.dumps(
+                {
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                    "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "workspace_id": workspace_id,
+                    "integration_id": integration_id,
+                    "instagram_user_id": _mask_instagram_business_login_user_id(instagram_user_id),
+                    "username": username,
+                    "account_type": account_type,
+                    "status_code": profile_payload.get("_http_status_code"),
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+
+        token_account = _ensure_instagram_business_login_token_account(db, integration)
+        _replace_integration_token_encrypted(
+            db,
+            account_id=token_account.id,
+            workspace_id=workspace_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+        )
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_TOKEN_SAVED %s",
+            json.dumps(
+                {
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                    "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "workspace_id": workspace_id,
+                    "integration_id": integration_id,
+                    "token_account_id": token_account.id,
+                    "token_received": True,
+                    "refresh_token_received": bool(refresh_token),
+                    "expires_at": expires_at.isoformat() if expires_at else None,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+
+        account_record = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id == instagram_user_id,
+            )
+            .first()
+        )
+        if account_record is None:
+            account_record = IntegrationAccount(
+                integration_id=integration.id,
+                workspace_id=workspace_id,
+                external_account_id=instagram_user_id,
+                display_name=display_name,
+            )
+            db.add(account_record)
+        else:
+            account_record.display_name = display_name
+            db.add(account_record)
+        db.commit()
+
+        _cache_meta_pages(
+            db,
+            integration,
+            user_id,
+            [
+                {
+                    "record_type": META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+                    "page_id": instagram_user_id,
+                    "parent_page_id": None,
+                    "name": display_name,
+                    "instagram_username": username,
+                    "profile_picture_url": profile_picture_url,
+                    "page_access_token": None,
+                    "tasks": None,
+                    "perms": effective_scopes,
+                    "category": account_type,
+                    "business_name": display_name,
+                }
+            ],
+        )
+        _set_meta_integration_status(db, integration, status="connected" if not missing_scopes else "needs_permission")
+        return _instagram_business_login_popup_response(
+            status="connected" if not missing_scopes else "needs_permission",
+            integration_id=integration.id,
+            workspace_id=workspace_id,
+            message="Instagram Business Login connected successfully.",
+            missing_scopes=missing_scopes,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_CONNECT_FAILED %s",
+            json.dumps(
+                {
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                    "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "workspace_id": workspace_id,
+                    "integration_id": integration_id,
+                    "error_code": str(detail.get("code") or "instagram_business_login_connect_failed"),
+                    "message": str(detail.get("message") or exc.detail or "").strip() or None,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        if not reconnect_requested:
+            _set_meta_integration_status(db, integration, status="disconnected")
+        return _instagram_business_login_popup_response(
+            status="error",
+            integration_id=integration.id,
+            workspace_id=workspace_id,
+            error=str(detail.get("code") or "instagram_business_login_connect_failed"),
+            message=str(detail.get("message") or "We could not complete the Instagram Business Login connection."),
+        )
+    except Exception:
+        logger.exception("Instagram Business Login OAuth callback failed unexpectedly")
+        if not reconnect_requested:
+            _set_meta_integration_status(db, integration, status="disconnected")
+        return _instagram_business_login_popup_response(
+            status="error",
+            integration_id=integration.id,
+            workspace_id=workspace_id,
+            error="instagram_business_login_connect_failed",
+            message="We could not complete the Instagram Business Login connection.",
+        )
+
+
+def _run_instagram_business_login_sync(
+    *,
+    db: Session,
+    current_user: User,
+    payload: InstagramBusinessLoginSyncIn,
+    route_name: str,
+) -> InstagramBusinessLoginSyncOut:
+    started_at = perf_counter()
+    integration = _resolve_instagram_business_login_integration(
+        db,
+        current_user,
+        integration_id=payload.integration_id,
+        workspace_id=payload.workspace_id,
+    )
+    logger.info(
+        "INSTAGRAM_BUSINESS_LOGIN_SYNC_REQUEST_RECEIVED %s",
+        json.dumps(
+            {
+                "route": route_name,
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                "permission": "instagram_business_manage_insights",
+                "workspace_id": integration.workspace_id,
+                "integration_id": integration.id,
+                "instagram_user_id": _mask_instagram_business_login_user_id(payload.instagram_account_id),
+                "force_live": payload.force_live,
+                "timeframe": payload.timeframe,
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
+    _token_present, _token_decrypt_ok, access_token = _resolve_instagram_business_login_access_token(db, integration)
+    if not access_token:
+        raise http_error(400, "instagram_business_login_no_token", "Instagram Business Login token not found.")
+
+    selected_record = _match_instagram_business_record(
+        _instagram_business_login_account_records(db, integration),
+        _collect_instagram_business_alias_values(payload.instagram_account_id),
+    )
+    if selected_record is None:
+        raise http_error(
+            404,
+            "instagram_business_login_account_not_found",
+            "Instagram Business Login account not found.",
+        )
+
+    timeframe_config = resolve_meta_pages_timeframe(
+        payload.timeframe,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+    )
+    instagram_user_id = selected_record.page_id
+    account_name = selected_record.name or instagram_user_id
+    username = selected_record.instagram_username or None
+    followers_count = None
+    requested_metrics = ["reach", "impressions", "profile_views"]
+    normalized_metrics: dict[str, int | None] = {}
+    metric_series: dict[str, list[dict[str, int | str | None]]] = {}
+    unavailable_metrics: dict[str, str] = {}
+    metric_audit: dict[str, dict[str, Any]] = {}
+    metrics_successful: list[str] = []
+    metrics_failed: list[str] = []
+
+    for metric_name in requested_metrics:
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_INSIGHTS_REQUEST %s",
+            json.dumps(
+                {
+                    "route": route_name,
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                    "host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "permission": "instagram_business_manage_insights",
+                    "workspace_id": integration.workspace_id,
+                    "integration_id": integration.id,
+                    "instagram_user_id": _mask_instagram_business_login_user_id(instagram_user_id),
+                    "metric": metric_name,
+                    "endpoint": f"/{instagram_user_id}/insights",
+                    "period": "day",
+                    "since": timeframe_config["since"],
+                    "until": timeframe_config["until"],
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        try:
+            insight_payload = fetch_instagram_business_login_insights_metric_with_metadata(
+                access_token,
+                instagram_user_id,
+                metric_name=metric_name,
+                since=timeframe_config["since"],
+                until=timeframe_config["until"],
+                period="day",
+            )
+        except requests.RequestException as exc:
+            insight_payload = {
+                "_instagram_http_status_code": None,
+                "_instagram_raw_body": str(exc),
+                "error": {"message": str(exc)},
+            }
+        status_code = insight_payload.get("_instagram_http_status_code")
+        data = insight_payload.get("data")
+        is_success = status_code == 200
+        if is_success:
+            metrics_successful.append(metric_name)
+        else:
+            metrics_failed.append(metric_name)
+        metric_row = data[0] if isinstance(data, list) and data else {}
+        values = metric_row.get("values") if isinstance(metric_row, dict) else []
+        metric_total_value, metric_latest_value, metric_end_time, normalized_series, raw_values = (
+            _normalize_instagram_insight_series(values if isinstance(values, list) else [])
+        )
+        normalized_metrics[metric_name] = metric_total_value if is_success else None
+        metric_series[metric_name] = normalized_series if is_success else []
+        if not is_success:
+            error_payload = insight_payload.get("error") if isinstance(insight_payload.get("error"), dict) else {}
+            unavailable_metrics[metric_name] = str(
+                error_payload.get("message")
+                or insight_payload.get("_instagram_raw_body")
+                or "metric_unavailable"
+            )
+        elif metric_total_value is None:
+            unavailable_metrics[metric_name] = "empty_response"
+        metric_audit[metric_name] = {
+            "metric_name_requested": metric_name,
+            "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+            "graph_endpoint": f"/{instagram_user_id}/insights",
+            "permission": "instagram_business_manage_insights",
+            "period": "day",
+            "since": timeframe_config["since"],
+            "until": timeframe_config["until"],
+            "status_code": status_code,
+            "raw_values": raw_values,
+            "sum_value": metric_total_value if is_success else None,
+            "latest_value": metric_latest_value if is_success else None,
+            "end_time": metric_end_time if is_success else None,
+            "error": unavailable_metrics.get(metric_name),
+        }
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_INSIGHTS_RESPONSE %s",
+            json.dumps(
+                {
+                    "route": route_name,
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                    "host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "permission": "instagram_business_manage_insights",
+                    "workspace_id": integration.workspace_id,
+                    "integration_id": integration.id,
+                    "instagram_user_id": _mask_instagram_business_login_user_id(instagram_user_id),
+                    "metric": metric_name,
+                    "status_code": status_code,
+                    "success": is_success,
+                    "data_rows": len(data) if isinstance(data, list) else 0,
+                    "raw_body": insight_payload.get("_instagram_raw_body"),
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+
+    if not metrics_successful:
+        raise http_error(
+            400,
+            "instagram_business_login_insights_failed",
+            "Instagram Business Login Insights did not return a successful metric response.",
+        )
+
+    reach_daily = metric_series.get("reach") or []
+    impressions_daily = metric_series.get("impressions") or []
+    profile_views_daily = metric_series.get("profile_views") or []
+    views_daily = impressions_daily
+    has_data = any(value is not None for value in normalized_metrics.values())
+    live_sync_at = datetime.now(timezone.utc)
+
+    csv_output = io.StringIO()
+    writer = csv.DictWriter(
+        csv_output,
+        fieldnames=[
+            "account_id",
+            "account_name",
+            "username",
+            "followers",
+            "reach",
+            "impressions",
+            "views",
+            "engagement",
+            "profile_views",
+            "daily_trend",
+            "timeframe_preset",
+            "timeframe_since",
+            "timeframe_until",
+            "reach_daily",
+            "impressions_daily",
+            "views_daily",
+            "profile_views_daily",
+            "unavailable_metrics",
+        ],
+    )
+    writer.writeheader()
+    writer.writerow(
+        {
+            "account_id": instagram_user_id,
+            "account_name": account_name,
+            "username": username,
+            "followers": followers_count,
+            "reach": normalized_metrics.get("reach"),
+            "impressions": normalized_metrics.get("impressions"),
+            "views": normalized_metrics.get("impressions"),
+            "engagement": None,
+            "profile_views": normalized_metrics.get("profile_views"),
+            "daily_trend": json.dumps(reach_daily),
+            "timeframe_preset": timeframe_config["preset"],
+            "timeframe_since": timeframe_config["since"],
+            "timeframe_until": timeframe_config["until"],
+            "reach_daily": json.dumps(reach_daily),
+            "impressions_daily": json.dumps(impressions_daily),
+            "views_daily": json.dumps(views_daily),
+            "profile_views_daily": json.dumps(profile_views_daily),
+            "unavailable_metrics": json.dumps(unavailable_metrics),
+        }
+    )
+    csv_bytes = csv_output.getvalue().encode("utf-8")
+    filename = f"instagram_business_login_{instagram_user_id}_insights.csv"
+    dataset_data = {
+        "integration_type": "instagram_business",
+        "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        "source": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+        "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+        "permissions_used": INSTAGRAM_BUSINESS_LOGIN_SCOPES,
+        "scopes_granted": selected_record.perms if isinstance(selected_record.perms, list) else [],
+        "live_sync_at": live_sync_at.isoformat(),
+        "force_live": payload.force_live,
+        "has_data": has_data,
+        "account_id": instagram_user_id,
+        "instagram_account_id": instagram_user_id,
+        "instagram_business_account_id": instagram_user_id,
+        "ig_user_id": instagram_user_id,
+        "page_id": instagram_user_id,
+        "parent_page_id": None,
+        "facebook_page_id": None,
+        "account_name": account_name,
+        "page_name": account_name,
+        "username": username,
+        "instagram_username": username,
+        "followers": followers_count,
+        "followers_count": followers_count,
+        "reach": normalized_metrics.get("reach"),
+        "impressions": normalized_metrics.get("impressions"),
+        "views": normalized_metrics.get("impressions"),
+        "profile_views": normalized_metrics.get("profile_views"),
+        "profile_visits": normalized_metrics.get("profile_views"),
+        "engagement": None,
+        "total_interactions": None,
+        "accounts_engaged": None,
+        "content_interactions": None,
+        "website_clicks": None,
+        "link_clicks": None,
+        "followers_growth": None,
+        "daily_trend": reach_daily,
+        "daily_engagement": [],
+        "reach_daily": reach_daily,
+        "impressions_daily": impressions_daily,
+        "views_daily": views_daily,
+        "profile_views_daily": profile_views_daily,
+        "website_clicks_daily": [],
+        "unavailable_metrics": unavailable_metrics,
+        "instagram_metric_audit": {
+            "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+            "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+            "permissions_used": INSTAGRAM_BUSINESS_LOGIN_SCOPES,
+            "metrics": metric_audit,
+            "unavailable_metrics": unavailable_metrics,
+        },
+        "timeframe": {
+            "key": timeframe_config["key"],
+            "label": timeframe_config["label"],
+            "preset": timeframe_config["preset"],
+            "since": timeframe_config["since"],
+            "until": timeframe_config["until"],
+            "requested_since": timeframe_config.get("requested_since"),
+            "requested_until": timeframe_config.get("requested_until"),
+            "current_since": timeframe_config.get("current_since"),
+            "current_until": timeframe_config.get("current_until"),
+            "previous_since": timeframe_config.get("previous_since"),
+            "previous_until": timeframe_config.get("previous_until"),
+            "selected_timeframe": timeframe_config.get("selected_timeframe"),
+        },
+        "recent_posts": [],
+        "report_metric_mapping": {
+            "views": _build_meta_report_metric_entry(
+                facebook_ui_target_label="Visualizaciones",
+                source_metric_name="impressions" if normalized_metrics.get("impressions") is not None else None,
+                total=normalized_metrics.get("impressions"),
+                daily_series=views_daily,
+                timeframe_since=timeframe_config["since"],
+                timeframe_until=timeframe_config["until"],
+            ),
+            "viewers": _build_meta_report_metric_entry(
+                facebook_ui_target_label="Espectadores",
+                source_metric_name="reach" if normalized_metrics.get("reach") is not None else None,
+                total=normalized_metrics.get("reach"),
+                daily_series=reach_daily,
+                timeframe_since=timeframe_config["since"],
+                timeframe_until=timeframe_config["until"],
+            ),
+            "interactions": _build_meta_report_metric_entry(
+                facebook_ui_target_label="Interacciones con el contenido",
+                source_metric_name=None,
+                total=None,
+                daily_series=[],
+                timeframe_since=timeframe_config["since"],
+                timeframe_until=timeframe_config["until"],
+            ),
+            "link_clicks": _build_meta_report_metric_entry(
+                facebook_ui_target_label="Clics en el enlace",
+                source_metric_name=None,
+                total=None,
+                daily_series=[],
+                timeframe_since=timeframe_config["since"],
+                timeframe_until=timeframe_config["until"],
+            ),
+            "page_visits": _build_meta_report_metric_entry(
+                facebook_ui_target_label="Visitas",
+                source_metric_name="profile_views" if normalized_metrics.get("profile_views") is not None else None,
+                total=normalized_metrics.get("profile_views"),
+                daily_series=profile_views_daily,
+                timeframe_since=timeframe_config["since"],
+                timeframe_until=timeframe_config["until"],
+            ),
+            "followers_growth": _build_meta_report_metric_entry(
+                facebook_ui_target_label="Seguidores",
+                source_metric_name=None,
+                total=None,
+                daily_series=[],
+                timeframe_since=timeframe_config["since"],
+                timeframe_until=timeframe_config["until"],
+            ),
+        },
+        "normalized_report_metrics": {
+            "impressions_total": normalized_metrics.get("impressions"),
+            "impressions_daily": impressions_daily,
+            "views_total": normalized_metrics.get("impressions"),
+            "views_daily": views_daily,
+            "viewers_total": normalized_metrics.get("reach"),
+            "viewers_daily": reach_daily,
+            "interactions_total": None,
+            "interactions_daily": [],
+            "link_clicks_total": None,
+            "link_clicks_daily": [],
+            "page_visits_total": normalized_metrics.get("profile_views"),
+            "page_visits_daily": profile_views_daily,
+            "followers_growth_total": None,
+            "followers_growth_daily": [],
+            "requested_since": timeframe_config.get("requested_since"),
+            "requested_until": timeframe_config.get("requested_until"),
+            "timeframe_since": timeframe_config["since"],
+            "timeframe_until": timeframe_config["until"],
+            "current_since": timeframe_config.get("current_since"),
+            "current_until": timeframe_config.get("current_until"),
+            "previous_since": timeframe_config.get("previous_since"),
+            "previous_until": timeframe_config.get("previous_until"),
+        },
+    }
+
+    dataset = Dataset(
+        workspace_id=integration.workspace_id,
+        name=filename,
+        description="Instagram Business Login insights",
+        data=dataset_data,
+    )
+    _enforce_workspace_storage_for_upload(db, integration.workspace_id, len(csv_bytes))
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+
+    key = f"workspaces/{integration.workspace_id}/datasets/{dataset.id}/{filename}"
+    s3 = boto3.client("s3", region_name=settings.aws_region)
+    try:
+        s3.put_object(Bucket=settings.s3_inputs_bucket, Key=key, Body=csv_bytes)
+    except Exception:
+        db.delete(dataset)
+        db.commit()
+        raise http_error(502, "s3_upload_failed", "Failed to upload file.")
+
+    dataset_file = DatasetFile(
+        dataset_id=dataset.id,
+        workspace_id=integration.workspace_id,
+        s3_key=key,
+        size_bytes=len(csv_bytes),
+        content_type="text/csv",
+    )
+    db.add(dataset_file)
+    db.commit()
+    db.refresh(dataset_file)
+    logger.info(
+        "INSTAGRAM_BUSINESS_LOGIN_SYNC_COMPLETED %s",
+        json.dumps(
+            {
+                "route": route_name,
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                "host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                "permission": "instagram_business_manage_insights",
+                "workspace_id": integration.workspace_id,
+                "integration_id": integration.id,
+                "instagram_user_id": _mask_instagram_business_login_user_id(instagram_user_id),
+                "dataset_id": dataset.id,
+                "dataset_file_id": dataset_file.id,
+                "has_data": has_data,
+                "metrics_successful": metrics_successful,
+                "metrics_failed": metrics_failed,
+                "duration_ms": round((perf_counter() - started_at) * 1000, 2),
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
+    return InstagramBusinessLoginSyncOut(
+        integration_id=integration.id,
+        dataset_id=dataset.id,
+        dataset_file_id=dataset_file.id,
+        provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        source_type="instagram_business",
+        record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+        account_id=instagram_user_id,
+        account_name=account_name,
+        status="synced",
+        has_data=has_data,
+        metrics_successful=metrics_successful,
+        metrics_failed=metrics_failed,
+        timeframe=dataset_data["timeframe"],
+    )
+
+
+@app.post("/integrations/instagram-business-login/sync", response_model=InstagramBusinessLoginSyncOut)
+def sync_instagram_business_login(
+    payload: InstagramBusinessLoginSyncIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramBusinessLoginSyncOut:
+    return _run_instagram_business_login_sync(
+        db=db,
+        current_user=current_user,
+        payload=payload,
+        route_name="/integrations/instagram-business-login/sync",
+    )
+
+
+@app.post("/integrations/instagram-business-login/test-insights", response_model=InstagramBusinessLoginSyncOut)
+def test_instagram_business_login_insights(
+    payload: InstagramBusinessLoginSyncIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramBusinessLoginSyncOut:
+    payload.force_live = True
+    return _run_instagram_business_login_sync(
+        db=db,
+        current_user=current_user,
+        payload=payload,
+        route_name="/integrations/instagram-business-login/test-insights",
     )
 
 
