@@ -40,8 +40,6 @@ META_BUSINESS_SUITE_SCOPES = [
     "pages_read_engagement",
     "read_insights",
     "pages_read_user_content",
-    "instagram_basic",
-    "instagram_manage_insights",
     "business_management",
     "ads_read",
 ]
@@ -92,8 +90,9 @@ def meta_oauth_scope_string_for_integration_type(integration_type: str | None) -
 def get_meta_oauth_config_id(integration_type: str | None = "facebook_pages") -> str | None:
     normalized = normalize_meta_oauth_integration_type(integration_type)
     if normalized == "meta_business_suite":
-        config_id = str(settings.meta_business_suite_config_id or "").strip()
-        return config_id or None
+        # Keep Suite on explicit Pages + Ads scopes so it cannot inherit
+        # Instagram asset selection from a Business Login configuration.
+        return None
     if normalized == "instagram_business":
         config_id = str(settings.instagram_business_config_id or "").strip()
         return config_id or None
@@ -729,13 +728,39 @@ def fetch_page_info_with_metadata(
     return payload
 
 
-def fetch_page_posts(access_token: str, page_id: str, limit: int = 5) -> list[dict[str, Any]]:
+FACEBOOK_PAGE_TOP_CONTENT_POST_FIELDS = (
+    "id,created_time,message,story,permalink_url,status_type,"
+    "attachments{media_type,title,url},shares,"
+    "reactions.summary(true).limit(0),comments.summary(true).limit(0)"
+)
+FACEBOOK_PAGE_POST_INSIGHT_METRICS = [
+    "post_impressions",
+    "post_impressions_unique",
+    "post_engaged_users",
+    "post_clicks",
+    "post_reactions_by_type_total",
+]
+
+
+def fetch_page_posts(
+    access_token: str,
+    page_id: str,
+    limit: int = 25,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+    fields: str = FACEBOOK_PAGE_TOP_CONTENT_POST_FIELDS,
+) -> list[dict[str, Any]]:
     url = f"https://graph.facebook.com/{settings.meta_api_version}/{page_id}/posts"
     params = {
-        "fields": "id,message,created_time,permalink_url,shares,comments.summary(true),reactions.summary(true)",
+        "fields": fields,
         "limit": limit,
         "access_token": access_token,
     }
+    if since:
+        params["since"] = since
+    if until:
+        params["until"] = until
     resp = requests.get(url, params=params, timeout=30)
     _raise_meta_api_error(resp)
     data = resp.json()
@@ -891,10 +916,15 @@ def fetch_page_insights_timeseries(
     return points
 
 
-def fetch_post_metrics(access_token: str, post_id: str) -> dict[str, Any]:
+def fetch_post_metrics(
+    access_token: str,
+    post_id: str,
+    *,
+    metrics: list[str] | None = None,
+) -> dict[str, Any]:
     url = f"https://graph.facebook.com/{settings.meta_api_version}/{post_id}/insights"
     params = {
-        "metric": "post_impressions",
+        "metric": ",".join(metrics or FACEBOOK_PAGE_POST_INSIGHT_METRICS),
         "access_token": access_token,
     }
     resp = requests.get(url, params=params, timeout=30)

@@ -48,6 +48,19 @@ from app.models import (
 from app.security import create_access_token, hash_password
 
 
+BANNED_INSTAGRAM_OAUTH_SCOPES = {
+    "instagram_basic",
+    "instagram_manage_insights",
+    "instagram_content_publish",
+    "instagram_manage_messages",
+    "instagram_business_basic",
+    "instagram_business_manage_insights",
+    "instagram_business_manage_messages",
+    "instagram_business_manage_comments",
+    "instagram_business_content_publish",
+}
+
+
 @compiles(JSONB, "sqlite")
 def _compile_jsonb_sqlite(_element, _compiler, **_kwargs):
     return "TEXT"
@@ -220,13 +233,17 @@ def test_meta_ads_connect_creates_separate_integration(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["scope"] == meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE
-    assert payload["scope"] == "public_profile,pages_show_list,pages_read_engagement,read_insights,pages_read_user_content,instagram_basic,instagram_manage_insights,business_management,ads_read"
+    assert payload["scope"] == (
+        "public_profile,pages_show_list,pages_read_engagement,read_insights,"
+        "pages_read_user_content,business_management,ads_read"
+    )
     assert "ads_read" in payload["auth_url"]
     assert "business_management" in payload["auth_url"]
+    assert "pages_read_user_content" in payload["auth_url"]
     assert "pages_show_list" in payload["auth_url"]
-    assert "instagram_basic" in payload["auth_url"]
     query = parse_qs(urlparse(payload["auth_url"]).query)
     assert query["scope"] == [meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE]
+    assert not BANNED_INSTAGRAM_OAUTH_SCOPES.intersection(query["scope"][0].split(","))
     assert query["auth_type"] == ["rerequest"]
     assert query["redirect_uri"] == ["http://localhost:8000/integrations/meta/callback-pages"]
 
@@ -240,6 +257,50 @@ def test_meta_ads_connect_creates_separate_integration(client):
         assert integration.name == "Meta Ads"
     finally:
         db.close()
+
+
+def test_meta_business_suite_connect_url_excludes_instagram_scopes_and_config_id(client, monkeypatch):
+    refs = _seed_workspace()
+    monkeypatch.setattr(main_module.settings, "meta_pages_app_id", "meta-app-id")
+    monkeypatch.setattr(main_module.settings, "meta_pages_app_secret", "meta-app-secret")
+    monkeypatch.setattr(main_module.settings, "meta_pages_redirect_uri", "http://localhost:8000/integrations/meta/callback")
+    monkeypatch.setattr(main_module.settings, "meta_business_suite_config_id", "suite-config-with-instagram-assets")
+    monkeypatch.setattr(main_module.settings, "api_base_url", "http://localhost:8000")
+    monkeypatch.setattr(meta_ads_module.settings, "meta_pages_app_id", "meta-app-id")
+    monkeypatch.setattr(meta_ads_module.settings, "meta_pages_app_secret", "meta-app-secret")
+    monkeypatch.setattr(meta_ads_module.settings, "meta_pages_redirect_uri", "http://localhost:8000/integrations/meta/callback")
+    monkeypatch.setattr(meta_ads_module.settings, "meta_business_suite_config_id", "suite-config-with-instagram-assets")
+    monkeypatch.setattr(meta_ads_module.settings, "api_base_url", "http://localhost:8000")
+
+    response = client.get(
+        "/integrations/meta-business-suite/connect",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    query = parse_qs(urlparse(payload["auth_url"]).query)
+    state_payload = meta_ads_module.decode_state(query["state"][0])
+    assert payload["scope"] == meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE
+    assert query["scope"] == [meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE]
+    assert "config_id" not in query
+    assert not BANNED_INSTAGRAM_OAUTH_SCOPES.intersection(query["scope"][0].split(","))
+    assert {
+        "pages_show_list",
+        "pages_read_engagement",
+        "read_insights",
+        "pages_read_user_content",
+        "business_management",
+        "ads_read",
+    }.issubset(set(query["scope"][0].split(",")))
+    assert state_payload["integration_type"] == "meta_business_suite"
+    assert state_payload["include_linked_instagram"] is False
+
+
+def test_meta_ads_scopes_include_ads_and_business_management_without_instagram():
+    assert {"ads_read", "business_management"}.issubset(set(meta_ads_module.META_ADS_SCOPES))
+    assert not BANNED_INSTAGRAM_OAUTH_SCOPES.intersection(meta_ads_module.META_ADS_SCOPES)
 
 
 def test_meta_ads_callback_without_business_management_sets_needs_permission(client, monkeypatch):

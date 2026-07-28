@@ -494,7 +494,7 @@ def test_meta_pages_business_config_does_not_affect_instagram_or_ads_oauth(monke
     assert ads_query["scope"] == [meta_ads.META_ADS_OAUTH_SCOPE]
 
 
-def test_instagram_business_connect_prefers_meta_business_suite_config_id(client, monkeypatch):
+def test_instagram_business_connect_ignores_meta_business_suite_config_id(client, monkeypatch):
     db = SessionLocal()
     try:
         user = User(
@@ -520,6 +520,7 @@ def test_instagram_business_connect_prefers_meta_business_suite_config_id(client
     monkeypatch.setattr(meta_ads.settings, "meta_pages_app_id", "meta-pages-app-id")
     monkeypatch.setattr(meta_ads.settings, "meta_pages_app_secret", "meta-pages-app-secret")
     monkeypatch.setattr(meta_ads.settings, "meta_pages_config_id", "pages-config-id")
+    monkeypatch.setattr(meta_ads.settings, "instagram_business_config_id", None)
     monkeypatch.setattr(meta_ads.settings, "meta_business_suite_config_id", "suite-config-id")
     monkeypatch.setattr(meta_ads.settings, "meta_pages_redirect_uri", "https://app.measurableapp.com/integrations/meta/callback")
     monkeypatch.setattr(meta_ads.settings, "api_base_url", "https://api.measurableapp.com")
@@ -531,8 +532,9 @@ def test_instagram_business_connect_prefers_meta_business_suite_config_id(client
 
     assert response.status_code == 200
     query = parse_qs(urlparse(response.json()["auth_url"]).query)
-    assert query["config_id"] == ["suite-config-id"]
-    assert "scope" not in query
+    assert "config_id" not in query
+    assert query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
+    assert "instagram_basic" in query["scope"][0]
 
 
 def test_instagram_business_connect_uses_facebook_oauth_with_dedicated_endpoint(client, monkeypatch):
@@ -577,7 +579,7 @@ def test_instagram_business_connect_uses_facebook_oauth_with_dedicated_endpoint(
     assert parsed.netloc == "www.facebook.com"
     assert parsed.path.endswith("/dialog/oauth")
     assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/meta/callback-pages"]
-    assert query["scope"] == [meta_ads.META_BUSINESS_SUITE_OAUTH_SCOPE]
+    assert query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
     assert query["response_type"] == ["code"]
     assert query["auth_type"] == ["rerequest"]
     assert state_payload["integration_type"] == "instagram_business"
@@ -808,11 +810,11 @@ def test_instagram_business_connect_returns_facebook_pages_scope(client, monkeyp
     state_payload = meta_ads.decode_state(query["state"][0])
     assert parsed.netloc == "www.facebook.com"
     assert "instagram.com" not in payload["auth_url"]
-    assert payload["scope"] == meta_ads.META_BUSINESS_SUITE_OAUTH_SCOPE
-    assert query["scope"] == [meta_ads.META_BUSINESS_SUITE_OAUTH_SCOPE]
+    assert payload["scope"] == meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN
+    assert query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
     assert "instagram_basic" in query["scope"][0]
     assert "instagram_business_basic" not in query["scope"][0]
-    assert "ads_read" in query["scope"][0]
+    assert "ads_read" not in query["scope"][0]
     assert state_payload["integration_type"] == "instagram_business"
     assert state_payload["source"] == "instagram_business"
     assert state_payload["provider"] == "instagram_business"
@@ -1372,7 +1374,7 @@ def test_admin_instagram_business_diagnostics_returns_safe_page_snapshot(client,
     assert "meta-token" not in response.text
 
 
-def test_admin_meta_business_suite_diagnostics_includes_instagram_discovery_summary(client, monkeypatch):
+def test_admin_meta_business_suite_diagnostics_skips_instagram_discovery_for_suite(client, monkeypatch):
     db = SessionLocal()
     try:
         user = User(
@@ -1486,11 +1488,11 @@ def test_admin_meta_business_suite_diagnostics_includes_instagram_discovery_summ
     assert payload["token_decrypt_ok"] is True
     assert payload["pages_checked_count"] == 1
     assert payload["pages_with_instagram_business_account_count"] == 0
-    assert payload["pages_with_connected_instagram_account_count"] == 1
+    assert payload["pages_with_connected_instagram_account_count"] == 0
     assert payload["instagram_accounts_found_count"] == 0
     assert payload["missing_required_scopes"] == []
     assert payload["page_results"][0]["page_id"] == "fb-page-1"
-    assert payload["page_results"][0]["has_connected_instagram_account"] is True
+    assert payload["page_results"][0]["has_connected_instagram_account"] is False
     assert payload["provider_status"] == {
         "facebook_pages": "connected",
         "instagram_business": "connected_no_assets",

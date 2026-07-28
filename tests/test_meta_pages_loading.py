@@ -334,10 +334,24 @@ def test_refresh_logs_do_not_include_access_token(client, monkeypatch, caplog):
     assert "super-secret-token-value" not in caplog.text
 
 
-def test_facebook_pages_scopes_include_business_management_only(client):
+def test_facebook_pages_scopes_include_business_management_and_page_content_only(client):
+    banned_instagram_scopes = {
+        "instagram_basic",
+        "instagram_manage_insights",
+        "instagram_content_publish",
+        "instagram_manage_messages",
+        "instagram_business_basic",
+        "instagram_business_manage_insights",
+        "instagram_business_manage_messages",
+        "instagram_business_manage_comments",
+        "instagram_business_content_publish",
+    }
+    assert "pages_show_list" in meta_ads_module.FACEBOOK_PAGES_SCOPES
+    assert "pages_read_engagement" in meta_ads_module.FACEBOOK_PAGES_SCOPES
+    assert "read_insights" in meta_ads_module.FACEBOOK_PAGES_SCOPES
+    assert "pages_read_user_content" in meta_ads_module.FACEBOOK_PAGES_SCOPES
     assert "business_management" in meta_ads_module.FACEBOOK_PAGES_SCOPES
-    assert "instagram_business_basic" not in meta_ads_module.FACEBOOK_PAGES_SCOPES
-    assert "instagram_business_manage_insights" not in meta_ads_module.FACEBOOK_PAGES_SCOPES
+    assert not banned_instagram_scopes.intersection(meta_ads_module.FACEBOOK_PAGES_SCOPES)
     assert "ads_read" not in meta_ads_module.FACEBOOK_PAGES_SCOPES
 
 

@@ -607,7 +607,7 @@ def test_instagram_business_suite_callback_returns_canonical_event_without_disco
         lambda _token: {
             "data": {
                 "is_valid": True,
-                "scopes": meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE.split(","),
+                "scopes": meta_ads_module.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN.split(","),
             }
         },
     )
@@ -643,7 +643,7 @@ def test_instagram_business_suite_callback_returns_canonical_event_without_disco
         assert suite.status == "connected"
         assert instagram is not None
         assert instagram.provider == "instagram_business"
-        assert instagram.status == "checking"
+        assert instagram.status == "connected_no_assets"
     finally:
         db.close()
 
@@ -662,15 +662,15 @@ def test_instagram_business_suite_callback_returns_canonical_event_without_disco
     suite_payload = suite_status_response.json()
     assert suite_payload["connected"] is True
     assert suite_payload["status"] == "connected"
-    assert suite_payload["discovery_status"] == "pending"
-    assert suite_payload["children"]["instagram_business"]["status"] == "checking"
+    assert suite_payload["discovery_status"] == "completed"
+    assert suite_payload["children"]["instagram_business"]["status"] == "connected_no_assets"
     assert suite_payload["children"]["instagram_business"]["connected"] is True
 
     assert statuses_response.status_code == 200
     status_map = {item["provider"]: item for item in statuses_response.json()}
-    assert status_map["instagram_business"]["status"] == "checking"
+    assert status_map["instagram_business"]["status"] == "connected_no_assets"
     assert status_map["instagram_business"]["connected"] is True
-    assert status_map["instagram_business"]["discovery_status"] == "pending"
+    assert status_map["instagram_business"]["discovery_status"] == "completed"
 
 
 def test_meta_business_suite_callback_continues_when_client_ad_account_discovery_fails(client, monkeypatch):
@@ -762,7 +762,7 @@ def test_meta_business_suite_callback_continues_when_client_ad_account_discovery
         }
         assert provider_statuses["meta_business_suite"] == "connected"
         assert provider_statuses["meta"] == "checking"
-        assert provider_statuses["instagram_business"] == "checking"
+        assert provider_statuses["instagram_business"] == "disconnected"
         assert provider_statuses["meta_ads"] == "checking"
     finally:
         db.close()
@@ -883,8 +883,8 @@ def test_meta_business_suite_status_connects_facebook_child_from_cached_pages(cl
     assert payload["status"] == "connected"
     assert payload["children"]["facebook_pages"]["status"] == "connected"
     assert payload["children"]["facebook_pages"]["asset_count"] == 1
-    assert payload["children"]["instagram_business"]["status"] == "checking"
-    assert payload["children"]["instagram_business"]["connected"] is True
+    assert payload["children"]["instagram_business"]["status"] == "disconnected"
+    assert payload["children"]["instagram_business"]["connected"] is False
     assert payload["children"]["meta_ads"]["status"] == "checking"
     assert payload["children"]["meta_ads"]["connected"] is True
 
@@ -1509,8 +1509,8 @@ def test_meta_business_suite_refresh_discovers_persists_and_cache_reads_child_as
     refresh_payload = refresh_response.json()
     assert refresh_payload["children"]["facebook_pages"]["status"] == "connected"
     assert refresh_payload["children"]["facebook_pages"]["asset_count"] == 1
-    assert refresh_payload["children"]["instagram_business"]["status"] == "connected"
-    assert refresh_payload["children"]["instagram_business"]["asset_count"] == 1
+    assert refresh_payload["children"]["instagram_business"]["status"] == "disconnected"
+    assert refresh_payload["children"]["instagram_business"]["asset_count"] == 0
     assert refresh_payload["children"]["meta_ads"]["status"] == "connected"
     assert refresh_payload["children"]["meta_ads"]["asset_count"] == 1
 
@@ -1532,7 +1532,7 @@ def test_meta_business_suite_refresh_discovers_persists_and_cache_reads_child_as
                 MetaPage.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
             )
             .count()
-            == 1
+            == 0
         )
         assert (
             db.query(MetaAdAccount)
@@ -1564,12 +1564,12 @@ def test_meta_business_suite_refresh_discovers_persists_and_cache_reads_child_as
     assert cached_response.status_code == 200
     cached_payload = cached_response.json()
     assert cached_payload["children"]["facebook_pages"]["asset_count"] == 1
-    assert cached_payload["children"]["instagram_business"]["asset_count"] == 1
+    assert cached_payload["children"]["instagram_business"]["asset_count"] == 0
     assert cached_payload["children"]["meta_ads"]["asset_count"] == 1
     assert statuses_response.status_code == 200
     status_map = {item["provider"]: item for item in statuses_response.json()}
     assert status_map["facebook_pages"]["status"] == "connected"
-    assert status_map["instagram_business"]["status"] == "connected"
+    assert status_map["instagram_business"]["status"] == "disconnected"
     assert status_map["meta_ads"]["status"] == "connected"
 
 
@@ -1642,7 +1642,7 @@ def test_shared_suite_token_resolves_provider_statuses_independently(client, mon
     assert refreshed_response.status_code == 200
     refreshed_map = {item["provider"]: item for item in refreshed_response.json()}
     assert refreshed_map["facebook_pages"]["status"] == "connected"
-    assert refreshed_map["instagram_business"]["status"] == "connected_no_assets"
+    assert refreshed_map["instagram_business"]["status"] == "disconnected"
     assert refreshed_map["meta_ads"]["status"] == "connected_no_assets"
     assert refreshed_map["meta_ads"]["connected"] is True
 
@@ -1656,7 +1656,7 @@ def test_shared_suite_token_resolves_provider_statuses_independently(client, mon
     assert suite_payload["provider"] == "meta_business_suite"
     assert suite_payload["connected"] is True
     assert suite_payload["children"]["facebook_pages"]["status"] == "connected"
-    assert suite_payload["children"]["instagram_business"]["status"] == "connected_no_assets"
+    assert suite_payload["children"]["instagram_business"]["status"] == "disconnected"
     assert suite_payload["children"]["meta_ads"]["status"] == "connected_no_assets"
 
     instagram_response = client.get(
@@ -1666,10 +1666,11 @@ def test_shared_suite_token_resolves_provider_statuses_independently(client, mon
     )
     assert instagram_response.status_code == 200
     instagram_payload = instagram_response.json()
-    assert instagram_payload["connected"] is True
+    assert instagram_payload["connected"] is False
     assert instagram_payload["provider"] == "instagram_business"
-    assert instagram_payload["status"] == "connected_no_assets"
+    assert instagram_payload["status"] == "needs_permission"
     assert instagram_payload["asset_count"] == 0
+    assert "instagram_basic" in instagram_payload["missing_scopes"]
 
 
 def test_shared_suite_token_returns_connected_no_assets_for_instagram_when_no_accounts_found(client, monkeypatch):
@@ -1689,7 +1690,12 @@ def test_shared_suite_token_returns_connected_no_assets_for_instagram_when_no_ac
         lambda _token: {
             "data": {
                 "is_valid": True,
-                "scopes": meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE.split(","),
+                "scopes": list(
+                    dict.fromkeys(
+                        meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE.split(",")
+                        + ["instagram_basic"]
+                    )
+                ),
             }
         },
     )

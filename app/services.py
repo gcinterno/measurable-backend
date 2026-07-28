@@ -2443,6 +2443,40 @@ def normalize_meta_recent_posts(posts: Any) -> list[dict[str, Any]]:
     return normalized_posts
 
 
+def normalize_meta_top_content(items: Any) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+
+    normalized_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        normalized_items.append(
+            {
+                "post_id": str(item.get("post_id")) if item.get("post_id") is not None else None,
+                "created_time": str(item.get("created_time"))
+                if item.get("created_time") is not None
+                else None,
+                "message_preview": str(item.get("message_preview"))
+                if item.get("message_preview") is not None
+                else None,
+                "permalink_url": str(item.get("permalink_url"))
+                if item.get("permalink_url") is not None
+                else None,
+                "media_type": str(item.get("media_type")) if item.get("media_type") is not None else None,
+                "impressions": _to_int(item.get("impressions")),
+                "reach": _to_int(item.get("reach")),
+                "engaged_users": _to_int(item.get("engaged_users")),
+                "reactions": _to_int(item.get("reactions")),
+                "comments": _to_int(item.get("comments")),
+                "shares": _to_int(item.get("shares")),
+                "engagement_total": _to_int(item.get("engagement_total")),
+                "score": _to_int(item.get("score")),
+            }
+        )
+    return normalized_items
+
+
 def normalize_meta_timeseries(points: Any) -> list[dict[str, Optional[int | str]]]:
     if not isinstance(points, list):
         return []
@@ -2492,6 +2526,10 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         recent_posts = normalize_meta_recent_posts(_load_json(recent_posts_raw, []))
     else:
         recent_posts = normalize_meta_recent_posts(recent_posts_raw)
+    top_content_raw = row.get("top_content")
+    if not isinstance(top_content_raw, list):
+        top_content_raw = normalized_metrics.get("top_content")
+    top_content = normalize_meta_top_content(top_content_raw)
 
     reach_daily_raw = row.get("reach_daily")
     if isinstance(reach_daily_raw, str):
@@ -2754,6 +2792,7 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         "page_visits_daily": page_visits_daily,
         "followers_growth_daily": followers_growth_daily,
         "recent_posts": recent_posts,
+        "top_content": top_content,
         "posts_analyzed_count": _to_int(row.get("posts_analyzed_count"))
         if _to_int(row.get("posts_analyzed_count")) is not None
         else _to_int(normalized_metrics.get("posts_analyzed_count")),

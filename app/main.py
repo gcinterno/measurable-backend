@@ -47,6 +47,7 @@ from .db import SessionLocal, engine
 from .integrations.meta_ads import (
     FACEBOOK_PAGES_OAUTH_SCOPE,
     FACEBOOK_PAGES_SCOPES,
+    FACEBOOK_PAGE_TOP_CONTENT_POST_FIELDS,
     INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN,
     INSTAGRAM_BUSINESS_SCOPES_LEGACY_FACEBOOK_LOGIN,
     META_ADS_OAUTH_SCOPE,
@@ -395,6 +396,7 @@ from .services import (
     generate_pdf_from_export_page,
     normalize_report_locale,
     normalize_meta_recent_posts,
+    normalize_meta_top_content,
     apply_plan_entitlements,
     build_report_pdf_export_url,
     can_schedule_report,
@@ -7502,6 +7504,7 @@ def _run_meta_business_suite_asset_discovery(
     access_token: str | None = None,
     received_scopes: list[str] | None = None,
     context: str = "meta_business_suite_discovery",
+    include_instagram: bool = True,
 ) -> dict[str, Any]:
     started_at = perf_counter()
     suite_integration = _get_or_create_meta_business_suite_integration_for_workspace(db, workspace_id)
@@ -7521,6 +7524,7 @@ def _run_meta_business_suite_asset_discovery(
         meta_ads_integration_id=meta_ads_integration.id,
         context=context,
         token_present=bool(normalized_token),
+        include_instagram=include_instagram,
     )
     if not normalized_token:
         _meta_oauth_log(
@@ -7567,7 +7571,11 @@ def _run_meta_business_suite_asset_discovery(
             )
 
     facebook_missing_scopes = _missing_scopes(_meta_pages_required_scopes_for_status(), scopes) if scopes else []
-    instagram_missing_scopes = _missing_scopes(_instagram_business_required_scopes_for_status(), scopes) if scopes else []
+    instagram_missing_scopes = (
+        _missing_scopes(_instagram_business_required_scopes_for_status(), scopes)
+        if scopes and include_instagram
+        else []
+    )
     meta_ads_missing_scopes = _meta_ads_missing_scopes(scopes) if scopes else []
 
     authorized_records: list[dict[str, Any]] = []
@@ -7580,7 +7588,7 @@ def _run_meta_business_suite_asset_discovery(
                 facebook_integration.id,
                 user_id=user_id,
                 context=context,
-                selected_integration_type="instagram_business",
+                selected_integration_type="instagram_business" if include_instagram else "facebook_pages",
             )
         except Exception as exc:
             pages_discovery_failed = True
@@ -7600,20 +7608,32 @@ def _run_meta_business_suite_asset_discovery(
         for record in authorized_records
         if isinstance(record, dict) and record.get("record_type") == META_RECORD_TYPE_FACEBOOK_PAGE
     ]
-    instagram_records = [
-        record
-        for record in authorized_records
-        if isinstance(record, dict) and record.get("record_type") == META_RECORD_TYPE_INSTAGRAM_ACCOUNT
-    ]
-    pages_with_instagram_business_account_count = sum(
-        1
-        for item in diagnostics
-        if isinstance(item, dict) and item.get("has_instagram_business_account")
+    instagram_records = (
+        [
+            record
+            for record in authorized_records
+            if isinstance(record, dict) and record.get("record_type") == META_RECORD_TYPE_INSTAGRAM_ACCOUNT
+        ]
+        if include_instagram
+        else []
     )
-    pages_with_connected_instagram_account_count = sum(
-        1
-        for item in diagnostics
-        if isinstance(item, dict) and item.get("has_connected_instagram_account")
+    pages_with_instagram_business_account_count = (
+        sum(
+            1
+            for item in diagnostics
+            if isinstance(item, dict) and item.get("has_instagram_business_account")
+        )
+        if include_instagram
+        else 0
+    )
+    pages_with_connected_instagram_account_count = (
+        sum(
+            1
+            for item in diagnostics
+            if isinstance(item, dict) and item.get("has_connected_instagram_account")
+        )
+        if include_instagram
+        else 0
     )
     _meta_oauth_log(
         "META_SUITE_PAGES_DISCOVERED",
@@ -7645,6 +7665,7 @@ def _run_meta_business_suite_asset_discovery(
         pages_with_connected_instagram_account_count=pages_with_connected_instagram_account_count,
         missing_scopes=instagram_missing_scopes,
         failed=pages_discovery_failed,
+        skipped=not include_instagram,
     )
 
     cached_facebook_records: list[MetaPage] = []
@@ -7660,7 +7681,7 @@ def _run_meta_business_suite_asset_discovery(
                 if record.record_type == META_RECORD_TYPE_FACEBOOK_PAGE
             },
         )
-    if not pages_discovery_failed and not instagram_missing_scopes:
+    if include_instagram and not pages_discovery_failed and not instagram_missing_scopes:
         cached_instagram_records = _cache_meta_pages(db, instagram_integration, user_id, instagram_records)
 
     meta_ads_accounts_discovered: list[dict[str, Any]] = []
@@ -7719,10 +7740,14 @@ def _run_meta_business_suite_asset_discovery(
         integration_id=facebook_integration.id,
         record_type=META_RECORD_TYPE_FACEBOOK_PAGE,
     )
-    instagram_count = _count_meta_records_for_integration(
-        db,
-        integration_id=instagram_integration.id,
-        record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+    instagram_count = (
+        _count_meta_records_for_integration(
+            db,
+            integration_id=instagram_integration.id,
+            record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+        )
+        if include_instagram
+        else 0
     )
     meta_ads_count = _count_meta_ad_accounts_cached(db, integration_id=meta_ads_integration.id)
 
@@ -7736,13 +7761,17 @@ def _run_meta_business_suite_asset_discovery(
         else "connected_no_assets"
     )
     instagram_status = (
-        "needs_permission"
-        if instagram_missing_scopes
-        else "connected"
-        if instagram_count > 0
-        else "checking"
-        if pages_discovery_failed
-        else "connected_no_assets"
+        (
+            "needs_permission"
+            if instagram_missing_scopes
+            else "connected"
+            if instagram_count > 0
+            else "checking"
+            if pages_discovery_failed
+            else "connected_no_assets"
+        )
+        if include_instagram
+        else _canonical_meta_frontend_status(instagram_integration.status)
     )
     meta_ads_status = (
         "needs_permission"
@@ -7756,7 +7785,8 @@ def _run_meta_business_suite_asset_discovery(
 
     _set_meta_integration_status(db, suite_integration, status="connected")
     _set_meta_integration_status(db, facebook_integration, status=facebook_status)
-    _set_meta_integration_status(db, instagram_integration, status=instagram_status)
+    if include_instagram:
+        _set_meta_integration_status(db, instagram_integration, status=instagram_status)
     _set_meta_integration_status(db, meta_ads_integration, status=meta_ads_status)
 
     failed = pages_discovery_failed or meta_ads_discovery_failed
@@ -7776,6 +7806,7 @@ def _run_meta_business_suite_asset_discovery(
         instagram_business_status=instagram_status,
         meta_ads_status=meta_ads_status,
         failed=failed,
+        include_instagram=include_instagram,
     )
     _meta_oauth_log(
         "META_SUITE_DISCOVERY_COMPLETED",
@@ -7791,6 +7822,7 @@ def _run_meta_business_suite_asset_discovery(
         instagram_accounts_count=instagram_count,
         ad_accounts_count=meta_ads_count,
         failed=failed,
+        include_instagram=include_instagram,
     )
     return {
         "status": "failed" if failed else "completed",
@@ -7828,6 +7860,7 @@ def _run_meta_business_suite_asset_discovery_background(
     workspace_id: int,
     user_id: int | None,
     context: str,
+    include_instagram: bool = True,
 ) -> None:
     db = SessionLocal()
     try:
@@ -7836,6 +7869,7 @@ def _run_meta_business_suite_asset_discovery_background(
             workspace_id=workspace_id,
             user_id=user_id,
             context=context,
+            include_instagram=include_instagram,
         )
     except Exception:
         logger.exception(
@@ -7855,6 +7889,7 @@ def _resolve_meta_suite_provider_statuses(
     user_id: int | None = None,
     context: str = "meta_suite_status_resolution",
     live_refresh: bool = False,
+    include_instagram: bool = False,
 ) -> dict[str, Any]:
     suite_integration = _get_or_create_meta_business_suite_integration_for_workspace(db, workspace_id)
     facebook_integration = _get_or_create_meta_integration_for_workspace(db, workspace_id)
@@ -7932,6 +7967,10 @@ def _resolve_meta_suite_provider_statuses(
             else "connected_no_assets"
             if instagram_child_status == "connected_no_assets"
             else "checking"
+            if instagram_child_status == "checking"
+            else "checking"
+            if include_instagram
+            else instagram_child_status
         )
         meta_ads_initial_status = (
             "connected"
@@ -8024,6 +8063,7 @@ def _resolve_meta_suite_provider_statuses(
             user_id=user_id,
             access_token=suite_access_token,
             context=context,
+            include_instagram=include_instagram,
         )
         refreshed_result = _resolve_meta_suite_provider_statuses(
             db,
@@ -9812,6 +9852,258 @@ def _extract_post_saves(post_metrics: dict) -> int | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _mask_meta_asset_id(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= 6:
+        return "***"
+    return f"{text[:3]}...{text[-3:]}"
+
+
+def _facebook_pages_top_content_timeframe(timeframe_config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "key": timeframe_config.get("key"),
+        "preset": timeframe_config.get("preset"),
+        "since": timeframe_config.get("since"),
+        "until": timeframe_config.get("until"),
+        "requested_since": timeframe_config.get("requested_since"),
+        "requested_until": timeframe_config.get("requested_until"),
+    }
+
+
+def _facebook_page_top_content_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, dict):
+        values = [_facebook_page_top_content_int(item) for item in value.values()]
+        values = [item for item in values if item is not None]
+        return int(sum(values)) if values else None
+    if isinstance(value, list):
+        values = [_facebook_page_top_content_int(item) for item in value]
+        values = [item for item in values if item is not None]
+        return int(sum(values)) if values else None
+    try:
+        return int(float(str(value).replace(",", "").strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _facebook_page_attachment_media_type(post: dict[str, Any]) -> str | None:
+    attachments = post.get("attachments")
+    if not isinstance(attachments, dict):
+        return None
+    data = attachments.get("data")
+    if not isinstance(data, list) or not data:
+        return None
+    first_attachment = data[0] if isinstance(data[0], dict) else {}
+    media_type = str(first_attachment.get("media_type") or "").strip()
+    return media_type or None
+
+
+def _facebook_page_top_content_metric(post_metrics: dict[str, Any], key: str) -> int | None:
+    value = post_metrics.get(key) if isinstance(post_metrics, dict) else None
+    return _facebook_page_top_content_int(value)
+
+
+def _build_facebook_page_top_content_item(
+    post: dict[str, Any],
+    post_metrics: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    post_id = str(post.get("id") or "").strip()
+    if not post_id:
+        return None
+    post_metrics = post_metrics if isinstance(post_metrics, dict) else {}
+    shares = post.get("shares")
+    shares_count = (
+        _facebook_page_top_content_int(shares.get("count"))
+        if isinstance(shares, dict)
+        else _facebook_page_top_content_int(shares)
+    )
+    summary_reactions = _extract_summary_total(post.get("reactions"))
+    summary_comments = _extract_summary_total(post.get("comments"))
+    insight_reactions = _facebook_page_top_content_metric(post_metrics, "post_reactions_by_type_total")
+    reactions_count = _first_non_none(summary_reactions, insight_reactions)
+    comments_count = summary_comments
+    engagement_total = sum(
+        int(value)
+        for value in (reactions_count, comments_count, shares_count)
+        if isinstance(value, int)
+    )
+    engaged_users = _facebook_page_top_content_metric(post_metrics, "post_engaged_users")
+    score = engaged_users if engaged_users is not None else engagement_total
+    return {
+        "post_id": post_id,
+        "created_time": str(post.get("created_time") or "") or None,
+        "message_preview": _meta_text_excerpt(
+            post.get("message") or post.get("story"),
+            fallback="Untitled content",
+            limit=160,
+        ),
+        "permalink_url": str(post.get("permalink_url") or "") or None,
+        "media_type": _facebook_page_attachment_media_type(post),
+        "impressions": _facebook_page_top_content_metric(post_metrics, "post_impressions"),
+        "reach": _facebook_page_top_content_metric(post_metrics, "post_impressions_unique"),
+        "engaged_users": engaged_users,
+        "reactions": reactions_count,
+        "comments": comments_count,
+        "shares": shares_count,
+        "engagement_total": engagement_total,
+        "score": score,
+    }
+
+
+def _facebook_page_recent_post_from_top_content(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": item.get("post_id"),
+        "message": item.get("message_preview"),
+        "created_time": item.get("created_time"),
+        "permalink_url": item.get("permalink_url"),
+        "reach": item.get("reach"),
+        "reactions": item.get("reactions"),
+        "comments": item.get("comments"),
+        "shares": item.get("shares"),
+        "saves": None,
+    }
+
+
+def _rank_facebook_page_top_content(items: list[dict[str, Any]], *, limit: int = 5) -> list[dict[str, Any]]:
+    return sorted(
+        items,
+        key=lambda item: (
+            _facebook_page_top_content_int(item.get("score")) or 0,
+            _facebook_page_top_content_int(item.get("engagement_total")) or 0,
+            _facebook_page_top_content_int(item.get("impressions")) or 0,
+            str(item.get("created_time") or ""),
+        ),
+        reverse=True,
+    )[:limit]
+
+
+def _sync_facebook_page_top_content(
+    *,
+    access_token: str,
+    workspace_id: int,
+    page_id: str,
+    page_name: str,
+    timeframe_config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    timeframe_payload = _facebook_pages_top_content_timeframe(timeframe_config)
+    safe_page_id = _mask_meta_asset_id(page_id)
+    _log_json_event(
+        "FACEBOOK_PAGE_TOP_CONTENT_SYNC_STARTED",
+        {
+            "workspace_id": workspace_id,
+            "page_id_masked": safe_page_id,
+            "posts_count": 0,
+            "top_content_count": 0,
+            "timeframe": timeframe_payload,
+        },
+    )
+    raw_posts: list[dict[str, Any]] = []
+    try:
+        raw_posts = fetch_page_posts(
+            access_token,
+            page_id,
+            limit=25,
+            since=str(timeframe_config.get("since") or "") or None,
+            until=str(timeframe_config.get("until") or "") or None,
+            fields=FACEBOOK_PAGE_TOP_CONTENT_POST_FIELDS,
+        )
+    except HTTPException as exc:
+        if not _is_meta_api_error(exc):
+            raise
+        logger.warning(
+            "FACEBOOK_PAGE_TOP_CONTENT_POSTS_FETCH_FAILED",
+            extra={
+                "workspace_id": workspace_id,
+                "page_id_masked": safe_page_id,
+                "timeframe": timeframe_payload,
+                "error": exc.detail if isinstance(exc.detail, dict) else str(exc.detail),
+            },
+        )
+    _log_json_event(
+        "FACEBOOK_PAGE_TOP_CONTENT_POSTS_FETCHED",
+        {
+            "workspace_id": workspace_id,
+            "page_id_masked": safe_page_id,
+            "posts_count": len(raw_posts),
+            "top_content_count": 0,
+            "timeframe": timeframe_payload,
+        },
+    )
+
+    candidates: list[dict[str, Any]] = []
+    recent_posts: list[dict[str, Any]] = []
+    insights_fetched = 0
+    insights_failed = 0
+    for raw_post in raw_posts:
+        if not isinstance(raw_post, dict):
+            continue
+        post_id = str(raw_post.get("id") or "").strip()
+        if not post_id:
+            continue
+        post_metrics: dict[str, Any] = {}
+        try:
+            post_metrics = fetch_post_metrics(access_token, post_id)
+            insights_fetched += 1
+        except HTTPException as exc:
+            if not _is_meta_api_error(exc):
+                raise
+            insights_failed += 1
+            logger.warning(
+                "FACEBOOK_PAGE_TOP_CONTENT_POST_INSIGHTS_FETCH_FAILED",
+                extra={
+                    "workspace_id": workspace_id,
+                    "page_id_masked": safe_page_id,
+                    "post_id_masked": _mask_meta_asset_id(post_id),
+                    "timeframe": timeframe_payload,
+                    "error": exc.detail if isinstance(exc.detail, dict) else str(exc.detail),
+                },
+            )
+        item = _build_facebook_page_top_content_item(raw_post, post_metrics)
+        if item is None:
+            continue
+        candidates.append(item)
+        recent_posts.append(_facebook_page_recent_post_from_top_content(item))
+    _log_json_event(
+        "FACEBOOK_PAGE_TOP_CONTENT_INSIGHTS_FETCHED",
+        {
+            "workspace_id": workspace_id,
+            "page_id_masked": safe_page_id,
+            "posts_count": len(candidates),
+            "top_content_count": 0,
+            "timeframe": timeframe_payload,
+            "insights_fetched_count": insights_fetched,
+            "insights_failed_count": insights_failed,
+        },
+    )
+    top_content = _rank_facebook_page_top_content(candidates, limit=5)
+    _log_json_event(
+        "FACEBOOK_PAGE_TOP_CONTENT_SYNC_COMPLETED",
+        {
+            "workspace_id": workspace_id,
+            "page_id_masked": safe_page_id,
+            "posts_count": len(candidates),
+            "top_content_count": len(top_content),
+            "timeframe": timeframe_payload,
+        },
+    )
+    logger.info(
+        "Meta Pages top content sync completed",
+        extra={
+            "integration_id": None,
+            "workspace_id": workspace_id,
+            "page_id_masked": safe_page_id,
+            "page_name": page_name,
+            "posts_count": len(candidates),
+            "top_content_count": len(top_content),
+            "timeframe": timeframe_payload,
+        },
+    )
+    return recent_posts, top_content
 
 
 def _expand_meta_daily_series(
@@ -12103,6 +12395,7 @@ def _run_meta_pages_oauth_callback(
         state_integration_id = int(payload.get("integration_id", 0)) if payload.get("integration_id") else None
         selected_integration_type = normalize_meta_oauth_integration_type(payload.get("integration_type"))
         reconnect_requested = bool(payload.get("reconnect"))
+        include_linked_instagram = bool(payload.get("include_linked_instagram"))
         requested_auth_mode = str(payload.get("requested_auth_mode") or "legacy_scope").strip() or "legacy_scope"
         state_source = str(payload.get("source") or "").strip() or None
         state_provider = str(payload.get("provider") or "").strip() or None
@@ -12685,17 +12978,6 @@ def _run_meta_pages_oauth_callback(
                             facebook_missing_scopes,
                         ),
                         (
-                            "instagram_business",
-                            instagram_integration,
-                            "needs_permission"
-                            if instagram_missing_scopes
-                            else "connected"
-                            if instagram_asset_count > 0
-                            else "checking",
-                            instagram_asset_count,
-                            instagram_missing_scopes,
-                        ),
-                        (
                             "meta_ads",
                             meta_ads_integration,
                             "needs_permission"
@@ -12707,10 +12989,27 @@ def _run_meta_pages_oauth_callback(
                             meta_ads_missing_scopes,
                         ),
                     ]
+                    if include_linked_instagram:
+                        provider_updates.insert(
+                            1,
+                            (
+                                "instagram_business",
+                                instagram_integration,
+                                "needs_permission"
+                                if instagram_missing_scopes
+                                else "connected"
+                                if instagram_asset_count > 0
+                                else "checking",
+                                instagram_asset_count,
+                                instagram_missing_scopes,
+                            ),
+                        )
                     callback_provider = "meta_business_suite"
                     callback_visible_integration = suite_token_integration
                     callback_status = "connected"
-                    callback_asset_count = facebook_asset_count + instagram_asset_count + meta_ads_asset_count
+                    callback_asset_count = facebook_asset_count + meta_ads_asset_count
+                    if include_linked_instagram:
+                        callback_asset_count += instagram_asset_count
                     callback_missing_scopes: list[str] = []
                     callback_message = "Meta Business Suite connected successfully."
                     callback_error = None
@@ -12765,6 +13064,7 @@ def _run_meta_pages_oauth_callback(
                         workspace_id=workspace_id,
                         user_id=effective_user_id,
                         context="meta_business_suite_oauth_callback_background",
+                        include_instagram=include_linked_instagram or is_instagram_business_flow,
                     )
                 status_persist_ms = round((perf_counter() - status_persist_started_at) * 1000, 2)
                 for provider_name, provider_integration, provider_status, provider_asset_count, provider_missing_scopes in provider_updates:
@@ -16370,6 +16670,21 @@ def _meta_recent_posts(context: dict) -> list[dict]:
     return [post for post in posts if isinstance(post, dict)]
 
 
+def _meta_top_content(context: dict) -> list[dict[str, Any]]:
+    report_inputs = context.get("report_inputs") if isinstance(context.get("report_inputs"), dict) else {}
+    items = report_inputs.get("top_content")
+    if not isinstance(items, list):
+        normalized_metrics = (
+            report_inputs.get("normalized_report_metrics")
+            if isinstance(report_inputs.get("normalized_report_metrics"), dict)
+            else {}
+        )
+        items = normalized_metrics.get("top_content") if isinstance(normalized_metrics, dict) else []
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
 def _meta_report_inputs(context: dict) -> dict:
     report_inputs = context.get("report_inputs")
     return report_inputs if isinstance(report_inputs, dict) else {}
@@ -17946,6 +18261,12 @@ def _build_five_slide_summary_payload(
     engagement_payload: dict[str, Any],
     page_views_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    top_content = _rank_facebook_page_top_content(_meta_top_content(context), limit=5)
+    top_content_title = (
+        "Top 5 Content This Month"
+        if "month" in period_label.lower()
+        else "Top 5 Content in Selected Period"
+    )
     followers_card = _build_context_metric_summary_card(
         context,
         metric_key="followers",
@@ -18050,6 +18371,8 @@ def _build_five_slide_summary_payload(
         "slide_type": "executive_summary",
         "title": "Executive Summary",
         "title_en": "Executive Summary",
+        "top_content_title": top_content_title,
+        "top_content": top_content,
         "branding": context.get("branding") if isinstance(context.get("branding"), dict) else {},
         "metrics_summary": metrics_summary,
         "ai_summary": ai_summary,
@@ -18064,7 +18387,8 @@ def _build_five_slide_summary_payload(
             str(card.get("raw_metric_name") or key)
             for key, card in metrics_summary.items()
             if isinstance(card, dict)
-        ],
+        ]
+        + (["page_posts", "post_insights"] if top_content else []),
         "timeframe": context.get("report_timeframe") or {},
     }
 
@@ -24423,6 +24747,7 @@ def meta_visible_provider_status(
             user_id=current_user.id,
             context=f"meta_visible_provider_status:{provider}",
             live_refresh=refresh,
+            include_instagram=provider == "instagram_business",
         ),
         context=f"meta_visible_provider_status:{provider}",
     )
@@ -26732,6 +27057,7 @@ def meta_business_suite_instagram_accounts(
         user_id=current_user.id,
         context="meta_business_suite_instagram_accounts",
         live_refresh=refresh,
+        include_instagram=True,
     )
     suite_integration_id = int(suite_status.get("suite_integration_id") or 0) or None
     instagram_status = _canonical_meta_provider_status_out(
@@ -26896,6 +27222,14 @@ def _build_meta_business_suite_connect_payload(
     instagram_integration = _get_or_create_instagram_business_integration_for_workspace(db, resolved_workspace_id)
     meta_ads_integration = _get_or_create_meta_ads_integration_for_workspace(db, resolved_workspace_id)
     visible_provider = _normalize_meta_visible_provider(state_provider) or _normalize_meta_visible_provider(request_source)
+    is_legacy_instagram_connect = (
+        visible_provider == "instagram_business"
+        or request_source == "instagram_business"
+        or state_provider == "instagram_business"
+        or state_source == "instagram_business"
+        or state_integration_type == "instagram_business"
+    )
+    oauth_integration_type = "instagram_business" if is_legacy_instagram_connect else "meta_business_suite"
     visible_integration = suite_integration
     if visible_provider == "facebook_pages":
         visible_integration = facebook_integration
@@ -26904,10 +27238,10 @@ def _build_meta_business_suite_connect_payload(
     elif visible_provider == "meta_ads":
         visible_integration = meta_ads_integration
 
-    selected_scope = _meta_oauth_expected_scope_string("meta_business_suite")
-    requested_scopes = _meta_oauth_expected_scopes("meta_business_suite")
-    requested_auth_mode = get_meta_pages_auth_mode("meta_business_suite")
-    config_id = get_meta_oauth_config_id("meta_business_suite")
+    selected_scope = _meta_oauth_expected_scope_string(oauth_integration_type)
+    requested_scopes = _meta_oauth_expected_scopes(oauth_integration_type)
+    requested_auth_mode = get_meta_pages_auth_mode(oauth_integration_type)
+    config_id = get_meta_oauth_config_id(oauth_integration_type)
     redirect_uri = _meta_pages_redirect_uri()
 
     _meta_oauth_log(
@@ -26991,8 +27325,9 @@ def _build_meta_business_suite_connect_payload(
             "source": state_source,
             "integration_type": state_integration_type,
             "oauth_suite": "meta_business_suite",
-            "include_linked_instagram": True,
+            "include_linked_instagram": is_legacy_instagram_connect,
             "include_ads": True,
+            "oauth_integration_type": oauth_integration_type,
             "requested_auth_mode": requested_auth_mode,
             "callback_route": "/integrations/meta/callback-pages",
             "reconnect": reconnect,
@@ -27004,7 +27339,7 @@ def _build_meta_business_suite_connect_payload(
         redirect_uri=redirect_uri,
         auth_type="rerequest",
         scope=None if requested_auth_mode == "business_login_config_id" else selected_scope,
-        integration_type="meta_business_suite",
+        integration_type=oauth_integration_type,
     )
     _meta_oauth_log(
         "META_BUSINESS_SUITE_AUTH_URL_CREATED",
@@ -27026,7 +27361,11 @@ def _build_meta_business_suite_connect_payload(
         "auth_mode": requested_auth_mode,
         "provider": visible_provider or "meta_business_suite",
         "source": visible_provider or "meta_business_suite",
-        "message": "Connect Meta Business Suite to discover Facebook Pages, linked Instagram Business accounts, and Meta Ads accounts.",
+        "message": (
+            "Connect Instagram Business through Meta Business Suite to discover linked accounts."
+            if is_legacy_instagram_connect
+            else "Connect Meta Business Suite to discover Facebook Pages and Meta Ads accounts."
+        ),
     }
 
 
@@ -27333,6 +27672,7 @@ def instagram_business_status(
         user_id=current_user.id,
         context="instagram_business_status",
         live_refresh=refresh,
+        include_instagram=True,
     )
     canonical_status = _canonical_meta_provider_status_out(
         db,
@@ -30766,6 +31106,7 @@ def _resolve_instagram_business_sync_integration(
             user_id=current_user.id,
             context="instagram_business_sync_resolution",
             live_refresh=False,
+            include_instagram=True,
         )
         canonical_status = _canonical_meta_provider_status_out(
             db,
@@ -31165,6 +31506,7 @@ def _run_meta_pages_sync(
         page_counts: dict = {}
         insights: dict = {}
         posts: list[dict] = []
+        top_content: list[dict[str, Any]] = []
         reach_daily: list[dict] = []
         organic_impressions_daily: list[dict] = []
         views_daily: list[dict] = []
@@ -31527,45 +31869,21 @@ def _run_meta_pages_sync(
                 },
             )
 
-            try:
-                posts = fetch_page_posts(access_token, resolved_page_id, limit=5)
-            except HTTPException as exc:
-                if not _is_meta_api_error(exc):
-                    raise
-
-            enriched_posts: list[dict] = []
-            posts_found = len(posts)
-            for post in posts:
-                post_id = str(post.get("id") or "")
-                if not post_id:
-                    continue
-                shares = post.get("shares")
-                post_payload = {
-                    "id": post_id,
-                    "message": post.get("message"),
-                    "created_time": post.get("created_time"),
-                    "permalink_url": post.get("permalink_url"),
-                    "reach": None,
-                    "reactions": _extract_summary_total(post.get("reactions")),
-                    "comments": _extract_summary_total(post.get("comments")),
-                    "shares": shares.get("count") if isinstance(shares, dict) else None,
-                    "saves": None,
-                }
-                try:
-                    post_metrics = fetch_post_metrics(access_token, post_id)
-                    post_payload["reach"] = post_metrics.get("post_impressions")
-                except HTTPException as exc:
-                    if not _is_meta_api_error(exc):
-                        raise
-                enriched_posts.append(post_payload)
-            posts = enriched_posts
+            posts, top_content = _sync_facebook_page_top_content(
+                access_token=access_token,
+                workspace_id=integration.workspace_id,
+                page_id=resolved_page_id,
+                page_name=page_name,
+                timeframe_config=timeframe_config,
+            )
             logger.info(
                 "Meta Pages posts fetch completed",
                 extra={
                     "integration_id": integration.id,
                     "page_id": resolved_page_id,
-                    "posts_found": posts_found,
-                    "posts_enriched": len(enriched_posts),
+                    "posts_found": len(posts),
+                    "posts_enriched": len(posts),
+                    "top_content_count": len(top_content),
                 },
             )
 
@@ -31595,10 +31913,12 @@ def _run_meta_pages_sync(
                 "impressions_daily",
                 "reach_daily",
                 "recent_posts",
+                "top_content",
             ],
         )
         writer.writeheader()
         normalized_posts = normalize_meta_recent_posts(posts)
+        normalized_top_content = normalize_meta_top_content(top_content)
         posts_analyzed_count = len(normalized_posts)
         reactions_total = _first_non_none(
             insights.get("report_reactions_total"),
@@ -31683,6 +32003,7 @@ def _run_meta_pages_sync(
                 "impressions_daily": json.dumps(organic_impressions_daily),
                 "reach_daily": json.dumps(reach_daily),
                 "recent_posts": json.dumps(normalized_posts),
+                "top_content": json.dumps(normalized_top_content),
             }
         )
 
@@ -31717,6 +32038,7 @@ def _run_meta_pages_sync(
             "comments_total": comments_total,
             "shares_total": shares_total,
             "top_post_by_engagement": top_post_by_engagement,
+            "top_content": normalized_top_content,
             "timeframe": {
                 "key": timeframe_config["key"],
                 "label": timeframe_config["label"],
@@ -31861,6 +32183,7 @@ def _run_meta_pages_sync(
                 "comments_total": comments_total,
                 "shares_total": shares_total,
                 "top_post_by_engagement": top_post_by_engagement,
+                "top_content": normalized_top_content,
                 "views_total": page_views_total,
                 "views_daily": views_daily,
                 "viewers_total": reach,

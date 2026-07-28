@@ -534,6 +534,54 @@ def test_facebook_pages_final_report_structure_keeps_executive_summary_as_slide_
     assert slide_payloads[4]["slide_type"] != "cover"
 
 
+def test_facebook_pages_slide_five_includes_top_content_without_adding_slide_six():
+    context = _base_context(integration_type="facebook_pages")
+    context["report_timeframe"] = {"label": "June 2026", "since": "2026-06-01", "until": "2026-06-30"}
+    context["report_inputs"]["top_content"] = [
+        {
+            "post_id": "post-1",
+            "created_time": "2026-06-10T12:00:00+0000",
+            "message_preview": "Strong content",
+            "permalink_url": "https://facebook.com/post-1",
+            "media_type": "photo",
+            "impressions": 1000,
+            "reach": 800,
+            "engaged_users": 90,
+            "reactions": 40,
+            "comments": 8,
+            "shares": 3,
+            "engagement_total": 51,
+            "score": 90,
+        },
+        {
+            "post_id": "post-2",
+            "created_time": "2026-06-12T12:00:00+0000",
+            "message_preview": "Fallback content",
+            "permalink_url": "https://facebook.com/post-2",
+            "media_type": "video",
+            "impressions": None,
+            "reach": None,
+            "engaged_users": None,
+            "reactions": 20,
+            "comments": 4,
+            "shares": 2,
+            "engagement_total": 26,
+            "score": 26,
+        },
+    ]
+
+    blocks = build_5_blocks(context)
+    slide_payloads = [json.loads(block["data_json"]) for block in blocks]
+
+    assert len(slide_payloads) == 5
+    assert slide_payloads[4]["slide_number"] == 5
+    assert slide_payloads[4]["slide_type"] == "executive_summary"
+    assert slide_payloads[4]["title"] == "Executive Summary"
+    assert slide_payloads[4]["top_content_title"] == "Top 5 Content in Selected Period"
+    assert [item["post_id"] for item in slide_payloads[4]["top_content"]] == ["post-1", "post-2"]
+    assert "page_posts" in slide_payloads[4]["source_metrics_used"]
+
+
 def test_build_5_blocks_facebook_pages_never_uses_invalid_or_cross_metric_aliases():
     blocks = build_5_blocks(_base_context(integration_type="facebook_pages"))
     slides = [json.loads(block["data_json"]) for block in blocks]
