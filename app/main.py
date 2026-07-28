@@ -219,6 +219,7 @@ from .schemas import (
     InstagramBusinessLoginAccountsOut,
     InstagramBusinessLoginAccountOut,
     InstagramBusinessLoginConnectOut,
+    InstagramBusinessLoginDisconnectOut,
     InstagramBusinessLoginStatusOut,
     InstagramBusinessLoginSyncIn,
     InstagramBusinessLoginSyncOut,
@@ -27838,10 +27839,11 @@ def _instagram_business_login_status_payload(
     missing_scopes = _instagram_business_login_missing_scopes(list(dict.fromkeys(granted_scopes)))
 
     if not token_present or not access_token:
+        status = "disconnected" if _canonical_meta_frontend_status(integration.status) == "disconnected" else "no_token"
         return InstagramBusinessLoginStatusOut(
             provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
             connected=False,
-            status="no_token",
+            status=status,
             integration_id=integration.id,
             account_count=account_count,
             missing_scopes=[],
@@ -27875,6 +27877,103 @@ def _instagram_business_login_status_payload(
         account_count=account_count,
         missing_scopes=[],
         message=None,
+    )
+
+
+def _resolve_instagram_business_login_disconnect_target(
+    db: Session,
+    current_user: User,
+    *,
+    integration_id: int | None,
+    workspace_id: int | None,
+) -> tuple[int | None, Integration | None]:
+    if integration_id is not None:
+        integration = _resolve_instagram_business_login_integration(
+            db,
+            current_user,
+            integration_id=integration_id,
+            workspace_id=workspace_id,
+        )
+        return integration.workspace_id, integration
+
+    resolved_workspace_id = _resolve_instagram_business_login_workspace_id(
+        db,
+        current_user,
+        workspace_id=workspace_id,
+    )
+    integration = (
+        db.query(Integration)
+        .filter(
+            Integration.workspace_id == resolved_workspace_id,
+            Integration.provider == INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        )
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    return resolved_workspace_id, integration
+
+
+def _disconnect_instagram_business_login_integration(
+    db: Session,
+    integration: Integration | None,
+    *,
+    workspace_id: int | None,
+) -> InstagramBusinessLoginDisconnectOut:
+    if integration is None:
+        return InstagramBusinessLoginDisconnectOut(
+            integration_id=None,
+            cleared_accounts=0,
+            cleared_integration_accounts=0,
+            cleared_tokens=0,
+            token_cleared=False,
+        )
+
+    meta_records = _instagram_business_login_account_records(db, integration)
+    integration_accounts = (
+        db.query(IntegrationAccount)
+        .filter(IntegrationAccount.integration_id == integration.id)
+        .all()
+    )
+    integration_account_ids = [account.id for account in integration_accounts]
+    cleared_tokens = (
+        db.query(IntegrationToken)
+        .filter(IntegrationToken.account_id.in_(integration_account_ids))
+        .count()
+        if integration_account_ids
+        else 0
+    )
+
+    for record in meta_records:
+        db.delete(record)
+    for account in integration_accounts:
+        db.delete(account)
+    integration.status = "disconnected"
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+
+    logger.info(
+        "INSTAGRAM_BUSINESS_LOGIN_DISCONNECTED %s",
+        json.dumps(
+            {
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "workspace_id": workspace_id or integration.workspace_id,
+                "integration_id": integration.id,
+                "cleared_accounts": len(meta_records),
+                "cleared_integration_accounts": len(integration_accounts),
+                "cleared_tokens": cleared_tokens,
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
+    return InstagramBusinessLoginDisconnectOut(
+        integration_id=integration.id,
+        cleared_accounts=len(meta_records),
+        cleared_integration_accounts=len(integration_accounts),
+        cleared_tokens=cleared_tokens,
+        token_cleared=cleared_tokens > 0,
     )
 
 
@@ -28007,6 +28106,56 @@ def instagram_business_login_accounts(
         provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
         integration_id=integration.id,
         accounts=[_instagram_business_login_account_out(record) for record in records],
+    )
+
+
+@app.delete("/integrations/instagram-business-login/disconnect", response_model=InstagramBusinessLoginDisconnectOut)
+@app.post("/integrations/instagram-business-login/disconnect", response_model=InstagramBusinessLoginDisconnectOut)
+def instagram_business_login_disconnect(
+    workspace_id: int | None = Query(default=None),
+    integration_id: int | None = Query(default=None),
+    payload: dict | None = Body(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramBusinessLoginDisconnectOut:
+    raw_payload = payload if isinstance(payload, dict) else {}
+    resolved_integration_id = raw_payload.get("integration_id") or raw_payload.get("integrationId") or integration_id
+    resolved_workspace_id = raw_payload.get("workspace_id") or raw_payload.get("workspaceId") or workspace_id
+    if resolved_integration_id is not None:
+        try:
+            resolved_integration_id = int(resolved_integration_id)
+        except (TypeError, ValueError):
+            raise http_error(422, "invalid_integration_id", "integration_id must be an integer.")
+    if resolved_workspace_id is not None:
+        try:
+            resolved_workspace_id = int(resolved_workspace_id)
+        except (TypeError, ValueError):
+            raise http_error(422, "invalid_workspace_id", "workspace_id must be an integer.")
+
+    workspace_id_for_log, integration = _resolve_instagram_business_login_disconnect_target(
+        db,
+        current_user,
+        integration_id=resolved_integration_id,
+        workspace_id=resolved_workspace_id,
+    )
+    logger.info(
+        "INSTAGRAM_BUSINESS_LOGIN_DISCONNECT_REQUESTED %s",
+        json.dumps(
+            {
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "workspace_id": workspace_id_for_log,
+                "integration_id": integration.id if integration else resolved_integration_id,
+                "has_integration": integration is not None,
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
+    return _disconnect_instagram_business_login_integration(
+        db,
+        integration,
+        workspace_id=workspace_id_for_log,
     )
 
 

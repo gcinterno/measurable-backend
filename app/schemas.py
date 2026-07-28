@@ -1032,6 +1032,17 @@ class InstagramBusinessLoginStatusOut(BaseModel):
     message: Optional[str] = None
 
 
+class InstagramBusinessLoginDisconnectOut(BaseModel):
+    success: bool = True
+    provider: str = "instagram_business_login"
+    status: str = "disconnected"
+    integration_id: Optional[int] = None
+    cleared_accounts: int = 0
+    cleared_integration_accounts: int = 0
+    cleared_tokens: int = 0
+    token_cleared: bool = False
+
+
 class InstagramBusinessLoginAccountOut(BaseModel):
     id: str
     instagram_user_id: str

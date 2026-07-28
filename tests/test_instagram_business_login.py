@@ -209,6 +209,67 @@ def test_instagram_business_login_connect_uses_instagram_scopes(client):
     ]
 
 
+def test_instagram_business_login_disconnect_clears_token_and_cached_account(client):
+    refs = _seed_connected_instagram_login()
+
+    response = client.delete(
+        "/integrations/instagram-business-login/disconnect",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["provider"] == "instagram_business_login"
+    assert payload["status"] == "disconnected"
+    assert payload["integration_id"] == refs["integration_id"]
+    assert payload["cleared_accounts"] == 1
+    assert payload["cleared_integration_accounts"] == 2
+    assert payload["cleared_tokens"] == 1
+    assert payload["token_cleared"] is True
+
+    status_response = client.get(
+        "/integrations/instagram-business-login/status",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["connected"] is False
+    assert status_response.json()["status"] == "disconnected"
+    assert status_response.json()["account_count"] == 0
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, int(refs["integration_id"]))
+        assert integration is not None
+        assert integration.status == "disconnected"
+        assert db.query(IntegrationAccount).filter(IntegrationAccount.integration_id == integration.id).count() == 0
+        assert db.query(IntegrationToken).count() == 0
+        assert db.query(MetaPage).filter(MetaPage.integration_id == integration.id).count() == 0
+    finally:
+        db.close()
+
+
+def test_instagram_business_login_disconnect_is_idempotent_without_existing_integration(client):
+    refs = _seed_user_workspace("ig-login-disconnect-empty@example.com")
+
+    response = client.post(
+        "/integrations/instagram-business-login/disconnect",
+        headers=_auth_headers(refs["user_id"]),
+        json={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["provider"] == "instagram_business_login"
+    assert payload["status"] == "disconnected"
+    assert payload["integration_id"] is None
+    assert payload["cleared_accounts"] == 0
+    assert payload["cleared_tokens"] == 0
+
+
 def test_instagram_business_login_callback_saves_standalone_provider_and_token(client, monkeypatch):
     refs = _seed_user_workspace("ig-login-callback@example.com")
     connect_response = client.get(
