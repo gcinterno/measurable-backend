@@ -143,7 +143,13 @@ from .report_metric_catalog import (
     get_available_report_metrics,
     get_metric_catalog_entries,
 )
+from .report_recipe_enforcement import (
+    ReportRecipeEnforcementError,
+    enforce_report_recipe,
+    should_enforce_facebook_pages_5_recipe,
+)
 from .report_recipes import (
+    FACEBOOK_PAGES_5_RECIPE,
     ReportRecipe,
     get_report_recipe,
     get_report_recipes_for_platform,
@@ -22585,12 +22591,13 @@ def _create_meta_dataset_report(
             "number_of_blocks_final": len(block_specs),
         },
     )
-    if (
-        report_source == "meta_pages_v2"
-        and str(report_inputs.get("integration_type") or "").strip() in {"facebook_pages", "meta_pages"}
-        and int(slide_limits["effective_slide_limit"]) == 5
+    if should_enforce_facebook_pages_5_recipe(
+        report_source=report_source,
+        integration_type=str(report_inputs.get("integration_type") or "").strip(),
+        effective_slide_limit=int(slide_limits["effective_slide_limit"]),
     ):
         block_specs = _ensure_facebook_pages_five_slide_structure(block_specs)
+        block_specs = _enforce_facebook_pages_5_recipe(block_specs)
         slide_types_order = _facebook_pages_report_slide_types(block_specs)
         _log_json_event(
             "FACEBOOK_PAGES_REPORT_STRUCTURE_CREATED",
@@ -23109,6 +23116,26 @@ def get_report_recipe_catalog_item(
     if recipe is None:
         raise http_error(404, "recipe_not_found", "Report recipe not found.")
     return _report_recipe_response(recipe)
+
+
+def _enforce_facebook_pages_5_recipe(
+    block_specs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    try:
+        return cast(
+            list[dict[str, Any]],
+            enforce_report_recipe(block_specs, FACEBOOK_PAGES_5_RECIPE),
+        )
+    except ReportRecipeEnforcementError as exc:
+        logger.error(
+            "facebook_pages_recipe_enforcement_failed",
+            extra=exc.to_log_payload(),
+        )
+        raise http_error(
+            500,
+            "facebook_pages_recipe_enforcement_failed",
+            "Facebook Pages report structure does not match the canonical Recipe.",
+        ) from exc
 
 
 @app.get("/reports", response_model=list[ReportListItemOut])
