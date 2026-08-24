@@ -20030,6 +20030,87 @@ def _renumber_blocks(blocks: list[dict]) -> list[dict]:
     return renumbered
 
 
+def _build_facebook_pages_5_cover_block(
+    *,
+    dataset: dict,
+    report_timeframe: dict,
+    resolved_branding: dict,
+    metric_context: dict,
+    order: int,
+) -> dict:
+    return _meta_report_block(
+        "title",
+        order,
+        {
+            "slide_number": order,
+            "slide_type": "cover",
+            "text": "Facebook Pages Report - Summary & Insights",
+            "subtitle": dataset["page_name"],
+            "page_name": dataset["page_name"],
+            "platform": "Facebook Pages",
+            "timeframe": report_timeframe,
+            "period_label": report_timeframe.get("label"),
+            "period_since": report_timeframe.get("since"),
+            "period_until": report_timeframe.get("until"),
+            "branding": resolved_branding,
+            "brand_name": resolved_branding.get("resolved_brand_name"),
+            "brand_logo_url": resolved_branding.get("resolved_logo_url"),
+            "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
+            "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
+            "cover_branding": {
+                "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
+                "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
+            },
+            "provider": FACEBOOK_PAGES_PROVIDER
+            if _facebook_pages_is_catalog_managed_context(metric_context)
+            else _meta_integration_type(metric_context),
+            "availability_status": "available",
+            "source_metrics_used": [],
+            "semantic_name": "cover",
+        },
+        ["text", "subtitle"],
+    )
+
+
+def _build_facebook_pages_5_metric_block(
+    *,
+    order: int,
+    payload: dict[str, Any],
+) -> dict:
+    return _meta_report_block(
+        "stat",
+        order,
+        {
+            "slide_number": order,
+            "slide_type": "metric",
+            **payload,
+        },
+    )
+
+
+def _build_facebook_pages_5_summary_block(
+    *,
+    order: int,
+    metric_context: dict,
+    period_label: str,
+    organic_impressions_payload: dict[str, Any],
+    engagement_payload: dict[str, Any],
+    page_views_payload: dict[str, Any],
+) -> dict:
+    return _meta_report_block(
+        "text",
+        order,
+        _build_five_slide_summary_payload(
+            metric_context,
+            period_label=period_label,
+            organic_impressions_payload=organic_impressions_payload,
+            engagement_payload=engagement_payload,
+            page_views_payload=page_views_payload,
+        ),
+        ["text"],
+    )
+
+
 def build_5_blocks(dataset: dict) -> list[dict]:
     # Source of truth for official social 5-slide report structure:
     # cover, organic impressions, engagement, page views, summary.
@@ -20115,74 +20196,32 @@ def build_5_blocks(dataset: dict) -> list[dict]:
             },
         )
     blocks = [
-        _meta_report_block(
-            "title",
-            1,
-            {
-                "slide_number": 1,
-                "slide_type": "cover",
-                "text": "Facebook Pages Report - Summary & Insights",
-                "subtitle": dataset["page_name"],
-                "page_name": dataset["page_name"],
-                "platform": "Facebook Pages",
-                "timeframe": report_timeframe,
-                "period_label": report_timeframe.get("label"),
-                "period_since": report_timeframe.get("since"),
-                "period_until": report_timeframe.get("until"),
-                "branding": resolved_branding,
-                "brand_name": resolved_branding.get("resolved_brand_name"),
-                "brand_logo_url": resolved_branding.get("resolved_logo_url"),
-                "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
-                "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
-                "cover_branding": {
-                    "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
-                    "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
-                },
-                "provider": FACEBOOK_PAGES_PROVIDER if _facebook_pages_is_catalog_managed_context(metric_context) else _meta_integration_type(metric_context),
-                "availability_status": "available",
-                "source_metrics_used": [],
-                "semantic_name": "cover",
-            },
-            ["text", "subtitle"],
+        _build_facebook_pages_5_cover_block(
+            dataset=dataset,
+            report_timeframe=report_timeframe,
+            resolved_branding=resolved_branding,
+            metric_context=metric_context,
+            order=1,
         ),
-        _meta_report_block(
-            "stat",
-            2,
-            {
-                "slide_number": 2,
-                "slide_type": "metric",
-                **organic_impressions_payload,
-            },
+        _build_facebook_pages_5_metric_block(
+            order=2,
+            payload=organic_impressions_payload,
         ),
-        _meta_report_block(
-            "stat",
-            3,
-            {
-                "slide_number": 3,
-                "slide_type": "metric",
-                **engagement_payload,
-            },
+        _build_facebook_pages_5_metric_block(
+            order=3,
+            payload=engagement_payload,
         ),
-        _meta_report_block(
-            "stat",
-            4,
-            {
-                "slide_number": 4,
-                "slide_type": "metric",
-                **page_views_payload,
-            },
+        _build_facebook_pages_5_metric_block(
+            order=4,
+            payload=page_views_payload,
         ),
-        _meta_report_block(
-            "text",
-            5,
-            _build_five_slide_summary_payload(
-                metric_context,
-                period_label=period_label,
-                organic_impressions_payload=organic_impressions_payload,
-                engagement_payload=engagement_payload,
-                page_views_payload=page_views_payload,
-            ),
-            ["text"],
+        _build_facebook_pages_5_summary_block(
+            order=5,
+            metric_context=metric_context,
+            period_label=period_label,
+            organic_impressions_payload=organic_impressions_payload,
+            engagement_payload=engagement_payload,
+            page_views_payload=page_views_payload,
         ),
     ]
     final_blocks = _meta_enrich_data_blocks(metric_context, _renumber_blocks(blocks[:5]))
