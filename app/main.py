@@ -20867,6 +20867,77 @@ def build_blocks(requested_slides: int, dataset: dict) -> list[dict]:
     return build_30_blocks(dataset)
 
 
+FACEBOOK_PAGES_5_RECIPE_BUILDER_ENV = "FACEBOOK_PAGES_5_RECIPE_BUILDER"
+FACEBOOK_PAGES_5_RECIPE_BUILDER_RECIPE = "recipe"
+FACEBOOK_PAGES_5_RECIPE_BUILDER_LEGACY = "legacy"
+
+
+def _facebook_pages_5_recipe_builder_mode() -> str:
+    raw_value = os.getenv(FACEBOOK_PAGES_5_RECIPE_BUILDER_ENV)
+    mode = str(raw_value or "").strip().lower()
+    if not mode:
+        return FACEBOOK_PAGES_5_RECIPE_BUILDER_RECIPE
+    if mode in {FACEBOOK_PAGES_5_RECIPE_BUILDER_RECIPE, FACEBOOK_PAGES_5_RECIPE_BUILDER_LEGACY}:
+        return mode
+    raise http_error(
+        500,
+        "facebook_pages_recipe_builder_config_invalid",
+        "FACEBOOK_PAGES_5_RECIPE_BUILDER must be 'recipe' or 'legacy'.",
+    )
+
+
+def build_facebook_pages_5_blocks(dataset: dict[str, Any]) -> list[dict[str, Any]]:
+    mode = _facebook_pages_5_recipe_builder_mode()
+    logger.info(
+        "facebook_pages_5_builder_selected",
+        extra={
+            "mode": mode,
+            "recipe_id": FACEBOOK_PAGES_5_RECIPE.id,
+        },
+    )
+    if mode == FACEBOOK_PAGES_5_RECIPE_BUILDER_LEGACY:
+        return build_5_blocks(dataset)
+
+    from .report_recipe_builder import (
+        ReportRecipeBuilderError,
+        build_facebook_pages_5_blocks_from_recipe,
+    )
+
+    try:
+        return build_facebook_pages_5_blocks_from_recipe(FACEBOOK_PAGES_5_RECIPE, dataset)
+    except ReportRecipeBuilderError as exc:
+        logger.error(
+            "facebook_pages_recipe_builder_failed",
+            extra={
+                "recipe_id": FACEBOOK_PAGES_5_RECIPE.id,
+                "mode": mode,
+                "error": str(exc),
+            },
+        )
+        raise http_error(
+            500,
+            "facebook_pages_recipe_builder_failed",
+            "Facebook Pages report structure could not be generated from the canonical Recipe.",
+        ) from exc
+
+
+def _build_meta_dataset_report_blocks(
+    *,
+    report_source: str,
+    report_inputs: dict[str, Any],
+    slide_limits: dict[str, Any],
+    block_build_context: dict[str, Any],
+) -> tuple[list[dict[str, Any]], bool]:
+    use_facebook_pages_5_recipe_path = should_enforce_facebook_pages_5_recipe(
+        report_source=report_source,
+        integration_type=str(report_inputs.get("integration_type") or "").strip(),
+        effective_slide_limit=int(slide_limits["effective_slide_limit"]),
+    )
+    if use_facebook_pages_5_recipe_path:
+        return build_facebook_pages_5_blocks(block_build_context), True
+    return build_blocks(int(slide_limits["requested_slides"]), block_build_context), False
+
+
 @app.post("/datasets/excel", response_model=DatasetUploadOut)
 def upload_dataset_excel(
     workspace_id: int | None = Form(None),
@@ -22397,7 +22468,12 @@ def _create_meta_dataset_report(
         "branding": report_branding,
         "requested_slides": slide_limits["requested_slides"],
     }
-    block_specs = build_blocks(int(slide_limits["requested_slides"]), block_build_context)
+    block_specs, use_facebook_pages_5_recipe_path = _build_meta_dataset_report_blocks(
+        report_source=report_source,
+        report_inputs=report_inputs,
+        slide_limits=slide_limits,
+        block_build_context=block_build_context,
+    )
     logger.warning(
         "report_blocks_metrics_used",
         extra={
@@ -22630,11 +22706,7 @@ def _create_meta_dataset_report(
             "number_of_blocks_final": len(block_specs),
         },
     )
-    if should_enforce_facebook_pages_5_recipe(
-        report_source=report_source,
-        integration_type=str(report_inputs.get("integration_type") or "").strip(),
-        effective_slide_limit=int(slide_limits["effective_slide_limit"]),
-    ):
+    if use_facebook_pages_5_recipe_path:
         block_specs = _ensure_facebook_pages_five_slide_structure(block_specs)
         block_specs = _enforce_facebook_pages_5_recipe(block_specs)
         slide_types_order = _facebook_pages_report_slide_types(block_specs)
