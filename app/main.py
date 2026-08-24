@@ -143,6 +143,12 @@ from .report_metric_catalog import (
     get_available_report_metrics,
     get_metric_catalog_entries,
 )
+from .report_recipes import (
+    ReportRecipe,
+    get_report_recipe,
+    get_report_recipes_for_platform,
+    list_report_recipes,
+)
 from .models import (
     AccountDeletionFeedback,
     AuditLog,
@@ -293,6 +299,8 @@ from .schemas import (
     ReportFolderUpdateOut,
     ReportIntegrationMetadataOut,
     ReportOut,
+    ReportRecipeResponse,
+    ReportRecipeSlideResponse,
     ReportShareCreateOut,
     ReportShareRevokeOut,
     ReportSourceRead,
@@ -23060,6 +23068,47 @@ def create_meta_ads_report(
         report_source="meta_ads",
         generation_mode="meta_ads",
     )
+
+
+def _report_recipe_response(recipe: ReportRecipe) -> ReportRecipeResponse:
+    return ReportRecipeResponse(
+        id=recipe.id,
+        platform=recipe.platform,
+        name=recipe.name,
+        version=recipe.version,
+        slide_count=len(recipe.slides),
+        slides=[
+            ReportRecipeSlideResponse(
+                order=slide.order,
+                semantic_name=slide.semantic_name,
+            )
+            for slide in recipe.slides
+        ],
+    )
+
+
+@app.get("/report-recipes", response_model=list[ReportRecipeResponse])
+def list_report_recipe_catalog(
+    platform: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+) -> list[ReportRecipeResponse]:
+    recipes = (
+        get_report_recipes_for_platform(platform)
+        if platform
+        else list_report_recipes()
+    )
+    return [_report_recipe_response(recipe) for recipe in recipes]
+
+
+@app.get("/report-recipes/{recipe_id}", response_model=ReportRecipeResponse)
+def get_report_recipe_catalog_item(
+    recipe_id: str,
+    current_user: User = Depends(get_current_user),
+) -> ReportRecipeResponse:
+    recipe = get_report_recipe(recipe_id)
+    if recipe is None:
+        raise http_error(404, "recipe_not_found", "Report recipe not found.")
+    return _report_recipe_response(recipe)
 
 
 @app.get("/reports", response_model=list[ReportListItemOut])

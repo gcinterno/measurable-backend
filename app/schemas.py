@@ -1600,6 +1600,20 @@ class MetaPagesReportCreateOut(BaseModel):
     selected_integration_metadata: ReportIntegrationMetadataOut = Field(default_factory=ReportIntegrationMetadataOut)
 
 
+class ReportRecipeSlideResponse(BaseModel):
+    order: int
+    semantic_name: str
+
+
+class ReportRecipeResponse(BaseModel):
+    id: str
+    platform: str
+    name: str
+    version: int
+    slide_count: int
+    slides: list[ReportRecipeSlideResponse]
+
+
 class ReportBlockOut(BaseSchema):
     id: int
     report_version_id: int
