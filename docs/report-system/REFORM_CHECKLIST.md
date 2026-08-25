@@ -9,4 +9,5 @@
 - Recipe-driven Facebook Pages 5 Builder Parity (FASE 3C.2): IMPLEMENTED — PARITY PASS
 - Facebook Pages 5 Recipe Production Cutover (FASE 3C.3): COMPLETE
 - Recipe V1 production wiring: IMPLEMENTED FOR FACEBOOK PAGES 5 ONLY
+- Facebook Pages Recipe V1 / Report Engine Reform Cycle: COMPLETE
 - Blueprint V1: PENDING
