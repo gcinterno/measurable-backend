@@ -7,6 +7,21 @@ from typing import Mapping
 
 FACEBOOK_PAGES_5_RECIPE_ID = "facebook_pages_5"
 FACEBOOK_PAGES_PLATFORM = "facebook_pages"
+FACEBOOK_INSTAGRAM_10_RECIPE_ID = "facebook_instagram_10"
+MULTI_SOURCE_PLATFORM = "multi_source"
+
+FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES: tuple[str, ...] = (
+    "cover",
+    "reach",
+    "impressions",
+    "engagement",
+    "page_visits",
+    "audience_growth",
+    "content_activity",
+    "top_performing_content",
+    "executive_insights",
+    "recommendations",
+)
 
 
 @dataclass(frozen=True)
@@ -43,7 +58,19 @@ FACEBOOK_PAGES_5_RECIPE = ReportRecipe(
     ),
 )
 
+FACEBOOK_INSTAGRAM_10_RECIPE = ReportRecipe(
+    id=FACEBOOK_INSTAGRAM_10_RECIPE_ID,
+    platform=MULTI_SOURCE_PLATFORM,
+    name="Facebook + Instagram · 10 Slides",
+    version=1,
+    slides=tuple(
+        ReportRecipeSlide(order=index, semantic_name=semantic_name)
+        for index, semantic_name in enumerate(FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES, start=1)
+    ),
+)
+
 _REGISTERED_REPORT_RECIPES: tuple[ReportRecipe, ...] = (
+    FACEBOOK_INSTAGRAM_10_RECIPE,
     FACEBOOK_PAGES_5_RECIPE,
 )
 
@@ -113,15 +140,58 @@ def get_report_recipes_for_platform(platform: str) -> tuple[ReportRecipe, ...]:
     )
 
 
+def validate_facebook_instagram_10_recipe(recipe: ReportRecipe | None) -> None:
+    if recipe is None:
+        raise ValueError("facebook_instagram_10 recipe is missing")
+
+    try:
+        validate_report_recipe_catalog((recipe,))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"facebook_instagram_10 recipe is structurally invalid: {exc}") from exc
+
+    errors: list[str] = []
+    if recipe.id != FACEBOOK_INSTAGRAM_10_RECIPE_ID:
+        errors.append(f"expected id {FACEBOOK_INSTAGRAM_10_RECIPE_ID!r}, got {recipe.id!r}")
+    if recipe.platform != MULTI_SOURCE_PLATFORM:
+        errors.append(f"expected platform {MULTI_SOURCE_PLATFORM!r}, got {recipe.platform!r}")
+    if recipe.version != 1:
+        errors.append(f"expected version 1, got {recipe.version!r}")
+    if len(recipe.slides) != len(FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES):
+        errors.append(
+            f"expected {len(FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES)} slides, got {len(recipe.slides)}"
+        )
+
+    ordered_slides = sorted(recipe.slides, key=lambda slide: slide.order)
+    expected_orders = list(range(1, len(FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES) + 1))
+    actual_orders = [slide.order for slide in ordered_slides]
+    if actual_orders != expected_orders:
+        errors.append(f"expected contiguous order {expected_orders}, got {actual_orders}")
+
+    actual_semantic_names = [slide.semantic_name for slide in ordered_slides]
+    expected_semantic_names = list(FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES)
+    if actual_semantic_names != expected_semantic_names:
+        errors.append(
+            f"expected semantic names {expected_semantic_names!r}, got {actual_semantic_names!r}"
+        )
+
+    if errors:
+        raise ValueError("; ".join(errors))
+
+
 __all__ = [
+    "FACEBOOK_INSTAGRAM_10_RECIPE",
+    "FACEBOOK_INSTAGRAM_10_RECIPE_ID",
+    "FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES",
     "FACEBOOK_PAGES_5_RECIPE",
     "FACEBOOK_PAGES_5_RECIPE_ID",
     "FACEBOOK_PAGES_PLATFORM",
+    "MULTI_SOURCE_PLATFORM",
     "REPORT_RECIPES",
     "ReportRecipe",
     "ReportRecipeSlide",
     "get_report_recipe",
     "get_report_recipes_for_platform",
     "list_report_recipes",
+    "validate_facebook_instagram_10_recipe",
     "validate_report_recipe_catalog",
 ]

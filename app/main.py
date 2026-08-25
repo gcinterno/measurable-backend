@@ -16273,7 +16273,7 @@ def _posts_chart_payload(posts: list[dict[str, Any]], *, timeframe: dict[str, An
     }
 
 
-def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any]]:
+def _multi_source_prepare_10_block_state(context: dict[str, Any]) -> dict[str, Any]:
     sources = list(context.get("sources") or [])
     report_timeframe = context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {}
     combined = context.get("combined") if isinstance(context.get("combined"), dict) else {}
@@ -16313,13 +16313,8 @@ def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any
             previous_total += float(previous_value)
         return _growth_metadata_from_values(current_value, previous_total if has_previous else None)
 
-    reach_growth = _aggregate_growth("reach", combined.get("total_reach"))
-    impressions_growth = _aggregate_growth("impressions", combined.get("total_impressions"))
-    engagement_growth = _aggregate_growth("engagement", combined.get("total_engagement"))
     page_visits_total = _multi_source_metric_sum(sources, "profile_visits")
-    page_visits_growth = _aggregate_growth("page_visits", page_visits_total)
     followers_total = _multi_source_metric_sum(sources, "followers")
-    followers_growth = _aggregate_growth("followers", followers_total)
     post_count = len(posts)
     strongest_source = combined.get("strongest_source") if isinstance(combined.get("strongest_source"), dict) else None
     weakest_source = (
@@ -16359,282 +16354,399 @@ def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any
             else "Improve post-level tracking so the next report can identify which content pattern wins by platform."
         ),
     ]
-    return [
-        _meta_report_block(
-            "title",
-            1,
-            {
-                "text": context.get("title") or "Multi-source report",
-                "subtitle": subtitle,
-                "timeframe": report_timeframe,
-                "period_label": report_timeframe.get("label"),
-                "period_since": report_timeframe.get("since"),
-                "period_until": report_timeframe.get("until"),
-                "branding": context.get("branding") or {},
-                "semantic_name": "cover",
-            },
-            ["text", "subtitle"],
-        ),
-        _meta_report_block(
-            "stat",
-            2,
-            {
-                "title": "Reach",
-                "label": "Total Reach",
-                "value": combined.get("total_reach"),
-                "current_value": reach_growth.get("current_value"),
-                "previous_value": reach_growth.get("previous_value"),
-                "growth": reach_growth,
-                "growth_percent": reach_growth.get("growth_percent"),
-                "growth_label": reach_growth.get("growth_label"),
-                "comparison_period": "previous_period",
-                "chart": {
-                    "label": f"Reach - {period_label}",
-                    "metric": "reach",
-                    "points": reach_points,
-                    "data": reach_points,
-                    "series": reach_series,
-                    "timeframe": report_timeframe,
-                    "is_available": bool(reach_points),
-                },
+    return {
+        "context": context,
+        "sources": sources,
+        "report_timeframe": report_timeframe,
+        "combined": combined,
+        "period_label": period_label,
+        "subtitle": subtitle,
+        "reach_points": reach_points,
+        "reach_series": reach_series,
+        "impressions_points": impressions_points,
+        "impressions_series": impressions_series,
+        "engagement_points": engagement_points,
+        "engagement_series": engagement_series,
+        "page_visits_points": page_visits_points,
+        "page_visits_series": page_visits_series,
+        "followers_points": followers_points,
+        "followers_series": followers_series,
+        "top_posts": top_posts,
+        "top_post": top_post,
+        "content_chart": content_chart,
+        "reach_growth": _aggregate_growth("reach", combined.get("total_reach")),
+        "impressions_growth": _aggregate_growth("impressions", combined.get("total_impressions")),
+        "engagement_growth": _aggregate_growth("engagement", combined.get("total_engagement")),
+        "page_visits_total": page_visits_total,
+        "page_visits_growth": _aggregate_growth("page_visits", page_visits_total),
+        "followers_total": followers_total,
+        "followers_growth": _aggregate_growth("followers", followers_total),
+        "post_count": post_count,
+        "strongest_source": strongest_source,
+        "weakest_source": weakest_source,
+        "executive_lines": executive_lines,
+        "recommendations": recommendations,
+    }
+
+
+def _multi_source_build_cover_10_block(state: dict[str, Any], order: int) -> dict[str, Any]:
+    context = state["context"]
+    report_timeframe = state["report_timeframe"]
+    return _meta_report_block(
+        "title",
+        order,
+        {
+            "text": context.get("title") or "Multi-source report",
+            "subtitle": state["subtitle"],
+            "timeframe": report_timeframe,
+            "period_label": report_timeframe.get("label"),
+            "period_since": report_timeframe.get("since"),
+            "period_until": report_timeframe.get("until"),
+            "branding": context.get("branding") or {},
+            "semantic_name": "cover",
+        },
+        ["text", "subtitle"],
+    )
+
+
+def _multi_source_build_reach_10_block(state: dict[str, Any], order: int) -> dict[str, Any]:
+    sources = state["sources"]
+    combined = state["combined"]
+    period_label = state["period_label"]
+    report_timeframe = state["report_timeframe"]
+    reach_points = state["reach_points"]
+    reach_series = state["reach_series"]
+    reach_growth = state["reach_growth"]
+    return _meta_report_block(
+        "stat",
+        order,
+        {
+            "title": "Reach",
+            "label": "Total Reach",
+            "value": combined.get("total_reach"),
+            "current_value": reach_growth.get("current_value"),
+            "previous_value": reach_growth.get("previous_value"),
+            "growth": reach_growth,
+            "growth_percent": reach_growth.get("growth_percent"),
+            "growth_label": reach_growth.get("growth_label"),
+            "comparison_period": "previous_period",
+            "chart": {
+                "label": f"Reach - {period_label}",
+                "metric": "reach",
                 "points": reach_points,
-                "metrics": {
-                    "main": reach_growth,
-                    "sources": [
-                        {"label": source.get("label"), "value": source.get("metrics", {}).get("reach")}
-                        for source in sources
-                    ],
-                },
-                "text": f"Reach totaled {_meta_format_number(combined.get('total_reach'))} across the selected platforms during {period_label}.",
-                "semantic_name": "reach",
+                "data": reach_points,
+                "series": reach_series,
+                "timeframe": report_timeframe,
+                "is_available": bool(reach_points),
             },
-        ),
-        _meta_report_block(
-            "stat",
-            3,
-            {
-                "title": "Impressions",
-                "label": "Total Impressions",
-                "value": combined.get("total_impressions"),
-                "current_value": impressions_growth.get("current_value"),
-                "previous_value": impressions_growth.get("previous_value"),
-                "growth": impressions_growth,
-                "growth_percent": impressions_growth.get("growth_percent"),
-                "growth_label": impressions_growth.get("growth_label"),
-                "comparison_period": "previous_period",
-                "chart": {
-                    "label": f"Impressions - {period_label}",
-                    "metric": "impressions",
-                    "points": impressions_points,
-                    "data": impressions_points,
-                    "series": impressions_series,
-                    "timeframe": report_timeframe,
-                    "is_available": bool(impressions_points),
-                },
+            "points": reach_points,
+            "metrics": {
+                "main": reach_growth,
+                "sources": [
+                    {"label": source.get("label"), "value": source.get("metrics", {}).get("reach")}
+                    for source in sources
+                ],
+            },
+            "text": f"Reach totaled {_meta_format_number(combined.get('total_reach'))} across the selected platforms during {period_label}.",
+            "semantic_name": "reach",
+        },
+    )
+
+
+def _multi_source_build_impressions_10_block(state: dict[str, Any], order: int) -> dict[str, Any]:
+    sources = state["sources"]
+    combined = state["combined"]
+    period_label = state["period_label"]
+    report_timeframe = state["report_timeframe"]
+    impressions_points = state["impressions_points"]
+    impressions_series = state["impressions_series"]
+    impressions_growth = state["impressions_growth"]
+    return _meta_report_block(
+        "stat",
+        order,
+        {
+            "title": "Impressions",
+            "label": "Total Impressions",
+            "value": combined.get("total_impressions"),
+            "current_value": impressions_growth.get("current_value"),
+            "previous_value": impressions_growth.get("previous_value"),
+            "growth": impressions_growth,
+            "growth_percent": impressions_growth.get("growth_percent"),
+            "growth_label": impressions_growth.get("growth_label"),
+            "comparison_period": "previous_period",
+            "chart": {
+                "label": f"Impressions - {period_label}",
+                "metric": "impressions",
                 "points": impressions_points,
-                "metrics": {
-                    "main": impressions_growth,
-                    "sources": [
-                        {"label": source.get("label"), "value": source.get("metrics", {}).get("impressions")}
-                        for source in sources
-                    ],
-                },
-                "text": f"Impressions reached {_meta_format_number(combined.get('total_impressions'))} across the selected platforms during {period_label}.",
-                "semantic_name": "impressions",
+                "data": impressions_points,
+                "series": impressions_series,
+                "timeframe": report_timeframe,
+                "is_available": bool(impressions_points),
             },
-        ),
-        _meta_report_block(
-            "stat",
-            4,
-            {
-                "title": "Engagement",
-                "label": "Total Engagement",
-                "value": combined.get("total_engagement"),
-                "current_value": engagement_growth.get("current_value"),
-                "previous_value": engagement_growth.get("previous_value"),
-                "growth": engagement_growth,
-                "growth_percent": engagement_growth.get("growth_percent"),
-                "growth_label": engagement_growth.get("growth_label"),
-                "comparison_period": "previous_period",
-                "chart": {
-                    "label": f"Engagement - {period_label}",
-                    "metric": "engagement",
-                    "points": engagement_points,
-                    "data": engagement_points,
-                    "series": engagement_series,
-                    "timeframe": report_timeframe,
-                    "is_available": bool(engagement_points),
-                },
+            "points": impressions_points,
+            "metrics": {
+                "main": impressions_growth,
+                "sources": [
+                    {"label": source.get("label"), "value": source.get("metrics", {}).get("impressions")}
+                    for source in sources
+                ],
+            },
+            "text": f"Impressions reached {_meta_format_number(combined.get('total_impressions'))} across the selected platforms during {period_label}.",
+            "semantic_name": "impressions",
+        },
+    )
+
+
+def _multi_source_build_engagement_10_block(state: dict[str, Any], order: int) -> dict[str, Any]:
+    sources = state["sources"]
+    combined = state["combined"]
+    period_label = state["period_label"]
+    report_timeframe = state["report_timeframe"]
+    engagement_points = state["engagement_points"]
+    engagement_series = state["engagement_series"]
+    engagement_growth = state["engagement_growth"]
+    return _meta_report_block(
+        "stat",
+        order,
+        {
+            "title": "Engagement",
+            "label": "Total Engagement",
+            "value": combined.get("total_engagement"),
+            "current_value": engagement_growth.get("current_value"),
+            "previous_value": engagement_growth.get("previous_value"),
+            "growth": engagement_growth,
+            "growth_percent": engagement_growth.get("growth_percent"),
+            "growth_label": engagement_growth.get("growth_label"),
+            "comparison_period": "previous_period",
+            "chart": {
+                "label": f"Engagement - {period_label}",
+                "metric": "engagement",
                 "points": engagement_points,
-                "metrics": {
-                    "main": engagement_growth,
-                    "engagement_rate": {
-                        "value": combined.get("average_engagement_rate"),
-                        "label": _multi_source_format_rate(combined.get("average_engagement_rate")),
-                    },
-                    "sources": [
-                        {
-                            "label": source.get("label"),
-                            "engagement": source.get("metrics", {}).get("engagement"),
-                            "engagement_rate": _multi_source_engagement_rate(source),
-                        }
-                        for source in sources
-                    ],
-                },
-                "text": f"Average engagement rate across the selected sources was {_multi_source_format_rate(combined.get('average_engagement_rate'))}.",
-                "semantic_name": "engagement",
+                "data": engagement_points,
+                "series": engagement_series,
+                "timeframe": report_timeframe,
+                "is_available": bool(engagement_points),
             },
-        ),
-        _meta_report_block(
-            "stat",
-            5,
-            {
-                "title": "Page Visits",
-                "label": "Page/Profile Visits",
-                "value": page_visits_total,
-                "current_value": page_visits_growth.get("current_value"),
-                "previous_value": page_visits_growth.get("previous_value"),
-                "growth": page_visits_growth,
-                "growth_percent": page_visits_growth.get("growth_percent"),
-                "growth_label": page_visits_growth.get("growth_label"),
-                "comparison_period": "previous_period",
-                "chart": {
-                    "label": f"Page Visits - {period_label}",
-                    "metric": "page_visits",
-                    "points": page_visits_points,
-                    "data": page_visits_points,
-                    "series": page_visits_series,
-                    "timeframe": report_timeframe,
-                    "is_available": bool(page_visits_points),
+            "points": engagement_points,
+            "metrics": {
+                "main": engagement_growth,
+                "engagement_rate": {
+                    "value": combined.get("average_engagement_rate"),
+                    "label": _multi_source_format_rate(combined.get("average_engagement_rate")),
                 },
+                "sources": [
+                    {
+                        "label": source.get("label"),
+                        "engagement": source.get("metrics", {}).get("engagement"),
+                        "engagement_rate": _multi_source_engagement_rate(source),
+                    }
+                    for source in sources
+                ],
+            },
+            "text": f"Average engagement rate across the selected sources was {_multi_source_format_rate(combined.get('average_engagement_rate'))}.",
+            "semantic_name": "engagement",
+        },
+    )
+
+
+def _multi_source_build_page_visits_10_block(state: dict[str, Any], order: int) -> dict[str, Any]:
+    sources = state["sources"]
+    period_label = state["period_label"]
+    report_timeframe = state["report_timeframe"]
+    page_visits_points = state["page_visits_points"]
+    page_visits_series = state["page_visits_series"]
+    page_visits_growth = state["page_visits_growth"]
+    return _meta_report_block(
+        "stat",
+        order,
+        {
+            "title": "Page Visits",
+            "label": "Page/Profile Visits",
+            "value": state["page_visits_total"],
+            "current_value": page_visits_growth.get("current_value"),
+            "previous_value": page_visits_growth.get("previous_value"),
+            "growth": page_visits_growth,
+            "growth_percent": page_visits_growth.get("growth_percent"),
+            "growth_label": page_visits_growth.get("growth_label"),
+            "comparison_period": "previous_period",
+            "chart": {
+                "label": f"Page Visits - {period_label}",
+                "metric": "page_visits",
                 "points": page_visits_points,
-                "metrics": {
-                    "main": page_visits_growth,
-                    "sources": [
-                        {
-                            "label": source.get("label"),
-                            "value": source.get("metrics", {}).get("profile_visits"),
-                        }
-                        for source in sources
-                    ],
-                },
-                "text": (
-                    "Daily page-visit history is available for comparison."
-                    if page_visits_points
-                    else "Page visits are available as a total, but daily visit history was not available."
-                ),
-                "semantic_name": "page_visits",
+                "data": page_visits_points,
+                "series": page_visits_series,
+                "timeframe": report_timeframe,
+                "is_available": bool(page_visits_points),
             },
-        ),
-        _meta_report_block(
-            "stat",
-            6,
-            {
-                "title": "Audience Growth",
-                "label": "Followers / Audience",
-                "value": followers_total,
-                "current_value": followers_growth.get("current_value"),
-                "previous_value": followers_growth.get("previous_value"),
-                "growth": followers_growth,
-                "growth_percent": followers_growth.get("growth_percent"),
-                "growth_label": followers_growth.get("growth_label"),
-                "comparison_period": "previous_period",
-                "chart": {
-                    "label": f"Audience Trend - {period_label}",
-                    "metric": "followers",
-                    "points": followers_points,
-                    "data": followers_points,
-                    "series": followers_series,
-                    "timeframe": report_timeframe,
-                    "is_available": bool(followers_points),
-                },
+            "points": page_visits_points,
+            "metrics": {
+                "main": page_visits_growth,
+                "sources": [
+                    {
+                        "label": source.get("label"),
+                        "value": source.get("metrics", {}).get("profile_visits"),
+                    }
+                    for source in sources
+                ],
+            },
+            "text": (
+                "Daily page-visit history is available for comparison."
+                if page_visits_points
+                else "Page visits are available as a total, but daily visit history was not available."
+            ),
+            "semantic_name": "page_visits",
+        },
+    )
+
+
+def _multi_source_build_audience_growth_10_block(state: dict[str, Any], order: int) -> dict[str, Any]:
+    sources = state["sources"]
+    period_label = state["period_label"]
+    report_timeframe = state["report_timeframe"]
+    followers_points = state["followers_points"]
+    followers_series = state["followers_series"]
+    followers_growth = state["followers_growth"]
+    return _meta_report_block(
+        "stat",
+        order,
+        {
+            "title": "Audience Growth",
+            "label": "Followers / Audience",
+            "value": state["followers_total"],
+            "current_value": followers_growth.get("current_value"),
+            "previous_value": followers_growth.get("previous_value"),
+            "growth": followers_growth,
+            "growth_percent": followers_growth.get("growth_percent"),
+            "growth_label": followers_growth.get("growth_label"),
+            "comparison_period": "previous_period",
+            "chart": {
+                "label": f"Audience Trend - {period_label}",
+                "metric": "followers",
                 "points": followers_points,
-                "metrics": {
-                    "main": followers_growth,
-                    "sources": [
-                        {
-                            "label": source.get("label"),
-                            "followers": source.get("metrics", {}).get("followers"),
-                            "net_follower_change": _multi_source_total(source.get("timeseries", {}).get("followers_growth") or []),
-                        }
-                        for source in sources
-                    ],
-                },
-                "text": "Audience movement reflects the combined follower base and any source-level follower growth signals available in the synced datasets.",
-                "semantic_name": "audience_growth",
+                "data": followers_points,
+                "series": followers_series,
+                "timeframe": report_timeframe,
+                "is_available": bool(followers_points),
             },
-        ),
-        _meta_report_block(
-            "stat",
-            7,
-            {
-                "title": "Content Activity",
-                "label": "Published Content",
-                "value": post_count,
-                "current_value": post_count,
-                "previous_value": None,
-                "growth": _growth_metadata_from_values(post_count, None),
-                "growth_percent": None,
-                "growth_label": "N/A",
-                "comparison_period": "previous_period",
-                "chart": content_chart,
-                "points": list(content_chart.get("points") or []),
-                "metrics": {
-                    "main": _growth_metadata_from_values(post_count, None),
-                    "average_reach_per_post": round((combined.get("total_reach") or 0) / post_count, 2) if post_count else None,
-                    "average_engagement_per_post": round((combined.get("total_engagement") or 0) / post_count, 2) if post_count else None,
-                },
-                "text": (
-                    f"{post_count} tracked content pieces were available across the selected platforms."
-                    if post_count
-                    else "No post-level content was available, so publishing rhythm could not be evaluated."
-                ),
-                "semantic_name": "content_activity",
+            "points": followers_points,
+            "metrics": {
+                "main": followers_growth,
+                "sources": [
+                    {
+                        "label": source.get("label"),
+                        "followers": source.get("metrics", {}).get("followers"),
+                        "net_follower_change": _multi_source_total(source.get("timeseries", {}).get("followers_growth") or []),
+                    }
+                    for source in sources
+                ],
             },
-        ),
-        _meta_report_block(
-            "text",
-            8,
-            {
-                "title": "Top Performing Content",
-                "text": (
-                    f"{top_post.get('source')} led with \"{top_post.get('title')}\" and generated {_meta_format_number(top_post.get('engagement'))} engagement signals."
-                    if top_post
-                    else "No post-level content exists for the selected sources, so this slide is an empty state."
-                ),
-                "top_posts": top_posts,
-                "main_metric": top_post,
-                "empty_state": top_post is None,
-                "semantic_name": "top_performing_content",
+            "text": "Audience movement reflects the combined follower base and any source-level follower growth signals available in the synced datasets.",
+            "semantic_name": "audience_growth",
+        },
+    )
+
+
+def _multi_source_build_content_activity_10_block(state: dict[str, Any], order: int) -> dict[str, Any]:
+    combined = state["combined"]
+    post_count = state["post_count"]
+    content_chart = state["content_chart"]
+    return _meta_report_block(
+        "stat",
+        order,
+        {
+            "title": "Content Activity",
+            "label": "Published Content",
+            "value": post_count,
+            "current_value": post_count,
+            "previous_value": None,
+            "growth": _growth_metadata_from_values(post_count, None),
+            "growth_percent": None,
+            "growth_label": "N/A",
+            "comparison_period": "previous_period",
+            "chart": content_chart,
+            "points": list(content_chart.get("points") or []),
+            "metrics": {
+                "main": _growth_metadata_from_values(post_count, None),
+                "average_reach_per_post": round((combined.get("total_reach") or 0) / post_count, 2) if post_count else None,
+                "average_engagement_per_post": round((combined.get("total_engagement") or 0) / post_count, 2) if post_count else None,
             },
-            ["text"],
-        ),
-        _meta_report_block(
-            "text",
-            9,
-            {
-                "title": "Executive Insights",
-                "text": _multi_source_block_text_lines(executive_lines),
-                "insights": executive_lines,
-                "metrics": {
-                    "strongest_source": strongest_source,
-                    "weakest_source": weakest_source.get("label") if weakest_source else None,
-                },
-                "semantic_name": "executive_insights",
+            "text": (
+                f"{post_count} tracked content pieces were available across the selected platforms."
+                if post_count
+                else "No post-level content was available, so publishing rhythm could not be evaluated."
+            ),
+            "semantic_name": "content_activity",
+        },
+    )
+
+
+def _multi_source_build_top_performing_content_10_block(state: dict[str, Any], order: int) -> dict[str, Any]:
+    top_post = state["top_post"]
+    return _meta_report_block(
+        "text",
+        order,
+        {
+            "title": "Top Performing Content",
+            "text": (
+                f"{top_post.get('source')} led with \"{top_post.get('title')}\" and generated {_meta_format_number(top_post.get('engagement'))} engagement signals."
+                if top_post
+                else "No post-level content exists for the selected sources, so this slide is an empty state."
+            ),
+            "top_posts": state["top_posts"],
+            "main_metric": top_post,
+            "empty_state": top_post is None,
+            "semantic_name": "top_performing_content",
+        },
+        ["text"],
+    )
+
+
+def _multi_source_build_executive_insights_10_block(state: dict[str, Any], order: int) -> dict[str, Any]:
+    weakest_source = state["weakest_source"]
+    return _meta_report_block(
+        "text",
+        order,
+        {
+            "title": "Executive Insights",
+            "text": _multi_source_block_text_lines(state["executive_lines"]),
+            "insights": state["executive_lines"],
+            "metrics": {
+                "strongest_source": state["strongest_source"],
+                "weakest_source": weakest_source.get("label") if weakest_source else None,
             },
-            ["text"],
-        ),
-        _meta_report_block(
-            "text",
-            10,
-            {
-                "title": "Recommendations / Next Steps",
-                "text": _multi_source_block_text_lines(recommendations),
-                "recommendations": recommendations,
-                "semantic_name": "recommendations",
-            },
-            ["text"],
-        ),
+            "semantic_name": "executive_insights",
+        },
+        ["text"],
+    )
+
+
+def _multi_source_build_recommendations_10_block(state: dict[str, Any], order: int) -> dict[str, Any]:
+    return _meta_report_block(
+        "text",
+        order,
+        {
+            "title": "Recommendations / Next Steps",
+            "text": _multi_source_block_text_lines(state["recommendations"]),
+            "recommendations": state["recommendations"],
+            "semantic_name": "recommendations",
+        },
+        ["text"],
+    )
+
+
+def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any]]:
+    state = _multi_source_prepare_10_block_state(context)
+    return [
+        _multi_source_build_cover_10_block(state, 1),
+        _multi_source_build_reach_10_block(state, 2),
+        _multi_source_build_impressions_10_block(state, 3),
+        _multi_source_build_engagement_10_block(state, 4),
+        _multi_source_build_page_visits_10_block(state, 5),
+        _multi_source_build_audience_growth_10_block(state, 6),
+        _multi_source_build_content_activity_10_block(state, 7),
+        _multi_source_build_top_performing_content_10_block(state, 8),
+        _multi_source_build_executive_insights_10_block(state, 9),
+        _multi_source_build_recommendations_10_block(state, 10),
     ]
 
 

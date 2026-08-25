@@ -3,15 +3,20 @@ from __future__ import annotations
 import pytest
 
 from app.report_recipes import (
+    FACEBOOK_INSTAGRAM_10_RECIPE,
+    FACEBOOK_INSTAGRAM_10_RECIPE_ID,
+    FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES,
     FACEBOOK_PAGES_5_RECIPE,
     FACEBOOK_PAGES_5_RECIPE_ID,
     FACEBOOK_PAGES_PLATFORM,
+    MULTI_SOURCE_PLATFORM,
     REPORT_RECIPES,
     ReportRecipe,
     ReportRecipeSlide,
     get_report_recipe,
     get_report_recipes_for_platform,
     list_report_recipes,
+    validate_facebook_instagram_10_recipe,
     validate_report_recipe_catalog,
 )
 
@@ -37,8 +42,27 @@ def test_facebook_pages_5_recipe_remains_canonical() -> None:
     assert all(not hasattr(slide, "kind") for slide in recipe.slides)
 
 
+def test_facebook_instagram_10_recipe_is_canonical() -> None:
+    recipe = get_report_recipe(FACEBOOK_INSTAGRAM_10_RECIPE_ID)
+
+    assert recipe is FACEBOOK_INSTAGRAM_10_RECIPE
+    assert recipe.id == "facebook_instagram_10"
+    assert recipe.platform == "multi_source"
+    assert recipe.name == "Facebook + Instagram · 10 Slides"
+    assert recipe.version == 1
+    assert len(recipe.slides) == 10
+    assert [slide.order for slide in recipe.slides] == list(range(1, 11))
+    assert [slide.semantic_name for slide in recipe.slides] == list(FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES)
+    assert not hasattr(recipe, "slide_count")
+    assert all(not hasattr(slide, "kind") for slide in recipe.slides)
+    validate_facebook_instagram_10_recipe(recipe)
+
+
 def test_list_report_recipes_is_deterministic() -> None:
-    assert list_report_recipes() == (FACEBOOK_PAGES_5_RECIPE,)
+    assert list_report_recipes() == (
+        FACEBOOK_INSTAGRAM_10_RECIPE,
+        FACEBOOK_PAGES_5_RECIPE,
+    )
 
 
 def test_get_report_recipe_returns_none_for_unknown_recipe() -> None:
@@ -48,6 +72,9 @@ def test_get_report_recipe_returns_none_for_unknown_recipe() -> None:
 def test_get_report_recipes_for_platform_filters_catalog() -> None:
     assert get_report_recipes_for_platform(FACEBOOK_PAGES_PLATFORM) == (
         FACEBOOK_PAGES_5_RECIPE,
+    )
+    assert get_report_recipes_for_platform(MULTI_SOURCE_PLATFORM) == (
+        FACEBOOK_INSTAGRAM_10_RECIPE,
     )
     assert get_report_recipes_for_platform("instagram_business") == ()
 

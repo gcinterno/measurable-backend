@@ -6,7 +6,12 @@ from typing import Any, Callable, Mapping
 
 from . import main as report_main
 from .report_recipe_validation import validate_blocks_against_recipe
-from .report_recipes import ReportRecipe, ReportRecipeSlide, validate_report_recipe_catalog
+from .report_recipes import (
+    ReportRecipe,
+    ReportRecipeSlide,
+    validate_facebook_instagram_10_recipe,
+    validate_report_recipe_catalog,
+)
 
 
 class ReportRecipeBuilderError(ValueError):
@@ -37,8 +42,10 @@ class FacebookPages5RecipeBuildState:
     page_views_payload: dict[str, Any]
 
 
+FacebookInstagram10RecipeBuildState = dict[str, Any]
+
 RecipeSlideBlockHandler = Callable[
-    [ReportRecipeSlide, FacebookPages5RecipeBuildState],
+    [ReportRecipeSlide, Any],
     dict[str, Any],
 ]
 
@@ -205,12 +212,114 @@ FACEBOOK_PAGES_5_RECIPE_BLOCK_HANDLERS: Mapping[str, RecipeSlideBlockHandler] = 
 )
 
 
+def _prepare_facebook_instagram_10_recipe_build_state(
+    context: dict[str, Any],
+) -> FacebookInstagram10RecipeBuildState:
+    return report_main._multi_source_prepare_10_block_state(context)
+
+
+def _build_multi_source_cover_block(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+) -> dict[str, Any]:
+    return report_main._multi_source_build_cover_10_block(state, recipe_slide.order)
+
+
+def _build_multi_source_reach_block(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+) -> dict[str, Any]:
+    return report_main._multi_source_build_reach_10_block(state, recipe_slide.order)
+
+
+def _build_multi_source_impressions_block(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+) -> dict[str, Any]:
+    return report_main._multi_source_build_impressions_10_block(state, recipe_slide.order)
+
+
+def _build_multi_source_engagement_block(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+) -> dict[str, Any]:
+    return report_main._multi_source_build_engagement_10_block(state, recipe_slide.order)
+
+
+def _build_multi_source_page_visits_block(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+) -> dict[str, Any]:
+    return report_main._multi_source_build_page_visits_10_block(state, recipe_slide.order)
+
+
+def _build_multi_source_audience_growth_block(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+) -> dict[str, Any]:
+    return report_main._multi_source_build_audience_growth_10_block(state, recipe_slide.order)
+
+
+def _build_multi_source_content_activity_block(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+) -> dict[str, Any]:
+    return report_main._multi_source_build_content_activity_10_block(state, recipe_slide.order)
+
+
+def _build_multi_source_top_performing_content_block(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+) -> dict[str, Any]:
+    return report_main._multi_source_build_top_performing_content_10_block(state, recipe_slide.order)
+
+
+def _build_multi_source_executive_insights_block(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+) -> dict[str, Any]:
+    return report_main._multi_source_build_executive_insights_10_block(state, recipe_slide.order)
+
+
+def _build_multi_source_recommendations_block(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+) -> dict[str, Any]:
+    return report_main._multi_source_build_recommendations_10_block(state, recipe_slide.order)
+
+
+FACEBOOK_INSTAGRAM_10_RECIPE_BLOCK_HANDLERS: Mapping[str, RecipeSlideBlockHandler] = MappingProxyType(
+    {
+        "cover": _build_multi_source_cover_block,
+        "reach": _build_multi_source_reach_block,
+        "impressions": _build_multi_source_impressions_block,
+        "engagement": _build_multi_source_engagement_block,
+        "page_visits": _build_multi_source_page_visits_block,
+        "audience_growth": _build_multi_source_audience_growth_block,
+        "content_activity": _build_multi_source_content_activity_block,
+        "top_performing_content": _build_multi_source_top_performing_content_block,
+        "executive_insights": _build_multi_source_executive_insights_block,
+        "recommendations": _build_multi_source_recommendations_block,
+    }
+)
+
+
 def _validate_recipe_for_build(recipe: ReportRecipe) -> None:
     try:
         validate_report_recipe_catalog((recipe,))
     except ValueError as exc:
         raise InvalidReportRecipeForBuildError(
             f"Recipe {recipe.id or '<empty>'} is structurally invalid: {exc}"
+        ) from exc
+
+
+def _validate_facebook_instagram_10_recipe_for_build(recipe: ReportRecipe | None) -> None:
+    try:
+        validate_facebook_instagram_10_recipe(recipe)
+    except ValueError as exc:
+        recipe_id = getattr(recipe, "id", None) or "<missing>"
+        raise InvalidReportRecipeForBuildError(
+            f"Recipe {recipe_id} is not a valid facebook_instagram_10 Recipe: {exc}"
         ) from exc
 
 
@@ -230,6 +339,26 @@ def build_block_for_recipe_slide(
     if handler is None:
         raise MissingRecipeSemanticHandlerError(
             f"Missing Facebook Pages 5 Recipe handler for semantic_name: {semantic_name}"
+        )
+    return handler(recipe_slide, state)
+
+
+def build_facebook_instagram_10_block_for_recipe_slide(
+    recipe_slide: ReportRecipeSlide,
+    state: FacebookInstagram10RecipeBuildState,
+    *,
+    semantic_handlers: Mapping[str, RecipeSlideBlockHandler] | None = None,
+) -> dict[str, Any]:
+    handlers = semantic_handlers or FACEBOOK_INSTAGRAM_10_RECIPE_BLOCK_HANDLERS
+    semantic_name = recipe_slide.semantic_name
+    if semantic_name not in FACEBOOK_INSTAGRAM_10_RECIPE_BLOCK_HANDLERS:
+        raise UnsupportedRecipeSemanticNameError(
+            f"Unsupported Facebook + Instagram 10 Recipe semantic_name: {semantic_name}"
+        )
+    handler = handlers.get(semantic_name)
+    if handler is None:
+        raise MissingRecipeSemanticHandlerError(
+            f"Missing Facebook + Instagram 10 Recipe handler for semantic_name: {semantic_name}"
         )
     return handler(recipe_slide, state)
 
@@ -263,8 +392,36 @@ def build_facebook_pages_5_blocks_from_recipe(
     return final_blocks
 
 
+def build_facebook_instagram_10_blocks_from_recipe(
+    recipe: ReportRecipe | None,
+    context: dict[str, Any],
+    *,
+    semantic_handlers: Mapping[str, RecipeSlideBlockHandler] | None = None,
+) -> list[dict[str, Any]]:
+    _validate_facebook_instagram_10_recipe_for_build(recipe)
+    assert recipe is not None
+    state = _prepare_facebook_instagram_10_recipe_build_state(context)
+    blocks = [
+        build_facebook_instagram_10_block_for_recipe_slide(
+            recipe_slide,
+            state,
+            semantic_handlers=semantic_handlers,
+        )
+        for recipe_slide in sorted(recipe.slides, key=lambda slide: slide.order)
+    ]
+    validation_result = validate_blocks_against_recipe(blocks, recipe)
+    if not validation_result.valid:
+        raise InvalidReportRecipeForBuildError(
+            f"Generated blocks do not match Recipe {recipe.id}: "
+            + ", ".join(error.code for error in validation_result.errors)
+        )
+    return blocks
+
+
 __all__ = [
+    "FACEBOOK_INSTAGRAM_10_RECIPE_BLOCK_HANDLERS",
     "FACEBOOK_PAGES_5_RECIPE_BLOCK_HANDLERS",
+    "FacebookInstagram10RecipeBuildState",
     "FacebookPages5RecipeBuildState",
     "InvalidReportRecipeForBuildError",
     "MissingRecipeSemanticHandlerError",
@@ -272,5 +429,7 @@ __all__ = [
     "ReportRecipeBuilderError",
     "UnsupportedRecipeSemanticNameError",
     "build_block_for_recipe_slide",
+    "build_facebook_instagram_10_block_for_recipe_slide",
+    "build_facebook_instagram_10_blocks_from_recipe",
     "build_facebook_pages_5_blocks_from_recipe",
 ]

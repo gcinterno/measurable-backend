@@ -10,4 +10,8 @@
 - Facebook Pages 5 Recipe Production Cutover (FASE 3C.3): COMPLETE
 - Recipe V1 production wiring: IMPLEMENTED FOR FACEBOOK PAGES 5 ONLY
 - Facebook Pages Recipe V1 / Report Engine Reform Cycle: COMPLETE
+- Facebook + Instagram 10 Recipe V1: COMPLETE
+- Parallel Recipe Builder: COMPLETE
+- Payload Parity: PASS
+- Production Cutover: PENDING
 - Blueprint V1: PENDING
