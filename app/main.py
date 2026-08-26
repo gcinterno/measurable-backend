@@ -10,7 +10,7 @@ import sys
 import requests
 from uuid import uuid4
 from decimal import Decimal
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from datetime import date, timedelta, datetime, timezone, time
 from time import perf_counter
 from functools import lru_cache
@@ -130,6 +130,8 @@ from .integrations.instagram_business import (
     exchange_instagram_business_login_code_for_token,
     exchange_instagram_business_code_for_token,
     fetch_instagram_business_login_insights_metric_with_metadata,
+    fetch_instagram_business_login_media_insights_metric_with_metadata,
+    fetch_instagram_business_login_media_page,
     fetch_instagram_business_login_profile,
     fetch_instagram_business_profile,
     get_missing_instagram_business_login_config_fields,
@@ -10546,6 +10548,306 @@ def _normalize_instagram_insight_series(
     )
 
 
+INSTAGRAM_BUSINESS_LOGIN_ACCOUNT_INSIGHT_METRICS: tuple[str, ...] = (
+    "reach",
+    "views",
+    "impressions",
+    "accounts_engaged",
+    "total_interactions",
+    "profile_views",
+    "website_clicks",
+    "follower_count",
+    "likes",
+    "comments",
+    "shares",
+    "saves",
+    "replies",
+)
+INSTAGRAM_BUSINESS_LOGIN_MEDIA_FIELDS = (
+    "id,caption,media_type,permalink,timestamp,like_count,comments_count"
+)
+INSTAGRAM_BUSINESS_LOGIN_MEDIA_INSIGHT_METRICS: tuple[str, ...] = (
+    "reach",
+    "views",
+    "likes",
+    "comments",
+    "shares",
+    "saves",
+    "replies",
+    "total_interactions",
+)
+
+
+def _instagram_business_login_parse_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _instagram_business_login_in_timeframe(value: Any, timeframe_config: dict[str, Any]) -> bool:
+    item_date = _instagram_business_login_parse_date(value)
+    if item_date is None:
+        return True
+    since_date = _instagram_business_login_parse_date(timeframe_config.get("since"))
+    until_date = _instagram_business_login_parse_date(timeframe_config.get("until"))
+    if since_date is not None and item_date < since_date:
+        return False
+    if until_date is not None and item_date > until_date:
+        return False
+    return True
+
+
+def _instagram_business_login_next_cursor(payload: dict[str, Any]) -> str | None:
+    paging = payload.get("paging") if isinstance(payload.get("paging"), dict) else {}
+    cursors = paging.get("cursors") if isinstance(paging.get("cursors"), dict) else {}
+    after = str(cursors.get("after") or "").strip()
+    if after:
+        return after
+    next_url = str(paging.get("next") or "").strip()
+    if not next_url:
+        return None
+    parsed_next = urlsplit(next_url)
+    after_values = parse_qs(parsed_next.query).get("after") or []
+    return str(after_values[0] or "").strip() or None
+
+
+def _instagram_business_login_insight_total(payload: dict[str, Any]) -> int | None:
+    data = payload.get("data")
+    metric_row = data[0] if isinstance(data, list) and data else {}
+    if not isinstance(metric_row, dict):
+        return None
+    values = metric_row.get("values")
+    if isinstance(values, list):
+        total, _latest, _end_time, _series, _raw_values = _normalize_instagram_insight_series(values)
+        if total is not None:
+            return total
+    return _normalize_instagram_insight_value(metric_row.get("value"))
+
+
+def _sum_instagram_business_login_values(*values: Any) -> int | None:
+    total = 0
+    has_value = False
+    for value in values:
+        normalized = _normalize_instagram_insight_value(value)
+        if normalized is None:
+            continue
+        total += normalized
+        has_value = True
+    return total if has_value else None
+
+
+def _instagram_business_login_media_post(
+    raw_media: dict[str, Any],
+    media_metrics: dict[str, int | None],
+) -> dict[str, Any]:
+    caption = str(raw_media.get("caption") or "").strip() or None
+    likes = _first_non_none(
+        media_metrics.get("likes"),
+        _normalize_instagram_insight_value(raw_media.get("like_count")),
+    )
+    comments = _first_non_none(
+        media_metrics.get("comments"),
+        _normalize_instagram_insight_value(raw_media.get("comments_count")),
+    )
+    shares = media_metrics.get("shares")
+    saves = media_metrics.get("saves")
+    replies = media_metrics.get("replies")
+    engagement = _first_non_none(
+        media_metrics.get("total_interactions"),
+        _sum_instagram_business_login_values(likes, comments, shares, saves, replies),
+    )
+    return {
+        "id": str(raw_media.get("id") or "").strip() or None,
+        "message": caption,
+        "caption": caption,
+        "created_time": str(raw_media.get("timestamp") or "").strip() or None,
+        "timestamp": str(raw_media.get("timestamp") or "").strip() or None,
+        "permalink_url": str(raw_media.get("permalink") or "").strip() or None,
+        "media_type": str(raw_media.get("media_type") or "").strip() or None,
+        "reach": media_metrics.get("reach"),
+        "views": media_metrics.get("views"),
+        "impressions": None,
+        "engagement": engagement,
+        "interactions": engagement,
+        "likes": likes,
+        "reactions": likes,
+        "comments": comments,
+        "shares": shares,
+        "saves": saves,
+        "replies": replies,
+    }
+
+
+def _instagram_business_login_top_content_item(post: dict[str, Any]) -> dict[str, Any]:
+    title = _top_content_title(post)
+    return {
+        "post_id": post.get("id"),
+        "created_time": post.get("created_time"),
+        "message_preview": title[:180],
+        "permalink_url": post.get("permalink_url"),
+        "media_type": post.get("media_type"),
+        "impressions": post.get("impressions"),
+        "views": post.get("views"),
+        "reach": post.get("reach"),
+        "engaged_users": post.get("engagement"),
+        "engagement_total": post.get("engagement"),
+        "likes": post.get("likes"),
+        "reactions": post.get("reactions"),
+        "comments": post.get("comments"),
+        "shares": post.get("shares"),
+        "saves": post.get("saves"),
+        "replies": post.get("replies"),
+        "score": int(_meta_post_score(post)),
+    }
+
+
+def _fetch_instagram_business_login_media_content(
+    *,
+    access_token: str,
+    instagram_user_id: str,
+    timeframe_config: dict[str, Any],
+    route_name: str,
+    workspace_id: int,
+    integration_id: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    recent_posts: list[dict[str, Any]] = []
+    media_audit: dict[str, Any] = {
+        "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+        "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+        "endpoint": f"/{instagram_user_id}/media",
+        "fields": INSTAGRAM_BUSINESS_LOGIN_MEDIA_FIELDS,
+        "metrics": {},
+        "pages": [],
+        "unavailable_metrics": {},
+    }
+    after: str | None = None
+    max_pages = 3
+    max_media_items = 25
+    for page_index in range(max_pages):
+        try:
+            media_payload = fetch_instagram_business_login_media_page(
+                access_token,
+                instagram_user_id,
+                fields=INSTAGRAM_BUSINESS_LOGIN_MEDIA_FIELDS,
+                limit=25,
+                after=after,
+            )
+        except requests.RequestException as exc:
+            media_audit["media_edge_error"] = str(exc)
+            break
+        status_code = media_payload.get("_instagram_http_status_code")
+        media_rows = media_payload.get("data") if isinstance(media_payload.get("data"), list) else []
+        media_audit["pages"].append(
+            {
+                "page_index": page_index,
+                "status_code": status_code,
+                "rows": len(media_rows),
+            }
+        )
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_MEDIA_RESPONSE %s",
+            json.dumps(
+                {
+                    "route": route_name,
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                    "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "workspace_id": workspace_id,
+                    "integration_id": integration_id,
+                    "instagram_user_id": _mask_instagram_business_login_user_id(instagram_user_id),
+                    "status_code": status_code,
+                    "rows": len(media_rows),
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        if status_code != 200:
+            error_payload = media_payload.get("error") if isinstance(media_payload.get("error"), dict) else {}
+            media_audit["media_edge_error"] = str(
+                error_payload.get("message")
+                or media_payload.get("_instagram_raw_body")
+                or "media_unavailable"
+            )
+            break
+        for raw_media in media_rows:
+            if not isinstance(raw_media, dict):
+                continue
+            if not _instagram_business_login_in_timeframe(raw_media.get("timestamp"), timeframe_config):
+                continue
+            media_id = str(raw_media.get("id") or "").strip()
+            if not media_id:
+                continue
+            media_metrics: dict[str, int | None] = {}
+            media_audit["metrics"][media_id] = {}
+            for metric_name in INSTAGRAM_BUSINESS_LOGIN_MEDIA_INSIGHT_METRICS:
+                try:
+                    insight_payload = fetch_instagram_business_login_media_insights_metric_with_metadata(
+                        access_token,
+                        media_id,
+                        metric_name=metric_name,
+                    )
+                except requests.RequestException as exc:
+                    insight_payload = {
+                        "_instagram_http_status_code": None,
+                        "_instagram_raw_body": str(exc),
+                        "error": {"message": str(exc)},
+                    }
+                metric_status = insight_payload.get("_instagram_http_status_code")
+                metric_value = (
+                    _instagram_business_login_insight_total(insight_payload)
+                    if metric_status == 200
+                    else None
+                )
+                media_metrics[metric_name] = metric_value
+                error_payload = (
+                    insight_payload.get("error")
+                    if isinstance(insight_payload.get("error"), dict)
+                    else {}
+                )
+                metric_error = None
+                if metric_status != 200:
+                    metric_error = str(
+                        error_payload.get("message")
+                        or insight_payload.get("_instagram_raw_body")
+                        or "metric_unavailable"
+                    )
+                    media_audit["unavailable_metrics"].setdefault(metric_name, metric_error)
+                elif metric_value is None:
+                    metric_error = "empty_response"
+                    media_audit["unavailable_metrics"].setdefault(metric_name, metric_error)
+                media_audit["metrics"][media_id][metric_name] = {
+                    "status_code": metric_status,
+                    "value": metric_value,
+                    "error": metric_error,
+                }
+            recent_posts.append(_instagram_business_login_media_post(raw_media, media_metrics))
+            if len(recent_posts) >= max_media_items:
+                break
+        if len(recent_posts) >= max_media_items:
+            break
+        after = _instagram_business_login_next_cursor(media_payload)
+        if not after:
+            break
+    top_content = [
+        _instagram_business_login_top_content_item(post)
+        for post in sorted(recent_posts, key=_meta_post_score, reverse=True)[:5]
+    ]
+    media_audit["recent_posts_count"] = len(recent_posts)
+    media_audit["top_content_count"] = len(top_content)
+    return recent_posts, top_content, media_audit
+
+
 def _is_total_interactions_metric_type_error(exc: HTTPException) -> bool:
     detail = exc.detail if isinstance(exc.detail, dict) else {}
     message = str(detail.get("message") or "").strip().lower()
@@ -16238,14 +16540,17 @@ def _top_content_items(posts: list[dict[str, Any]], *, limit: int = 3) -> list[d
                 "source": post.get("_source_label") or post.get("_account_name"),
                 "reach": reach_value,
                 "impressions": _meta_number(post.get("impressions")),
+                "views": _meta_number(post.get("views")),
                 "engagement": engagement_value,
                 "engagement_rate": round((engagement_value / reach_value) * 100, 2)
                 if reach_value not in (None, 0)
                 else None,
+                "likes": _meta_number(post.get("likes")),
                 "reactions": _meta_number(post.get("reactions")),
                 "comments": _meta_number(post.get("comments")),
                 "shares": _meta_number(post.get("shares")),
                 "saves": _meta_number(post.get("saves")),
+                "replies": _meta_number(post.get("replies")),
             }
         )
     return items
@@ -17897,7 +18202,10 @@ def _meta_post_score(post: dict) -> float:
         "likes",
         "comments",
         "shares",
+        "saves",
+        "replies",
         "reach",
+        "views",
         "impressions",
     ):
         value = _meta_number(post.get(key))
@@ -28828,8 +29136,30 @@ def _run_instagram_business_login_sync(
     instagram_user_id = selected_record.page_id
     account_name = selected_record.name or instagram_user_id
     username = selected_record.instagram_username or None
-    followers_count = None
-    requested_metrics = ["reach", "impressions", "profile_views"]
+    profile_picture_url = selected_record.profile_picture_url or None
+    profile_payload: dict[str, Any] = {}
+    profile_fetch_error: str | None = None
+    profile_followers_count: int | None = None
+    profile_media_count: int | None = None
+    try:
+        profile_payload = fetch_instagram_business_login_profile(access_token)
+        account_name = (
+            str(profile_payload.get("name") or profile_payload.get("username") or account_name).strip()
+            or account_name
+        )
+        username = str(profile_payload.get("username") or username or "").strip() or username
+        profile_picture_url = (
+            str(profile_payload.get("profile_picture_url") or profile_picture_url or "").strip() or profile_picture_url
+        )
+        profile_followers_count = _normalize_instagram_insight_value(profile_payload.get("followers_count"))
+        profile_media_count = _normalize_instagram_insight_value(profile_payload.get("media_count"))
+    except requests.RequestException as exc:
+        profile_fetch_error = str(exc)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        profile_fetch_error = str(detail.get("message") or exc.detail or "profile_unavailable")
+
+    requested_metrics = list(INSTAGRAM_BUSINESS_LOGIN_ACCOUNT_INSIGHT_METRICS)
     normalized_metrics: dict[str, int | None] = {}
     metric_series: dict[str, list[dict[str, int | str | None]]] = {}
     unavailable_metrics: dict[str, str] = {}
@@ -28889,7 +29219,12 @@ def _run_instagram_business_login_sync(
         metric_total_value, metric_latest_value, metric_end_time, normalized_series, raw_values = (
             _normalize_instagram_insight_series(values if isinstance(values, list) else [])
         )
-        normalized_metrics[metric_name] = metric_total_value if is_success else None
+        metric_dataset_value = (
+            metric_latest_value
+            if metric_name in {"follower_count", "online_followers"}
+            else metric_total_value
+        )
+        normalized_metrics[metric_name] = metric_dataset_value if is_success else None
         metric_series[metric_name] = normalized_series if is_success else []
         if not is_success:
             error_payload = insight_payload.get("error") if isinstance(insight_payload.get("error"), dict) else {}
@@ -28898,7 +29233,7 @@ def _run_instagram_business_login_sync(
                 or insight_payload.get("_instagram_raw_body")
                 or "metric_unavailable"
             )
-        elif metric_total_value is None:
+        elif metric_dataset_value is None:
             unavailable_metrics[metric_name] = "empty_response"
         metric_audit[metric_name] = {
             "metric_name_requested": metric_name,
@@ -28911,6 +29246,7 @@ def _run_instagram_business_login_sync(
             "status_code": status_code,
             "raw_values": raw_values,
             "sum_value": metric_total_value if is_success else None,
+            "dataset_value": metric_dataset_value if is_success else None,
             "latest_value": metric_latest_value if is_success else None,
             "end_time": metric_end_time if is_success else None,
             "error": unavailable_metrics.get(metric_name),
@@ -28940,18 +29276,64 @@ def _run_instagram_business_login_sync(
             ),
         )
 
-    if not metrics_successful:
+    reach_daily = metric_series.get("reach") or []
+    impressions_daily = metric_series.get("impressions") or []
+    views_daily = metric_series.get("views") or []
+    profile_views_daily = metric_series.get("profile_views") or []
+    website_clicks_daily = metric_series.get("website_clicks") or []
+    daily_engagement = (
+        metric_series.get("total_interactions")
+        or metric_series.get("accounts_engaged")
+        or []
+    )
+    followers_growth_daily = metric_series.get("follower_count") or []
+    followers_count = _first_non_none(profile_followers_count, normalized_metrics.get("follower_count"))
+    media_count = profile_media_count
+    views_total = normalized_metrics.get("views")
+    impressions_total = normalized_metrics.get("impressions")
+    profile_views_total = normalized_metrics.get("profile_views")
+    website_clicks_total = normalized_metrics.get("website_clicks")
+    component_interactions_total = _sum_instagram_business_login_values(
+        normalized_metrics.get("likes"),
+        normalized_metrics.get("comments"),
+        normalized_metrics.get("shares"),
+        normalized_metrics.get("saves"),
+        normalized_metrics.get("replies"),
+    )
+    engagement_total = _first_non_none(
+        normalized_metrics.get("total_interactions"),
+        normalized_metrics.get("accounts_engaged"),
+        component_interactions_total,
+    )
+    if normalized_metrics.get("total_interactions") is not None:
+        engagement_source_metric = "total_interactions"
+    elif normalized_metrics.get("accounts_engaged") is not None:
+        engagement_source_metric = "accounts_engaged"
+    elif component_interactions_total is not None:
+        engagement_source_metric = "likes+comments+shares+saves+replies"
+    else:
+        engagement_source_metric = None
+
+    recent_posts, top_content, media_audit = _fetch_instagram_business_login_media_content(
+        access_token=access_token,
+        instagram_user_id=instagram_user_id,
+        timeframe_config=timeframe_config,
+        route_name=route_name,
+        workspace_id=integration.workspace_id,
+        integration_id=integration.id,
+    )
+    posts_analyzed_count = len(recent_posts)
+    has_data = (
+        any(value is not None for value in normalized_metrics.values())
+        or followers_count is not None
+        or bool(recent_posts)
+    )
+    if not metrics_successful and not has_data:
         raise http_error(
             400,
             "instagram_business_login_insights_failed",
             "Instagram Business Login Insights did not return a successful metric response.",
         )
-
-    reach_daily = metric_series.get("reach") or []
-    impressions_daily = metric_series.get("impressions") or []
-    profile_views_daily = metric_series.get("profile_views") or []
-    views_daily = impressions_daily
-    has_data = any(value is not None for value in normalized_metrics.values())
     live_sync_at = datetime.now(timezone.utc)
 
     csv_output = io.StringIO()
@@ -28962,10 +29344,15 @@ def _run_instagram_business_login_sync(
             "account_name",
             "username",
             "followers",
+            "media_count",
             "reach",
             "impressions",
             "views",
             "engagement",
+            "total_interactions",
+            "accounts_engaged",
+            "content_interactions",
+            "website_clicks",
             "profile_views",
             "daily_trend",
             "timeframe_preset",
@@ -28985,11 +29372,16 @@ def _run_instagram_business_login_sync(
             "account_name": account_name,
             "username": username,
             "followers": followers_count,
+            "media_count": media_count,
             "reach": normalized_metrics.get("reach"),
-            "impressions": normalized_metrics.get("impressions"),
-            "views": normalized_metrics.get("impressions"),
-            "engagement": None,
-            "profile_views": normalized_metrics.get("profile_views"),
+            "impressions": impressions_total,
+            "views": views_total,
+            "engagement": engagement_total,
+            "total_interactions": normalized_metrics.get("total_interactions"),
+            "accounts_engaged": normalized_metrics.get("accounts_engaged"),
+            "content_interactions": component_interactions_total,
+            "website_clicks": website_clicks_total,
+            "profile_views": profile_views_total,
             "daily_trend": json.dumps(reach_daily),
             "timeframe_preset": timeframe_config["preset"],
             "timeframe_since": timeframe_config["since"],
@@ -29025,28 +29417,39 @@ def _run_instagram_business_login_sync(
         "page_name": account_name,
         "username": username,
         "instagram_username": username,
+        "profile_picture_url": profile_picture_url,
         "followers": followers_count,
         "followers_count": followers_count,
+        "followers_total": followers_count,
+        "media_count": media_count,
         "reach": normalized_metrics.get("reach"),
-        "impressions": normalized_metrics.get("impressions"),
-        "views": normalized_metrics.get("impressions"),
-        "profile_views": normalized_metrics.get("profile_views"),
-        "profile_visits": normalized_metrics.get("profile_views"),
-        "engagement": None,
-        "total_interactions": None,
-        "accounts_engaged": None,
-        "content_interactions": None,
-        "website_clicks": None,
-        "link_clicks": None,
+        "impressions": impressions_total,
+        "views": views_total,
+        "profile_views": profile_views_total,
+        "profile_visits": profile_views_total,
+        "engagement": engagement_total,
+        "engagement_total": engagement_total,
+        "engagement_source_metric": engagement_source_metric,
+        "total_interactions": normalized_metrics.get("total_interactions"),
+        "accounts_engaged": normalized_metrics.get("accounts_engaged"),
+        "content_interactions": component_interactions_total,
+        "likes": normalized_metrics.get("likes"),
+        "comments": normalized_metrics.get("comments"),
+        "shares": normalized_metrics.get("shares"),
+        "saves": normalized_metrics.get("saves"),
+        "replies": normalized_metrics.get("replies"),
+        "website_clicks": website_clicks_total,
+        "link_clicks": website_clicks_total,
         "followers_growth": None,
         "daily_trend": reach_daily,
-        "daily_engagement": [],
+        "daily_engagement": daily_engagement,
         "reach_daily": reach_daily,
         "impressions_daily": impressions_daily,
         "views_daily": views_daily,
         "profile_views_daily": profile_views_daily,
-        "website_clicks_daily": [],
+        "website_clicks_daily": website_clicks_daily,
         "unavailable_metrics": unavailable_metrics,
+        "profile_fetch_error": profile_fetch_error,
         "instagram_metric_audit": {
             "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
             "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
@@ -29054,6 +29457,13 @@ def _run_instagram_business_login_sync(
             "permissions_used": INSTAGRAM_BUSINESS_LOGIN_SCOPES,
             "metrics": metric_audit,
             "unavailable_metrics": unavailable_metrics,
+            "profile": {
+                "status_code": profile_payload.get("_http_status_code") if isinstance(profile_payload, dict) else None,
+                "error": profile_fetch_error,
+                "followers_count_available": followers_count is not None,
+                "media_count_available": media_count is not None,
+            },
+            "media": media_audit,
         },
         "timeframe": {
             "key": timeframe_config["key"],
@@ -29069,12 +29479,14 @@ def _run_instagram_business_login_sync(
             "previous_until": timeframe_config.get("previous_until"),
             "selected_timeframe": timeframe_config.get("selected_timeframe"),
         },
-        "recent_posts": [],
+        "recent_posts": recent_posts,
+        "top_content": top_content,
+        "posts_analyzed_count": posts_analyzed_count,
         "report_metric_mapping": {
             "views": _build_meta_report_metric_entry(
                 facebook_ui_target_label="Visualizaciones",
-                source_metric_name="impressions" if normalized_metrics.get("impressions") is not None else None,
-                total=normalized_metrics.get("impressions"),
+                source_metric_name="views" if views_total is not None else None,
+                total=views_total,
                 daily_series=views_daily,
                 timeframe_since=timeframe_config["since"],
                 timeframe_until=timeframe_config["until"],
@@ -29089,52 +29501,63 @@ def _run_instagram_business_login_sync(
             ),
             "interactions": _build_meta_report_metric_entry(
                 facebook_ui_target_label="Interacciones con el contenido",
-                source_metric_name=None,
-                total=None,
-                daily_series=[],
+                source_metric_name=engagement_source_metric,
+                total=engagement_total,
+                daily_series=daily_engagement,
                 timeframe_since=timeframe_config["since"],
                 timeframe_until=timeframe_config["until"],
             ),
             "link_clicks": _build_meta_report_metric_entry(
                 facebook_ui_target_label="Clics en el enlace",
-                source_metric_name=None,
-                total=None,
-                daily_series=[],
+                source_metric_name="website_clicks" if website_clicks_total is not None else None,
+                total=website_clicks_total,
+                daily_series=website_clicks_daily,
                 timeframe_since=timeframe_config["since"],
                 timeframe_until=timeframe_config["until"],
             ),
             "page_visits": _build_meta_report_metric_entry(
                 facebook_ui_target_label="Visitas",
-                source_metric_name="profile_views" if normalized_metrics.get("profile_views") is not None else None,
-                total=normalized_metrics.get("profile_views"),
+                source_metric_name="profile_views" if profile_views_total is not None else None,
+                total=profile_views_total,
                 daily_series=profile_views_daily,
                 timeframe_since=timeframe_config["since"],
                 timeframe_until=timeframe_config["until"],
             ),
             "followers_growth": _build_meta_report_metric_entry(
                 facebook_ui_target_label="Seguidores",
-                source_metric_name=None,
-                total=None,
-                daily_series=[],
+                source_metric_name="follower_count" if normalized_metrics.get("follower_count") is not None else None,
+                total=normalized_metrics.get("follower_count"),
+                daily_series=followers_growth_daily,
                 timeframe_since=timeframe_config["since"],
                 timeframe_until=timeframe_config["until"],
             ),
         },
         "normalized_report_metrics": {
-            "impressions_total": normalized_metrics.get("impressions"),
+            "impressions_total": impressions_total,
             "impressions_daily": impressions_daily,
-            "views_total": normalized_metrics.get("impressions"),
+            "views_total": views_total,
             "views_daily": views_daily,
             "viewers_total": normalized_metrics.get("reach"),
             "viewers_daily": reach_daily,
-            "interactions_total": None,
-            "interactions_daily": [],
-            "link_clicks_total": None,
-            "link_clicks_daily": [],
-            "page_visits_total": normalized_metrics.get("profile_views"),
+            "interactions_total": engagement_total,
+            "interactions_daily": daily_engagement,
+            "accounts_engaged_total": normalized_metrics.get("accounts_engaged"),
+            "total_interactions_total": normalized_metrics.get("total_interactions"),
+            "content_interactions": component_interactions_total,
+            "likes_total": normalized_metrics.get("likes"),
+            "comments_total": normalized_metrics.get("comments"),
+            "shares_total": normalized_metrics.get("shares"),
+            "saves_total": normalized_metrics.get("saves"),
+            "replies_total": normalized_metrics.get("replies"),
+            "link_clicks_total": website_clicks_total,
+            "link_clicks_daily": website_clicks_daily,
+            "page_visits_total": profile_views_total,
             "page_visits_daily": profile_views_daily,
-            "followers_growth_total": None,
-            "followers_growth_daily": [],
+            "followers_total": followers_count,
+            "followers_growth_total": normalized_metrics.get("follower_count"),
+            "followers_growth_daily": followers_growth_daily,
+            "posts_analyzed_count": posts_analyzed_count,
+            "top_content": top_content,
             "requested_since": timeframe_config.get("requested_since"),
             "requested_until": timeframe_config.get("requested_until"),
             "timeframe_since": timeframe_config["since"],

@@ -350,16 +350,41 @@ def test_instagram_business_login_sync_calls_graph_instagram_and_accepts_empty_d
     captured_urls: list[str] = []
 
     class FakeResponse:
-        status_code = 200
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
 
         def json(self):
-            return {"data": []}
+            return self._payload
 
     def fake_get(url, *, params=None, headers=None, timeout=None):
         captured_urls.append(url)
         assert headers == {"Authorization": "Bearer ig-login-token"}
-        assert params["metric"] in {"reach", "impressions", "profile_views"}
-        return FakeResponse()
+        if url.endswith("/me"):
+            assert "followers_count" in params["fields"]
+            assert "media_count" in params["fields"]
+            return FakeResponse(
+                200,
+                {
+                    "id": refs["instagram_account_id"],
+                    "username": "iglogin",
+                    "name": "IG Login Account",
+                },
+            )
+        if url.endswith(f"/{refs['instagram_account_id']}/media"):
+            return FakeResponse(200, {"data": []})
+        assert url.endswith(f"/{refs['instagram_account_id']}/insights")
+        assert params["metric"] in set(main_module.INSTAGRAM_BUSINESS_LOGIN_ACCOUNT_INSIGHT_METRICS)
+        if params["metric"] == "impressions":
+            return FakeResponse(
+                400,
+                {
+                    "error": {
+                        "message": "Metric impressions is not valid for this provider path.",
+                    }
+                },
+            )
+        return FakeResponse(200, {"data": []})
 
     class FakeS3:
         def put_object(self, **_kwargs):
@@ -386,8 +411,10 @@ def test_instagram_business_login_sync_calls_graph_instagram_and_accepts_empty_d
     assert payload["provider"] == "instagram_business_login"
     assert payload["source_type"] == "instagram_business"
     assert payload["has_data"] is False
-    assert set(payload["metrics_successful"]) == {"reach", "impressions", "profile_views"}
-    assert payload["metrics_failed"] == []
+    assert set(payload["metrics_successful"]) == set(main_module.INSTAGRAM_BUSINESS_LOGIN_ACCOUNT_INSIGHT_METRICS) - {
+        "impressions"
+    }
+    assert payload["metrics_failed"] == ["impressions"]
     assert captured_urls
     assert all("graph.instagram.com" in url for url in captured_urls)
     assert all("graph.facebook.com" not in url for url in captured_urls)
@@ -409,6 +436,221 @@ def test_instagram_business_login_sync_calls_graph_instagram_and_accepts_empty_d
             "instagram_business_manage_insights",
         ]
         assert dataset.data["has_data"] is False
+        assert dataset.data["impressions"] is None
+        assert dataset.data["views"] is None
+        assert dataset.data["unavailable_metrics"]["impressions"]
+        assert dataset.data["recent_posts"] == []
+    finally:
+        db.close()
+
+
+def test_instagram_business_login_sync_persists_supported_metrics_profile_and_media(
+    client,
+    monkeypatch,
+):
+    refs = _seed_connected_instagram_login()
+    account_id = str(refs["instagram_account_id"])
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    account_metric_values = {
+        "reach": [100, 150],
+        "views": [400, 500],
+        "accounts_engaged": [10, 20],
+        "total_interactions": [30, 40],
+        "profile_views": [7, 8],
+        "website_clicks": [1, 2],
+        "follower_count": [1200, 1234],
+        "likes": [11],
+        "comments": [4],
+        "shares": [3],
+        "saves": [2],
+        "replies": [1],
+    }
+    media_metric_values = {
+        "reach": 1000,
+        "views": 2000,
+        "likes": 51,
+        "comments": 9,
+        "shares": 6,
+        "saves": 5,
+        "total_interactions": 71,
+    }
+
+    def metric_payload(metric_name: str, values: list[int]) -> dict:
+        return {
+            "data": [
+                {
+                    "name": metric_name,
+                    "period": "day",
+                    "values": [
+                        {"value": value, "end_time": f"2026-01-{index + 2:02d}T07:00:00+0000"}
+                        for index, value in enumerate(values)
+                    ],
+                }
+            ]
+        }
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        assert headers == {"Authorization": "Bearer ig-login-token"}
+        if url.endswith("/me"):
+            return FakeResponse(
+                200,
+                {
+                    "id": account_id,
+                    "username": "iglogin",
+                    "name": "IG Login Account",
+                    "profile_picture_url": "https://cdn.example.test/ig.jpg",
+                    "followers_count": 1234,
+                    "media_count": 12,
+                },
+            )
+        if url.endswith(f"/{account_id}/media"):
+            return FakeResponse(
+                200,
+                {
+                    "data": [
+                        {
+                            "id": "ig-media-1",
+                            "caption": "Fresh menu item",
+                            "media_type": "IMAGE",
+                            "permalink": "https://instagram.example.test/p/1",
+                            "timestamp": "2026-01-15T12:00:00+0000",
+                            "like_count": 50,
+                            "comments_count": 8,
+                        },
+                        {
+                            "id": "ig-media-old",
+                            "caption": "Old menu item",
+                            "media_type": "IMAGE",
+                            "permalink": "https://instagram.example.test/p/old",
+                            "timestamp": "2025-11-15T12:00:00+0000",
+                            "like_count": 999,
+                            "comments_count": 999,
+                        },
+                    ],
+                    "paging": {},
+                },
+            )
+        assert url.endswith("/insights")
+        metric_name = params["metric"]
+        target_id = url.rstrip("/").split("/")[-2]
+        if target_id == account_id:
+            if metric_name == "impressions":
+                return FakeResponse(
+                    400,
+                    {
+                        "error": {
+                            "message": "Metric impressions is not valid for this provider path.",
+                        }
+                    },
+                )
+            return FakeResponse(200, metric_payload(metric_name, account_metric_values.get(metric_name, [])))
+        if target_id == "ig-media-1":
+            if metric_name == "replies":
+                return FakeResponse(
+                    400,
+                    {
+                        "error": {
+                            "message": "Metric replies is unavailable for this media.",
+                        }
+                    },
+                )
+            value = media_metric_values.get(metric_name)
+            values = [value] if value is not None else []
+            return FakeResponse(200, metric_payload(metric_name, values))
+        raise AssertionError(f"unexpected graph request: {url}")
+
+    class FakeS3:
+        def put_object(self, **_kwargs):
+            return {}
+
+    monkeypatch.setattr(instagram_business_module.requests, "get", fake_get)
+    monkeypatch.setattr(main_module, "_enforce_workspace_storage_for_upload", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main_module.boto3, "client", lambda *_args, **_kwargs: FakeS3())
+
+    response = client.post(
+        "/integrations/instagram-business-login/sync",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "workspace_id": refs["workspace_id"],
+            "integration_id": refs["integration_id"],
+            "instagram_account_id": refs["instagram_account_id"],
+            "timeframe": "custom",
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-30",
+            "force_live": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["has_data"] is True
+    assert "reach" in payload["metrics_successful"]
+    assert payload["metrics_failed"] == ["impressions"]
+
+    db = SessionLocal()
+    try:
+        dataset = db.get(Dataset, payload["dataset_id"])
+        assert dataset is not None
+        data = dataset.data
+        assert data["reach"] == 250
+        assert data["views"] == 900
+        assert data["impressions"] is None
+        assert data["engagement"] == 70
+        assert data["total_interactions"] == 70
+        assert data["accounts_engaged"] == 30
+        assert data["content_interactions"] == 21
+        assert data["profile_views"] == 15
+        assert data["profile_visits"] == 15
+        assert data["website_clicks"] == 3
+        assert data["followers_count"] == 1234
+        assert data["media_count"] == 12
+        assert data["unavailable_metrics"]["impressions"]
+        assert data["normalized_report_metrics"]["views_total"] == 900
+        assert data["normalized_report_metrics"]["interactions_total"] == 70
+        assert data["normalized_report_metrics"]["page_visits_total"] == 15
+        assert data["normalized_report_metrics"]["followers_total"] == 1234
+        assert data["normalized_report_metrics"]["followers_growth_total"] == 1234
+        assert data["posts_analyzed_count"] == 1
+        assert len(data["recent_posts"]) == 1
+        post = data["recent_posts"][0]
+        assert post["id"] == "ig-media-1"
+        assert post["message"] == "Fresh menu item"
+        assert post["media_type"] == "IMAGE"
+        assert post["reach"] == 1000
+        assert post["views"] == 2000
+        assert post["likes"] == 51
+        assert post["reactions"] == 51
+        assert post["comments"] == 9
+        assert post["shares"] == 6
+        assert post["saves"] == 5
+        assert post["replies"] is None
+        assert len(data["top_content"]) == 1
+
+        normalized = main_module._multi_source_normalize_source(
+            {
+                "source_type": "instagram_business",
+                "label": "Instagram Account",
+                "dataset_id": dataset.id,
+            },
+            dataset=dataset,
+            locale="en",
+        )
+        assert len(normalized["content"]) == 1
+        assert normalized["content"][0]["id"] == "ig-media-1"
+        assert normalized["content"][0]["likes"] == 51
+        assert normalized["content"][0]["views"] == 2000
+        top_content = main_module._multi_source_top_content([normalized])
+        assert top_content is not None
+        assert top_content["id"] == "ig-media-1"
+        assert top_content["_source_label"] == "Instagram Account"
     finally:
         db.close()
 
@@ -432,9 +674,14 @@ def test_instagram_business_report_accepts_dataset_from_instagram_business_login
                 "ig_user_id": refs["instagram_account_id"],
                 "account_name": "IG Login Account",
                 "page_name": "IG Login Account",
-                "reach": 0,
-                "impressions": 0,
-                "profile_views": 0,
+                "reach": 250,
+                "impressions": None,
+                "views": 900,
+                "profile_views": None,
+                "unavailable_metrics": {
+                    "impressions": "Metric impressions is not valid for this provider path.",
+                    "profile_views": "empty_response",
+                },
                 "timeframe": {"preset": "last_30_days", "since": "2026-01-01", "until": "2026-01-30"},
                 "normalized_report_metrics": {},
             },
