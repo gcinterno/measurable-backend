@@ -59,60 +59,121 @@ def _source(
         "since": "2026-06-01",
         "until": "2026-06-30",
     }
+    base_timeseries = {
+        "followers_growth": [
+            {"date": "2026-06-01", "value": 2 * daily_multiplier},
+            {"date": "2026-06-02", "value": 3 * daily_multiplier},
+        ],
+        "followers": [
+            {"date": "2026-06-01", "value": followers - 10},
+            {"date": "2026-06-02", "value": followers},
+        ],
+        "reach": [
+            {"date": "2026-06-01", "value": 100 * daily_multiplier},
+            {"date": "2026-06-02", "value": 120 * daily_multiplier},
+        ],
+        "impressions": [],
+        "engagement": [
+            {"date": "2026-06-01", "value": 18 * daily_multiplier},
+            {"date": "2026-06-02", "value": 22 * daily_multiplier},
+        ],
+        "page_visits": [
+            {"date": "2026-06-01", "value": 9 * daily_multiplier},
+            {"date": "2026-06-02", "value": 12 * daily_multiplier},
+        ],
+    }
+    metrics = {
+        "followers": followers,
+        "reach": reach,
+        "impressions": None,
+        "engagement": engagement,
+        "profile_visits": profile_visits,
+        "page_visits": profile_visits,
+        "link_clicks": 20 * daily_multiplier,
+        "views": None,
+        "content_interactions": engagement,
+    }
+    report_inputs = {
+        "integration_type": source_type,
+        "account_name": account_name,
+        "page_name": account_name,
+        "followers": followers,
+        "followers_total": followers,
+        "reach": reach,
+        "reach_total": reach,
+        "engagement": engagement,
+        "engagement_total": engagement,
+        "profile_visits": profile_visits,
+        "page_views_total": profile_visits,
+        "recent_posts": [post],
+        "top_content": [post],
+        "posts_analyzed_count": 1,
+        "previous_period": {
+            "previous_reach": previous_reach,
+            "previous_impressions": previous_impressions,
+            "previous_engagement": previous_engagement,
+            "previous_page_views": previous_page_views,
+            "previous_followers": previous_followers,
+        },
+    }
+    if source_type == "facebook_pages":
+        report_inputs.update(
+            {
+                "organic_impressions": impressions,
+                "organic_impressions_total": impressions,
+                "impressions": None,
+                "impressions_total": None,
+                "daily_organic_impressions": [
+                    {"date": "2026-06-01", "value": 180 * daily_multiplier},
+                    {"date": "2026-06-02", "value": 210 * daily_multiplier},
+                ],
+                "daily_engagement": base_timeseries["engagement"],
+                "daily_page_views": base_timeseries["page_visits"],
+                "unavailable_metrics": {
+                    "impressions": "General page impressions are not available in this dataset."
+                },
+            }
+        )
+    else:
+        metrics.update({"engagement": None, "content_interactions": None, "views": impressions})
+        base_timeseries["engagement"] = []
+        report_inputs.update(
+            {
+                "username": "instagramaccount",
+                "provider": "instagram_business_login",
+                "followers_count": followers,
+                "media_count": 42,
+                "views": impressions,
+                "impressions": None,
+                "impressions_total": None,
+                "engagement": None,
+                "engagement_total": None,
+                "total_interactions": None,
+                "accounts_engaged": None,
+                "profile_views": profile_visits,
+                "reach_daily": base_timeseries["reach"],
+                "views_daily": [
+                    {"date": "2026-06-01", "value": 180 * daily_multiplier},
+                    {"date": "2026-06-02", "value": 210 * daily_multiplier},
+                ],
+                "daily_engagement": [],
+                "profile_views_daily": base_timeseries["page_visits"],
+                "unavailable_metrics": {
+                    "impressions": "metric[0] must be one of: reach, views, total_interactions"
+                },
+            }
+        )
     return {
         "dataset_id": dataset_id,
         "source_type": source_type,
         "provider": "meta",
         "label": label,
         "account_name": account_name,
-        "metrics": {
-            "followers": followers,
-            "reach": reach,
-            "impressions": impressions,
-            "engagement": engagement,
-            "profile_visits": profile_visits,
-            "page_visits": profile_visits,
-            "link_clicks": 20 * daily_multiplier,
-            "views": impressions,
-            "content_interactions": engagement,
-        },
-        "timeseries": {
-            "followers_growth": [
-                {"date": "2026-06-01", "value": 2 * daily_multiplier},
-                {"date": "2026-06-02", "value": 3 * daily_multiplier},
-            ],
-            "followers": [
-                {"date": "2026-06-01", "value": followers - 10},
-                {"date": "2026-06-02", "value": followers},
-            ],
-            "reach": [
-                {"date": "2026-06-01", "value": 100 * daily_multiplier},
-                {"date": "2026-06-02", "value": 120 * daily_multiplier},
-            ],
-            "impressions": [
-                {"date": "2026-06-01", "value": 180 * daily_multiplier},
-                {"date": "2026-06-02", "value": 210 * daily_multiplier},
-            ],
-            "engagement": [
-                {"date": "2026-06-01", "value": 18 * daily_multiplier},
-                {"date": "2026-06-02", "value": 22 * daily_multiplier},
-            ],
-            "page_visits": [
-                {"date": "2026-06-01", "value": 9 * daily_multiplier},
-                {"date": "2026-06-02", "value": 12 * daily_multiplier},
-            ],
-        },
+        "metrics": metrics,
+        "timeseries": base_timeseries,
         "content": [post],
         "raw_summary": f"{label} summary",
-        "report_inputs": {
-            "previous_period": {
-                "previous_reach": previous_reach,
-                "previous_impressions": previous_impressions,
-                "previous_engagement": previous_engagement,
-                "previous_page_views": previous_page_views,
-                "previous_followers": previous_followers,
-            }
-        },
+        "report_inputs": report_inputs,
         "report_timeframe": timeframe,
     }
 
@@ -199,7 +260,16 @@ def _payloads(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [json.loads(str(block["data_json"])) for block in blocks]
 
 
-def test_facebook_instagram_10_recipe_builder_matches_multi_source_builder_exactly() -> None:
+def _assert_primary_value_fields(payload: dict[str, Any], expected_value: Any) -> None:
+    assert payload["value"] == expected_value
+    assert payload["current_value"] == expected_value
+    assert payload["primary_value"] == expected_value
+    assert payload["metric_value"] == expected_value
+    assert payload["total"] == expected_value
+    assert payload["canonical_metric_resolution"]["value"] == expected_value
+
+
+def test_facebook_instagram_10_recipe_builder_aligns_blocks_to_catalog_semantics() -> None:
     context = _canonical_context()
 
     legacy_blocks = report_main._multi_source_build_10_blocks(context)
@@ -208,19 +278,50 @@ def test_facebook_instagram_10_recipe_builder_matches_multi_source_builder_exact
         context,
     )
 
-    assert recipe_blocks == legacy_blocks
+    assert recipe_blocks != legacy_blocks
     assert len(recipe_blocks) == len(legacy_blocks) == 10
     assert [block["order"] for block in recipe_blocks] == [block["order"] for block in legacy_blocks]
     assert [block["type"] for block in recipe_blocks] == [block["type"] for block in legacy_blocks]
     assert [block["editable_fields_json"] for block in recipe_blocks] == [
         block["editable_fields_json"] for block in legacy_blocks
     ]
-    assert [block["data_json"] for block in recipe_blocks] == [
-        block["data_json"] for block in legacy_blocks
-    ]
-    assert [payload["semantic_name"] for payload in _payloads(recipe_blocks)] == list(
+    recipe_payloads = _payloads(recipe_blocks)
+    assert [payload["semantic_name"] for payload in recipe_payloads] == list(
         FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES
     )
+    assert recipe_payloads[2]["canonical_semantic"] == "visibility"
+    _assert_primary_value_fields(recipe_payloads[2], 8700)
+    assert recipe_payloads[2]["provenance"]["aggregation_method"] == "not_comparable"
+    assert recipe_payloads[2]["canonical_metric_resolution"]["aggregation_method"] == "not_comparable"
+    assert recipe_payloads[2]["provenance"]["value_is_aggregated"] is False
+    assert recipe_payloads[2]["previous_value"] is None
+    assert {
+        source["source_metric"]
+        for source in recipe_payloads[2]["source_contributions"]
+    } == {"page_posts_impressions_organic", "views"}
+    assert recipe_payloads[3]["canonical_semantic"] == "engagement"
+    _assert_primary_value_fields(recipe_payloads[3], 480)
+    instagram_engagement = next(
+        source
+        for source in recipe_payloads[3]["source_contributions"]
+        if source["source_type"] == "instagram_business"
+    )
+    assert instagram_engagement["source_metric"] == "media.engagement"
+    assert instagram_engagement["provenance"]["fallback_used"] is True
+    assert recipe_payloads[5]["semantic_name"] == "audience_growth"
+    assert recipe_payloads[5]["canonical_semantic"] == "audience_size"
+    _assert_primary_value_fields(recipe_payloads[5], 3000)
+    assert recipe_payloads[5]["audience_value_type"] == "base_size"
+    assert recipe_payloads[6]["canonical_semantic"] == "content_activity"
+    _assert_primary_value_fields(recipe_payloads[6], 2)
+    assert recipe_payloads[6]["media_count_contributions"][0]["value"] == 42
+    assert {
+        item["source"]
+        for item in recipe_payloads[7]["top_posts"]
+    } == {"Facebook Page", "Instagram Account"}
+    assert all(item["ranking_score"] is not None for item in recipe_payloads[7]["top_posts"])
+    assert all("engagement_interactions" in item for item in recipe_payloads[7]["top_posts"])
+    assert recipe_payloads[8]["metrics"]["summary_scope"] == "multi_source"
     assert validate_blocks_against_recipe(recipe_blocks, FACEBOOK_INSTAGRAM_10_RECIPE).valid
 
 

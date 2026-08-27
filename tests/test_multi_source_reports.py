@@ -19,11 +19,16 @@ os.environ.setdefault("EXPORT_LAMBDA_URL", "https://example.com/export")
 os.environ.setdefault("SES_FROM_EMAIL", "no-reply@measurable.test")
 os.environ.setdefault("FRONTEND_BASE_URL", "http://localhost:3000")
 
+from app import main as main_module
 from app.db import Base, SessionLocal, engine
 from app.deps import get_db
-from app.main import app
 from app.models import Dataset, Integration, IntegrationAccount, ReferralConversion, Report, ReportBlock, ReportSource, ReportVersion, Subscription, User, UserAttribution, Workspace, WorkspaceMember
+from app.report_recipe_validation import validate_blocks_against_recipe
+from app.report_recipes import FACEBOOK_INSTAGRAM_10_RECIPE, ReportRecipe, ReportRecipeSlide
 from app.security import create_access_token, hash_password
+
+
+app = main_module.app
 
 
 @compiles(JSONB, "sqlite")
@@ -91,6 +96,80 @@ def _semantic_name_from_payload_block(block: dict) -> str | None:
     return None
 
 
+def _canonical_multi_source_payload(refs: dict[str, int]) -> dict:
+    return {
+        "title": "Cross-source report",
+        "timeframe": "last_28_days",
+        "requested_slides": 10,
+        "ai_mode": "standard",
+        "locale": "en",
+        "sources": [
+            {
+                "provider": "meta",
+                "source_type": "facebook_pages",
+                "integration_id": refs["integration_id"],
+                "dataset_id": refs["dataset_one_id"],
+                "position": 0,
+                "label": "Facebook Page",
+            },
+            {
+                "provider": "instagram_business_login",
+                "source_type": "instagram_business",
+                "integration_id": refs["integration_id"],
+                "integration_account_id": "ig_123",
+                "dataset_id": refs["dataset_two_id"],
+                "position": 1,
+                "label": "Instagram Account",
+                "config_json": {
+                    "external_account_id": "ig_123",
+                    "account_name": "Instagram Account",
+                },
+            },
+        ],
+    }
+
+
+def _persisted_block_specs(report_id: int) -> list[dict]:
+    db = SessionLocal()
+    try:
+        report_version = (
+            db.query(ReportVersion)
+            .filter(ReportVersion.report_id == report_id)
+            .order_by(ReportVersion.version.asc())
+            .one()
+        )
+        blocks = (
+            db.query(ReportBlock)
+            .filter(ReportBlock.report_version_id == report_version.id)
+            .order_by(ReportBlock.order.asc())
+            .all()
+        )
+        return [
+            {
+                "type": block.type,
+                "order": block.order,
+                "data_json": block.data_json,
+                "editable_fields_json": block.editable_fields_json,
+            }
+            for block in blocks
+        ]
+    finally:
+        db.close()
+
+
+def _block_payloads(block_specs: list[dict]) -> list[dict]:
+    return [json.loads(str(block["data_json"])) for block in block_specs]
+
+
+def _assert_primary_value_fields(payload: dict, expected_value) -> None:
+    assert payload["value"] == expected_value
+    assert payload["current_value"] == expected_value
+    assert payload["primary_value"] == expected_value
+    assert payload["metric_value"] == expected_value
+    assert payload["total"] == expected_value
+    assert payload["canonical_metric_resolution"]["value"] == expected_value
+
+
 def _seed_sources() -> dict[str, int]:
     db = SessionLocal()
     try:
@@ -124,7 +203,10 @@ def _seed_sources() -> dict[str, int]:
                 "followers": 1200,
                 "reach": 5400,
                 "engagement": 320,
-                "impressions": 8700,
+                "impressions": None,
+                "organic_impressions": 8700,
+                "organic_impressions_total": 8700,
+                "page_views_total": 410,
                 "timeframe": {
                     "preset": "last_28_days",
                     "since": "2026-04-01",
@@ -135,9 +217,13 @@ def _seed_sources() -> dict[str, int]:
                     {"date": "2026-04-01", "value": 180},
                     {"date": "2026-04-02", "value": 220},
                 ],
-                "impressions_daily": [
+                "daily_organic_impressions": [
                     {"date": "2026-04-01", "value": 310},
                     {"date": "2026-04-02", "value": 360},
+                ],
+                "daily_page_views": [
+                    {"date": "2026-04-01", "value": 190},
+                    {"date": "2026-04-02", "value": 220},
                 ],
                 "daily_engagement": [
                     {"date": "2026-04-01", "value": 14},
@@ -150,13 +236,25 @@ def _seed_sources() -> dict[str, int]:
                         "reactions": 45,
                         "comments": 12,
                         "shares": 8,
+                        "reach": 900,
+                        "engagement": 65,
+                        "created_time": "2026-04-02",
                     }
                 ],
                 "normalized_report_metrics": {
+                    "organic_impressions_total": 8700,
+                    "daily_organic_impressions": [
+                        {"date": "2026-04-01", "value": 310},
+                        {"date": "2026-04-02", "value": 360},
+                    ],
+                    "page_views_total": 410,
                     "followers_growth_daily": [
                         {"date": "2026-04-01", "value": 4},
                         {"date": "2026-04-02", "value": 6},
                     ]
+                },
+                "unavailable_metrics": {
+                    "impressions": "General page impressions are not available in this dataset."
                 },
             },
         )
@@ -169,9 +267,14 @@ def _seed_sources() -> dict[str, int]:
                 "account_name": "Instagram Account",
                 "page_name": "Instagram Account",
                 "followers": 1800,
+                "followers_count": 1800,
+                "media_count": 42,
                 "reach": 7600,
-                "engagement": 540,
-                "impressions": 12000,
+                "engagement": None,
+                "total_interactions": None,
+                "impressions": None,
+                "views": 12000,
+                "profile_views": 630,
                 "timeframe": {
                     "preset": "last_28_days",
                     "since": "2026-04-01",
@@ -182,23 +285,43 @@ def _seed_sources() -> dict[str, int]:
                     {"date": "2026-04-01", "value": 260},
                     {"date": "2026-04-02", "value": 290},
                 ],
-                "impressions_daily": [
+                "views_daily": [
                     {"date": "2026-04-01", "value": 420},
                     {"date": "2026-04-02", "value": 470},
                 ],
-                "daily_engagement": [
-                    {"date": "2026-04-01", "value": 24},
-                    {"date": "2026-04-02", "value": 28},
+                "daily_engagement": [],
+                "profile_views_daily": [
+                    {"date": "2026-04-01", "value": 300},
+                    {"date": "2026-04-02", "value": 330},
                 ],
                 "recent_posts": [
                     {
                         "id": "ig-post-1",
                         "caption": "Instagram reel performance",
+                        "reach": 1100,
+                        "views": 1900,
+                        "engagement": 160,
                         "likes": 110,
                         "comments": 16,
                         "saves": 21,
+                        "shares": 13,
+                        "created_time": "2026-04-03",
                     }
                 ],
+                "posts_analyzed_count": 1,
+                "normalized_report_metrics": {
+                    "views_total": 12000,
+                    "views_daily": [
+                        {"date": "2026-04-01", "value": 420},
+                        {"date": "2026-04-02", "value": 470},
+                    ],
+                    "followers_total": 1800,
+                    "media_count": 42,
+                    "posts_analyzed_count": 1,
+                },
+                "unavailable_metrics": {
+                    "impressions": "metric[0] must be one of: reach, views, total_interactions"
+                },
             },
         )
         integration = Integration(workspace_id=workspace.id, provider="meta", name="Meta", status="connected")
@@ -247,7 +370,7 @@ def test_create_multi_source_report_creates_ten_visual_blocks_for_two_sources(cl
                     "label": "Facebook Page",
                 },
                 {
-                    "provider": "meta",
+                    "provider": "instagram_business_login",
                     "source_type": "instagram_business",
                     "integration_id": refs["integration_id"],
                     "integration_account_id": "ig_123",
@@ -385,7 +508,7 @@ def test_create_multi_source_report_rejects_two_sources_with_non_ten_slide_reque
                     "label": "Facebook Page",
                 },
                 {
-                    "provider": "meta",
+                    "provider": "instagram_business_login",
                     "source_type": "instagram_business",
                     "integration_id": refs["integration_id"],
                     "dataset_id": refs["dataset_two_id"],
@@ -500,3 +623,313 @@ def test_create_multi_source_report_allows_dataset_fallback_without_integration_
     assert len(payload["report_sources"]) == 2
     assert payload["report_sources"][1]["integration_account_id"] is None
     assert payload["report_sources"][1]["dataset_id"] == refs["dataset_two_id"]
+
+
+def test_canonical_multi_source_report_uses_catalog_aligned_recipe_builder_by_default(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import app.report_recipe_builder as recipe_builder_module
+
+    refs = _seed_sources()
+    original_recipe_builder = recipe_builder_module.build_facebook_instagram_10_blocks_from_recipe
+    recipe_calls: list[str] = []
+
+    def wrapped_recipe_builder(recipe, context, **kwargs):
+        recipe_calls.append(recipe.id)
+        return original_recipe_builder(recipe, context, **kwargs)
+
+    monkeypatch.delenv(main_module.FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_ENV, raising=False)
+    monkeypatch.setattr(
+        recipe_builder_module,
+        "build_facebook_instagram_10_blocks_from_recipe",
+        wrapped_recipe_builder,
+    )
+
+    recipe_response = client.post(
+        "/reports/multi-source",
+        headers=_auth_headers(refs["user_id"]),
+        json=_canonical_multi_source_payload(refs),
+    )
+
+    assert recipe_response.status_code == 200
+    assert recipe_calls == ["facebook_instagram_10"]
+    assert recipe_response.json()["integration_metadata"]["integration_type"] == "multi_source"
+    assert recipe_response.json()["integration_metadata"]["integration_display_name"] == "Facebook + Instagram"
+    assert recipe_response.json()["integration_metadata"]["source_name"] == "Facebook + Instagram"
+    assert recipe_response.json()["report_sources"][0]["provider"] == "meta"
+    assert recipe_response.json()["report_sources"][1]["provider"] == "instagram_business_login"
+    recipe_block_specs = _persisted_block_specs(recipe_response.json()["id"])
+    recipe_payloads = _block_payloads(recipe_block_specs)
+    assert len(recipe_block_specs) == 10
+    assert [block["order"] for block in recipe_block_specs] == list(range(1, 11))
+    assert [payload["semantic_name"] for payload in recipe_payloads] == [
+        "cover",
+        "reach",
+        "impressions",
+        "engagement",
+        "page_visits",
+        "audience_growth",
+        "content_activity",
+        "top_performing_content",
+        "executive_insights",
+        "recommendations",
+    ]
+    assert validate_blocks_against_recipe(recipe_block_specs, FACEBOOK_INSTAGRAM_10_RECIPE).valid
+    assert all(isinstance(block["data_json"], str) for block in recipe_block_specs)
+    assert all(isinstance(block["editable_fields_json"], str) for block in recipe_block_specs)
+    assert recipe_payloads[2]["canonical_semantic"] == "visibility"
+    _assert_primary_value_fields(recipe_payloads[2], 8700)
+    assert recipe_payloads[2]["provenance"]["aggregation_method"] == "not_comparable"
+    assert recipe_payloads[2]["canonical_metric_resolution"]["aggregation_method"] == "not_comparable"
+    assert recipe_payloads[2]["previous_value"] is None
+    instagram_visibility = next(
+        source
+        for source in recipe_payloads[2]["source_contributions"]
+        if source["source_type"] == "instagram_business"
+    )
+    assert instagram_visibility["source_metric"] == "views"
+    assert instagram_visibility["value"] == 12000
+    assert recipe_payloads[3]["canonical_semantic"] == "engagement"
+    _assert_primary_value_fields(recipe_payloads[3], 480)
+    instagram_engagement = next(
+        source
+        for source in recipe_payloads[3]["source_contributions"]
+        if source["source_type"] == "instagram_business"
+    )
+    assert instagram_engagement["source_metric"] == "media.engagement"
+    assert instagram_engagement["provenance"]["fallback_used"] is True
+    assert recipe_payloads[5]["canonical_semantic"] == "audience_size"
+    _assert_primary_value_fields(recipe_payloads[5], 3000)
+    assert recipe_payloads[5]["audience_value_type"] == "base_size"
+    _assert_primary_value_fields(recipe_payloads[6], 2)
+    assert recipe_payloads[6]["media_count_contributions"][0]["value"] == 42
+    assert {
+        item["source"]
+        for item in recipe_payloads[7]["top_posts"]
+    } == {"Facebook Page", "Instagram Account"}
+    assert all(item["ranking_score"] is not None for item in recipe_payloads[7]["top_posts"])
+    assert all("engagement_interactions" in item for item in recipe_payloads[7]["top_posts"])
+
+    monkeypatch.setenv(main_module.FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_ENV, "legacy")
+    recipe_calls.clear()
+    legacy_response = client.post(
+        "/reports/multi-source",
+        headers=_auth_headers(refs["user_id"]),
+        json=_canonical_multi_source_payload(refs),
+    )
+
+    assert legacy_response.status_code == 200
+    assert recipe_calls == []
+    assert legacy_response.json()["integration_metadata"]["integration_type"] == "multi_source"
+    legacy_block_specs = _persisted_block_specs(legacy_response.json()["id"])
+    legacy_payloads = _block_payloads(legacy_block_specs)
+    assert legacy_block_specs != recipe_block_specs
+    assert len(legacy_block_specs) == 10
+    assert [payload["semantic_name"] for payload in legacy_payloads] == [
+        payload["semantic_name"] for payload in recipe_payloads
+    ]
+    assert "canonical_semantic" not in legacy_payloads[2]
+
+
+def test_real_provider_pair_visibility_does_not_persist_unsupported_instagram_impressions_as_zero(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    refs = _seed_sources()
+    db = SessionLocal()
+    try:
+        instagram_dataset = db.get(Dataset, refs["dataset_two_id"])
+        assert instagram_dataset is not None
+        data = dict(instagram_dataset.data)
+        data["views"] = None
+        data["views_daily"] = []
+        normalized = dict(data.get("normalized_report_metrics") or {})
+        normalized["views_total"] = None
+        normalized["views_daily"] = []
+        data["normalized_report_metrics"] = normalized
+        unavailable_metrics = dict(data.get("unavailable_metrics") or {})
+        unavailable_metrics["views"] = "empty_response"
+        unavailable_metrics["impressions"] = "metric[0] must be one of: reach, views, total_interactions"
+        data["unavailable_metrics"] = unavailable_metrics
+        instagram_dataset.data = data
+        db.add(instagram_dataset)
+        db.commit()
+    finally:
+        db.close()
+
+    monkeypatch.delenv(main_module.FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_ENV, raising=False)
+    response = client.post(
+        "/reports/multi-source",
+        headers=_auth_headers(refs["user_id"]),
+        json=_canonical_multi_source_payload(refs),
+    )
+
+    assert response.status_code == 200
+    payloads = _block_payloads(_persisted_block_specs(response.json()["id"]))
+    visibility_payload = payloads[2]
+    assert visibility_payload["semantic_name"] == "impressions"
+    assert visibility_payload["canonical_semantic"] == "visibility"
+    _assert_primary_value_fields(visibility_payload, 8700)
+    assert visibility_payload["value"] != 0
+    assert visibility_payload["canonical_metric_resolution"]["aggregation_method"] == "not_comparable"
+
+    instagram_visibility = next(
+        source
+        for source in visibility_payload["source_contributions"]
+        if source["source_type"] == "instagram_business"
+    )
+    assert instagram_visibility["source_metric"] == "views"
+    assert instagram_visibility["value"] is None
+    assert instagram_visibility["support_status"] == "empty"
+
+
+def test_facebook_instagram_10_recipe_builder_invalid_env_fails_closed(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    refs = _seed_sources()
+    monkeypatch.setenv(main_module.FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_ENV, "unsupported")
+
+    response = client.post(
+        "/reports/multi-source",
+        headers=_auth_headers(refs["user_id"]),
+        json=_canonical_multi_source_payload(refs),
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "facebook_instagram_10_recipe_builder_config_invalid"
+
+
+@pytest.mark.parametrize(
+    "recipe",
+    [
+        None,
+        ReportRecipe(
+            id="facebook_instagram_10",
+            platform="multi_source",
+            name="Malformed Facebook + Instagram 10",
+            version=1,
+            slides=(ReportRecipeSlide(order=1, semantic_name="cover"),),
+        ),
+        ReportRecipe(
+            id="facebook_instagram_10",
+            platform="multi_source",
+            name="Unsupported Semantic",
+            version=1,
+            slides=(
+                *FACEBOOK_INSTAGRAM_10_RECIPE.slides[:9],
+                ReportRecipeSlide(order=10, semantic_name="unsupported_semantic"),
+            ),
+        ),
+    ],
+)
+def test_facebook_instagram_10_recipe_builder_bad_recipe_fails_closed(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+    recipe: ReportRecipe | None,
+):
+    refs = _seed_sources()
+    monkeypatch.delenv(main_module.FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_ENV, raising=False)
+    monkeypatch.setattr(main_module, "get_report_recipe", lambda _recipe_id: recipe)
+
+    response = client.post(
+        "/reports/multi-source",
+        headers=_auth_headers(refs["user_id"]),
+        json=_canonical_multi_source_payload(refs),
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "facebook_instagram_10_recipe_builder_failed"
+
+
+def test_facebook_instagram_10_recipe_guard_is_narrow() -> None:
+    assert main_module.should_use_facebook_instagram_10_recipe(
+        [
+            {"provider": "meta", "source_type": "facebook_pages"},
+            {"provider": "instagram_business_login", "source_type": "instagram_business"},
+        ],
+        requested_slides=10,
+    )
+    assert main_module.should_use_facebook_instagram_10_recipe(
+        [
+            {"provider": "meta", "source_type": "facebook_pages"},
+            {"provider": "meta", "source_type": "instagram_business"},
+        ],
+        requested_slides=10,
+    )
+    assert not main_module.should_use_facebook_instagram_10_recipe(
+        [{"provider": "meta", "source_type": "facebook_pages"}],
+        requested_slides=5,
+    )
+    assert not main_module.should_use_facebook_instagram_10_recipe(
+        [{"provider": "meta", "source_type": "instagram_business"}],
+        requested_slides=10,
+    )
+    assert not main_module.should_use_facebook_instagram_10_recipe(
+        [
+            {"provider": "meta", "source_type": "facebook_pages"},
+            {"provider": "meta", "source_type": "meta_ads"},
+        ],
+        requested_slides=10,
+    )
+    assert not main_module.should_use_facebook_instagram_10_recipe(
+        [
+            {"provider": "meta", "source_type": "facebook_pages"},
+            {"provider": "instagram_business_login", "source_type": "instagram_business"},
+        ],
+        requested_slides=5,
+    )
+    assert not main_module.should_use_facebook_instagram_10_recipe(
+        [
+            {"provider": "meta", "source_type": "facebook_pages"},
+            {"provider": "instagram_business_login", "source_type": "instagram_business"},
+            {"provider": "meta", "source_type": "meta_ads"},
+        ],
+        requested_slides=10,
+    )
+    assert not main_module.should_use_facebook_instagram_10_recipe(
+        [
+            {"provider": "meta_ads", "source_type": "facebook_pages"},
+            {"provider": "instagram_business_login", "source_type": "instagram_business"},
+        ],
+        requested_slides=10,
+    )
+    assert not main_module.should_use_facebook_instagram_10_recipe(
+        [
+            {"provider": "meta", "source_type": "facebook_pages"},
+            {"provider": "meta_ads", "source_type": "instagram_business"},
+        ],
+        requested_slides=10,
+    )
+
+
+def test_noncanonical_multi_source_report_does_not_select_facebook_instagram_recipe(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import app.report_recipe_builder as recipe_builder_module
+
+    refs = _seed_sources()
+    monkeypatch.delenv(main_module.FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_ENV, raising=False)
+
+    def fail_recipe_builder(*_args, **_kwargs):
+        raise AssertionError("Facebook + Instagram Recipe builder should not run")
+
+    monkeypatch.setattr(
+        recipe_builder_module,
+        "build_facebook_instagram_10_blocks_from_recipe",
+        fail_recipe_builder,
+    )
+    payload = _canonical_multi_source_payload(refs)
+    payload["sources"][1]["source_type"] = "meta_ads"
+
+    response = client.post(
+        "/reports/multi-source",
+        headers=_auth_headers(refs["user_id"]),
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    block_specs = _persisted_block_specs(response.json()["id"])
+    assert len(block_specs) == 10

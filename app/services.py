@@ -2780,6 +2780,9 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         "content_interactions": content_interactions,
         "link_clicks": link_clicks,
         "followers_growth": followers_growth,
+        "media_count": _to_int(row.get("media_count"))
+        if _to_int(row.get("media_count")) is not None
+        else _to_int(normalized_metrics.get("media_count")),
         "timeframe_preset": timeframe_preset,
         "timeframe_since": timeframe_since,
         "timeframe_until": timeframe_until,

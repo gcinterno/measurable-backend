@@ -151,6 +151,7 @@ from .report_recipe_enforcement import (
     should_enforce_facebook_pages_5_recipe,
 )
 from .report_recipes import (
+    FACEBOOK_INSTAGRAM_10_RECIPE_ID,
     FACEBOOK_PAGES_5_RECIPE,
     ReportRecipe,
     get_report_recipe,
@@ -2160,6 +2161,8 @@ def _report_integration_display_name(integration_type: str) -> str:
         "shopify": "Shopify",
         "instagram": "Instagram Business",
         "facebook": "Facebook Pages",
+        "multi_source": "Facebook + Instagram",
+        "facebook_instagram": "Facebook + Instagram",
         "meta_ads": "Meta Ads",
         "meta": "Meta",
         "tiktok_ads": "TikTok Ads",
@@ -2168,6 +2171,30 @@ def _report_integration_display_name(integration_type: str) -> str:
         "legacy": "Manual / Legacy report",
     }
     return mapping.get(integration_type, "Unknown integration")
+
+
+def _facebook_instagram_multi_source_metadata_payload() -> dict[str, Any]:
+    return {
+        "integration_type": "multi_source",
+        "integration_display_name": "Facebook + Instagram",
+        "source_name": "Facebook + Instagram",
+        "source_handle": None,
+        "social_network": "meta",
+        "channel": "multi_source",
+    }
+
+
+def _is_facebook_instagram_multi_source_report_sources(report_sources: list[Any]) -> bool:
+    if len(report_sources) != 2:
+        return False
+    source_types: list[str] = []
+    for source in report_sources:
+        if isinstance(source, dict):
+            raw_source_type = source.get("source_type")
+        else:
+            raw_source_type = getattr(source, "source_type", None)
+        source_types.append(str(raw_source_type or "").strip().lower())
+    return sorted(source_types) == ["facebook_pages", "instagram_business"]
 
 
 def _report_source_handle(payload: dict[str, Any]) -> str | None:
@@ -2289,6 +2316,8 @@ def derive_report_integration_metadata(
     dataset_data = resolved_dataset.data if resolved_dataset is not None and isinstance(resolved_dataset.data, dict) else {}
 
     payload_candidates: list[dict[str, Any]] = []
+    if _is_facebook_instagram_multi_source_report_sources(report_sources):
+        payload_candidates.append(_facebook_instagram_multi_source_metadata_payload())
     if report_sources:
         primary_source = report_sources[0]
         config_json = dict(primary_source.config_json) if isinstance(primary_source.config_json, dict) else {}
@@ -17055,6 +17084,98 @@ def _multi_source_build_10_blocks(context: dict[str, Any]) -> list[dict[str, Any
     ]
 
 
+FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_ENV = "FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER"
+FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_RECIPE = "recipe"
+FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_LEGACY = "legacy"
+
+
+def _facebook_instagram_10_recipe_builder_mode() -> str:
+    raw_value = os.getenv(FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_ENV)
+    mode = str(raw_value or "").strip().lower()
+    if not mode:
+        return FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_RECIPE
+    if mode in {
+        FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_RECIPE,
+        FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_LEGACY,
+    }:
+        return mode
+    raise http_error(
+        500,
+        "facebook_instagram_10_recipe_builder_config_invalid",
+        "FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER must be 'recipe' or 'legacy'.",
+    )
+
+
+def should_use_facebook_instagram_10_recipe(
+    sources: list[dict[str, Any]],
+    *,
+    requested_slides: int | None,
+) -> bool:
+    if requested_slides != 10 or len(sources) != 2:
+        return False
+    if not _is_facebook_instagram_multi_source_report_sources(sources):
+        return False
+
+    sources_by_type: dict[str, Any] = {}
+    for source in sources:
+        if isinstance(source, dict):
+            source_type = str(source.get("source_type") or "").strip().lower()
+        else:
+            source_type = str(getattr(source, "source_type", "") or "").strip().lower()
+        sources_by_type[source_type] = source
+
+    def _source_provider(source: Any) -> str:
+        if isinstance(source, dict):
+            return str(source.get("provider") or "").strip().lower()
+        return str(getattr(source, "provider", "") or "").strip().lower()
+
+    facebook_provider = _source_provider(sources_by_type["facebook_pages"])
+    instagram_provider = _source_provider(sources_by_type["instagram_business"])
+    return facebook_provider == "meta" and instagram_provider in {
+        "instagram_business_login",
+        "instagram_business",
+        "meta",
+    }
+
+
+def build_facebook_instagram_10_multi_source_blocks(
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    mode = _facebook_instagram_10_recipe_builder_mode()
+    logger.info(
+        "facebook_instagram_10_builder_selected",
+        extra={
+            "mode": mode,
+            "recipe_id": FACEBOOK_INSTAGRAM_10_RECIPE_ID,
+        },
+    )
+    if mode == FACEBOOK_INSTAGRAM_10_RECIPE_BUILDER_LEGACY:
+        return _multi_source_build_10_blocks(context)
+
+    from .report_recipe_builder import (
+        ReportRecipeBuilderError,
+        build_facebook_instagram_10_blocks_from_recipe,
+    )
+
+    recipe = get_report_recipe(FACEBOOK_INSTAGRAM_10_RECIPE_ID)
+    try:
+        return build_facebook_instagram_10_blocks_from_recipe(recipe, context)
+    except ReportRecipeBuilderError as exc:
+        logger.error(
+            "facebook_instagram_10_recipe_builder_failed",
+            extra={
+                "recipe_id": FACEBOOK_INSTAGRAM_10_RECIPE_ID,
+                "mode": mode,
+                "error": str(exc),
+            },
+        )
+        raise http_error(
+            500,
+            "facebook_instagram_10_recipe_builder_failed",
+            "Facebook + Instagram report structure could not be generated from the canonical Recipe.",
+        ) from exc
+
+
 def _meta_trend_copy(metric: str, stats: dict, period_label: str) -> str:
     if not stats.get("points_count"):
         return f"{metric} daily data is not available for {period_label}."
@@ -22531,6 +22652,11 @@ def create_multi_source_report(
         "report_status": "sources_configured",
         "visual_generation_pending": not generate_multi_source_blocks,
     }
+    if (
+        requested_slides == 10
+        and _is_facebook_instagram_multi_source_report_sources(resolved_sources)
+    ):
+        metadata["integration_metadata"] = _facebook_instagram_multi_source_metadata_payload()
     try:
         report = Report(
             workspace_id=first_dataset.workspace_id,
@@ -22592,7 +22718,14 @@ def create_multi_source_report(
                 branding=branding,
                 normalized_sources=multi_source_normalized_sources,
             )
-            block_specs = _multi_source_build_10_blocks(block_context)
+            block_specs = (
+                build_facebook_instagram_10_multi_source_blocks(block_context)
+                if should_use_facebook_instagram_10_recipe(
+                    resolved_sources,
+                    requested_slides=requested_slides,
+                )
+                else _multi_source_build_10_blocks(block_context)
+            )
             blocks = [
                 ReportBlock(
                     report_version_id=report_version.id,
