@@ -163,6 +163,9 @@ class Workspace(Base):
     reports: Mapped[list[Report]] = relationship(
         back_populates="workspace", cascade="all, delete-orphan"
     )
+    report_templates: Mapped[list[ReportTemplate]] = relationship(
+        back_populates="workspace"
+    )
     exports: Mapped[list[Export]] = relationship(
         back_populates="workspace", cascade="all, delete-orphan"
     )
@@ -724,13 +727,91 @@ class Message(Base):
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
 
 
+class ReportTemplate(Base):
+    __tablename__ = "report_templates"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "slug", name="uq_report_templates_workspace_slug"),
+        Index("ix_report_templates_workspace_id", "workspace_id"),
+        Index("ix_report_templates_status", "status"),
+        Index("ix_report_templates_template_type", "template_type"),
+        Index("ix_report_templates_published_version_id", "published_version_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workspaces.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="draft")
+    generation_mode: Mapped[str] = mapped_column(String(50), nullable=False, default="manual_template")
+    template_type: Mapped[str] = mapped_column(String(100), nullable=False, default="custom")
+    datasource_requirements: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False, default=dict
+    )
+    active_version_id: Mapped[Optional[int]] = mapped_column(Integer)
+    published_version_id: Mapped[Optional[int]] = mapped_column(Integer)
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    metadata_json: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False, default=dict
+    )
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace: Mapped[Optional[Workspace]] = relationship(back_populates="report_templates")
+    created_by_user: Mapped[Optional[User]] = relationship()
+    versions: Mapped[list[ReportTemplateVersion]] = relationship(
+        back_populates="template", cascade="all, delete-orphan"
+    )
+
+
+class ReportTemplateVersion(Base):
+    __tablename__ = "report_template_versions"
+    __table_args__ = (
+        UniqueConstraint("report_template_id", "version_number", name="uq_report_template_versions_number"),
+        Index("ix_report_template_versions_report_template_id", "report_template_id"),
+        Index("ix_report_template_versions_schema_version", "schema_version"),
+        Index("ix_report_template_versions_published_at", "published_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_template_id: Mapped[int] = mapped_column(
+        ForeignKey("report_templates.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    spec_json: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=False)
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    change_summary: Mapped[Optional[str]] = mapped_column(Text)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    template: Mapped[ReportTemplate] = relationship(back_populates="versions")
+    created_by_user: Mapped[Optional[User]] = relationship()
+
+
 class Report(Base):
     __tablename__ = "reports"
-    __table_args__ = (Index("ix_reports_workspace_id", "workspace_id"),)
+    __table_args__ = (
+        Index("ix_reports_workspace_id", "workspace_id"),
+        Index("ix_reports_report_template_id", "report_template_id"),
+        Index("ix_reports_report_template_version_id", "report_template_version_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
     dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), nullable=False)
+    report_template_id: Mapped[Optional[int]] = mapped_column(ForeignKey("report_templates.id", ondelete="SET NULL"))
+    report_template_version_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("report_template_versions.id", ondelete="SET NULL")
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
     folder_id: Mapped[Optional[str]] = mapped_column(String(255))
@@ -743,6 +824,10 @@ class Report(Base):
     )
 
     workspace: Mapped[Workspace] = relationship(back_populates="reports")
+    report_template: Mapped[Optional[ReportTemplate]] = relationship(foreign_keys=[report_template_id])
+    report_template_version: Mapped[Optional[ReportTemplateVersion]] = relationship(
+        foreign_keys=[report_template_version_id]
+    )
     versions: Mapped[list[ReportVersion]] = relationship(
         back_populates="report", cascade="all, delete-orphan"
     )

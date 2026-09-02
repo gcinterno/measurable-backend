@@ -76,6 +76,13 @@ REPORTSPEC_VISIBILITY_OPERATORS: tuple[str, ...] = (
     "not_in",
 )
 
+REPORTSPEC_DATASOURCE_MODES: tuple[str, ...] = (
+    "all",
+    "any",
+    "exactly",
+    "single",
+)
+
 DATA_BOUND_BLOCK_TYPES: tuple[str, ...] = (
     "metric_hero",
     "timeseries_chart",
@@ -454,6 +461,7 @@ def validate_report_spec(spec: ReportSpec | Mapping[str, Any]) -> ReportSpecVali
                 path="generation_mode",
             )
         )
+    _validate_datasource_requirements(spec.datasource_requirements, errors)
     if not spec.slides:
         errors.append(
             ReportSpecValidationError(
@@ -475,6 +483,14 @@ def assert_valid_report_spec(spec: ReportSpec | Mapping[str, Any]) -> ReportSpec
     return ReportSpec.from_dict(spec) if isinstance(spec, Mapping) else spec
 
 
+def validate_report_spec_datasource_requirements(
+    datasource_requirements: Any,
+) -> ReportSpecValidationResult:
+    errors: list[ReportSpecValidationError] = []
+    _validate_datasource_requirements(datasource_requirements, errors)
+    return ReportSpecValidationResult(valid=not errors, errors=tuple(errors))
+
+
 def facebook_instagram_10_reference_reportspec() -> ReportSpec:
     required_semantics = (
         "reach",
@@ -493,6 +509,8 @@ def facebook_instagram_10_reference_reportspec() -> ReportSpec:
         template_id="facebook_instagram_10",
         generation_mode="legacy_migration",
         datasource_requirements={
+            "mode": "all",
+            "sources": ["facebook_pages", "instagram_business"],
             "minimum_source_count": 2,
             "required_canonical_semantics": list(required_semantics),
             "catalog_required": True,
@@ -959,6 +977,104 @@ def _validate_visibility_rules(
                 )
 
 
+def _validate_datasource_requirements(
+    datasource_requirements: Any,
+    errors: list[ReportSpecValidationError],
+) -> None:
+    if not isinstance(datasource_requirements, Mapping):
+        errors.append(
+            ReportSpecValidationError(
+                code="MALFORMED_DATASOURCE_REQUIREMENTS",
+                message="ReportSpec datasource_requirements must be an object.",
+                path="datasource_requirements",
+            )
+        )
+        return
+
+    mode = datasource_requirements.get("mode")
+    if mode is not None and str(mode).strip() not in REPORTSPEC_DATASOURCE_MODES:
+        errors.append(
+            ReportSpecValidationError(
+                code="MALFORMED_DATASOURCE_REQUIREMENTS",
+                message=f"Invalid datasource requirement mode {mode!r}.",
+                path="datasource_requirements.mode",
+            )
+        )
+
+    sources = datasource_requirements.get("sources")
+    if sources is not None:
+        if (
+            not isinstance(sources, list)
+            or not sources
+            or any(not isinstance(source, str) or not source.strip() for source in sources)
+        ):
+            errors.append(
+                ReportSpecValidationError(
+                    code="MALFORMED_DATASOURCE_REQUIREMENTS",
+                    message="datasource_requirements.sources must be a non-empty list of source type strings.",
+                    path="datasource_requirements.sources",
+                )
+            )
+        elif len(set(sources)) != len(sources):
+            errors.append(
+                ReportSpecValidationError(
+                    code="MALFORMED_DATASOURCE_REQUIREMENTS",
+                    message="datasource_requirements.sources must not contain duplicates.",
+                    path="datasource_requirements.sources",
+                )
+            )
+
+    minimum_source_count = datasource_requirements.get("minimum_source_count")
+    if minimum_source_count is not None and (
+        not isinstance(minimum_source_count, int)
+        or isinstance(minimum_source_count, bool)
+        or minimum_source_count < 0
+    ):
+        errors.append(
+            ReportSpecValidationError(
+                code="MALFORMED_DATASOURCE_REQUIREMENTS",
+                message="datasource_requirements.minimum_source_count must be a non-negative integer.",
+                path="datasource_requirements.minimum_source_count",
+            )
+        )
+
+    catalog_required = datasource_requirements.get("catalog_required")
+    if catalog_required is not None and not isinstance(catalog_required, bool):
+        errors.append(
+            ReportSpecValidationError(
+                code="MALFORMED_DATASOURCE_REQUIREMENTS",
+                message="datasource_requirements.catalog_required must be a boolean when provided.",
+                path="datasource_requirements.catalog_required",
+            )
+        )
+
+    for field_name in ("required_canonical_semantics", "optional_canonical_semantics"):
+        semantics = datasource_requirements.get(field_name)
+        if semantics is None:
+            continue
+        if not isinstance(semantics, list) or any(
+            not isinstance(semantic, str) or not semantic.strip()
+            for semantic in semantics
+        ):
+            errors.append(
+                ReportSpecValidationError(
+                    code="MALFORMED_DATASOURCE_REQUIREMENTS",
+                    message=f"datasource_requirements.{field_name} must be a list of canonical semantic strings.",
+                    path=f"datasource_requirements.{field_name}",
+                )
+            )
+            continue
+        for semantic in semantics:
+            if not _is_known_canonical_semantic(semantic):
+                errors.append(
+                    ReportSpecValidationError(
+                        code="UNKNOWN_CANONICAL_BINDING",
+                        message=f"Unknown canonical binding {semantic!r}.",
+                        path=f"datasource_requirements.{field_name}",
+                    )
+                )
+
+
 __all__ = [
     "BLOCK_LAYOUT_COMPATIBILITY",
     "DATA_BOUND_BLOCK_TYPES",
@@ -967,6 +1083,7 @@ __all__ = [
     "InvalidReportSpecError",
     "RAW_PROVIDER_FIELD_NAMES",
     "REPORTSPEC_BLOCK_TYPES",
+    "REPORTSPEC_DATASOURCE_MODES",
     "REPORTSPEC_GENERATION_MODES",
     "REPORTSPEC_LAYOUTS",
     "REPORTSPEC_SCHEMA_VERSION",
@@ -986,5 +1103,6 @@ __all__ = [
     "facebook_instagram_10_reference_reportspec",
     "report_spec_from_json",
     "report_spec_to_json",
+    "validate_report_spec_datasource_requirements",
     "validate_report_spec",
 ]

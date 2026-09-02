@@ -158,6 +158,7 @@ from .report_recipes import (
     get_report_recipes_for_platform,
     list_report_recipes,
 )
+from .report_templates import router as report_templates_router
 from .models import (
     AccountDeletionFeedback,
     AuditLog,
@@ -2813,6 +2814,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(report_templates_router)
 
 
 @app.on_event("startup")
