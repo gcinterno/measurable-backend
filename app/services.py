@@ -2427,17 +2427,26 @@ def normalize_meta_recent_posts(posts: Any) -> list[dict[str, Any]]:
             {
                 "id": str(post.get("id")) if post.get("id") is not None else None,
                 "message": str(post.get("message")) if post.get("message") is not None else None,
+                "caption": str(post.get("caption")) if post.get("caption") is not None else None,
                 "created_time": str(post.get("created_time"))
                 if post.get("created_time") is not None
                 else None,
+                "timestamp": str(post.get("timestamp")) if post.get("timestamp") is not None else None,
                 "permalink_url": str(post.get("permalink_url"))
                 if post.get("permalink_url") is not None
                 else None,
+                "media_type": str(post.get("media_type")) if post.get("media_type") is not None else None,
                 "reach": _to_int(post.get("reach")),
+                "views": _to_int(post.get("views")),
+                "impressions": _to_int(post.get("impressions")),
+                "engagement": _to_int(post.get("engagement")),
+                "interactions": _to_int(post.get("interactions")),
+                "likes": _to_int(post.get("likes")),
                 "reactions": _to_int(post.get("reactions")),
                 "comments": _to_int(post.get("comments")),
                 "shares": _to_int(post.get("shares")),
                 "saves": _to_int(post.get("saves")),
+                "replies": _to_int(post.get("replies")),
             }
         )
     return normalized_posts
@@ -2465,11 +2474,15 @@ def normalize_meta_top_content(items: Any) -> list[dict[str, Any]]:
                 else None,
                 "media_type": str(item.get("media_type")) if item.get("media_type") is not None else None,
                 "impressions": _to_int(item.get("impressions")),
+                "views": _to_int(item.get("views")),
                 "reach": _to_int(item.get("reach")),
                 "engaged_users": _to_int(item.get("engaged_users")),
+                "likes": _to_int(item.get("likes")),
                 "reactions": _to_int(item.get("reactions")),
                 "comments": _to_int(item.get("comments")),
                 "shares": _to_int(item.get("shares")),
+                "saves": _to_int(item.get("saves")),
+                "replies": _to_int(item.get("replies")),
                 "engagement_total": _to_int(item.get("engagement_total")),
                 "score": _to_int(item.get("score")),
             }
@@ -2767,6 +2780,9 @@ def extract_meta_pages_report_inputs(row: dict[str, Any]) -> dict[str, Any]:
         "content_interactions": content_interactions,
         "link_clicks": link_clicks,
         "followers_growth": followers_growth,
+        "media_count": _to_int(row.get("media_count"))
+        if _to_int(row.get("media_count")) is not None
+        else _to_int(normalized_metrics.get("media_count")),
         "timeframe_preset": timeframe_preset,
         "timeframe_since": timeframe_since,
         "timeframe_until": timeframe_until,

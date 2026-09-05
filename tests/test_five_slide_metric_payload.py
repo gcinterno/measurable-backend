@@ -8,7 +8,10 @@ os.environ.setdefault("JWT_SECRET", "test-jwt-secret")
 
 from app.main import (
     _ensure_facebook_pages_five_slide_structure,
+    _validate_report_blocks_for_sources,
+    INSTAGRAM_BUSINESS_FIVE_SLIDE_TYPES,
     build_5_blocks,
+    build_instagram_business_5_blocks,
     extractDailyMetricSeries,
     truncateInsightForSlide,
 )
@@ -72,6 +75,95 @@ def _base_context(*, integration_type: str) -> dict:
                 "followers_total": 1200,
                 "fans_total": 1190,
                 "reactions_total": 342,
+            },
+        },
+        "branding": {},
+        "requested_slides": 5,
+    }
+
+
+def _instagram_context() -> dict:
+    return {
+        "title": "Instagram executive report",
+        "plan": "core",
+        "report_timeframe": {"label": "Last 28 days", "since": "2026-05-01", "until": "2026-05-28"},
+        "page_name": "Acme Instagram",
+        "reach": 9400,
+        "engagement": 785,
+        "impressions": 12100,
+        "report_inputs": {
+            "integration_type": "instagram_business",
+            "provider": "instagram_business_login",
+            "account_id": "17841400000000000",
+            "account_name": "Acme Instagram",
+            "username": "acmeig",
+            "followers": 11242,
+            "followers_count": 11242,
+            "followers_total": 11242,
+            "reach": 9400,
+            "views": 12100,
+            "impressions": 12100,
+            "engagement": 785,
+            "total_interactions": 785,
+            "accounts_engaged": 620,
+            "profile_views": 144,
+            "profile_visits": 144,
+            "likes": 520,
+            "comments": 41,
+            "shares": 33,
+            "saves": 27,
+            "replies": 9,
+            "reach_daily": [
+                {"date": "2026-05-15", "value": 3000},
+                {"date": "2026-05-16", "value": 6400},
+            ],
+            "views_daily": [
+                {"date": "2026-05-15", "value": 6100},
+                {"date": "2026-05-16", "value": 6000},
+            ],
+            "daily_engagement": [
+                {"date": "2026-05-15", "value": 310},
+                {"date": "2026-05-16", "value": 475},
+            ],
+            "top_content": [
+                {
+                    "post_id": "ig-post-1",
+                    "created_time": "2026-05-16T12:00:00+0000",
+                    "message_preview": "Top reel",
+                    "permalink_url": "https://instagram.com/p/1",
+                    "media_type": "REELS",
+                    "reach": 4200,
+                    "views": 6200,
+                    "engagement_total": 490,
+                    "score": 490,
+                }
+            ],
+            "unavailable_metrics": {},
+            "normalized_report_metrics": {
+                "followers_total": 11242,
+                "viewers_total": 9400,
+                "viewers_daily": [
+                    {"date": "2026-05-15", "value": 3000},
+                    {"date": "2026-05-16", "value": 6400},
+                ],
+                "views_total": 12100,
+                "views_daily": [
+                    {"date": "2026-05-15", "value": 6100},
+                    {"date": "2026-05-16", "value": 6000},
+                ],
+                "interactions_total": 785,
+                "interactions_daily": [
+                    {"date": "2026-05-15", "value": 310},
+                    {"date": "2026-05-16", "value": 475},
+                ],
+                "accounts_engaged_total": 620,
+                "total_interactions_total": 785,
+                "likes_total": 520,
+                "comments_total": 41,
+                "shares_total": 33,
+                "saves_total": 27,
+                "replies_total": 9,
+                "page_visits_total": 144,
             },
         },
         "branding": {},
@@ -241,61 +333,239 @@ def test_build_5_blocks_generates_new_metric_structure_for_facebook_pages():
     assert not any(placeholder.lower() in summary["ai_summary"].lower() for placeholder in OLD_INSIGHT_PLACEHOLDERS)
 
 
-def test_build_5_blocks_instagram_business_can_return_na_without_breaking():
-    context = _base_context(integration_type="instagram_business")
-    context["impressions"] = None
-    context["report_inputs"]["impressions"] = None
-    context["report_inputs"]["impressions_daily"] = []
-    context["engagement"] = None
-    context["page_views"] = None
-    context["organic_impressions_total"] = None
-    context["report_inputs"]["organic_impressions_total"] = None
-    context["report_inputs"]["daily_organic_impressions"] = []
-    context["report_inputs"]["engagement_total"] = None
-    context["report_inputs"]["page_views_total"] = None
-    context["report_inputs"]["daily_engagement"] = []
-    context["report_inputs"]["daily_page_views"] = []
-    context["report_inputs"]["normalized_report_metrics"]["organic_impressions_total"] = None
-    context["report_inputs"]["normalized_report_metrics"]["daily_organic_impressions"] = []
-    context["report_inputs"]["normalized_report_metrics"]["engagement_total"] = None
-    context["report_inputs"]["normalized_report_metrics"]["daily_engagement"] = []
-    context["report_inputs"]["normalized_report_metrics"]["page_views_total"] = None
-    context["report_inputs"]["normalized_report_metrics"]["daily_page_views"] = []
-    context["report_inputs"]["unavailable_metrics"] = {
-        "impressions": "not_returned_by_meta",
-        "engagement": "missing_permission",
-        "page_views": "missing_permission",
-        "profile_views": "missing_permission",
-    }
-    blocks = build_5_blocks(context)
-    organic_impressions = json.loads(blocks[1]["data_json"])
-    engagement = json.loads(blocks[2]["data_json"])
-    summary = json.loads(blocks[4]["data_json"])
+def test_build_instagram_business_5_blocks_generates_instagram_only_structure():
+    blocks = build_instagram_business_5_blocks(_instagram_context())
+    payloads = [json.loads(block["data_json"]) for block in blocks]
+    payload_text = json.dumps(payloads)
 
-    assert organic_impressions["metric_key"] == "organic_impressions"
-    assert organic_impressions["formatted_total"] == "N/A"
+    assert len(blocks) == 5
+    assert [payload["semantic_name"] for payload in payloads] == INSTAGRAM_BUSINESS_FIVE_SLIDE_TYPES
+    assert [payload["slide_type"] for payload in payloads] == INSTAGRAM_BUSINESS_FIVE_SLIDE_TYPES
+    assert _validate_report_blocks_for_sources(
+        selected_sources=["instagram_business"],
+        block_specs=blocks,
+    ) is blocks
+
+    assert payloads[0]["text"] == "Instagram Business Report - Summary & Insights"
+    assert payloads[0]["platform"] == "Instagram Business"
+    assert payloads[1]["metric_key"] == "reach"
+    assert payloads[2]["metric_key"] == "views"
+    assert payloads[3]["metric_key"] == "engagement"
+    assert set(payloads[4]["metrics_summary"].keys()) >= {
+        "followers",
+        "reach",
+        "views",
+        "engagement",
+        "accounts_engaged",
+        "total_interactions",
+        "profile_views",
+    }
+    assert payloads[4]["top_content"][0]["post_id"] == "ig-post-1"
+    assert "Views / Impressions" not in payload_text
+    assert "VIEWS / IMPRESSIONS" not in payload_text
+    assert "Facebook Pages" not in payload_text
+    assert "Organic Visibility" not in payload_text
+    assert "page_posts_impressions_organic" not in payload_text
+    assert "Page Views" not in payload_text
+    assert '"fans"' not in payload_text.lower()
+
+
+def test_instagram_business_unavailable_metric_does_not_fallback_to_facebook_metric():
+    context = _instagram_context()
+    context["report_inputs"]["views"] = None
+    context["report_inputs"]["impressions"] = None
+    context["impressions"] = None
+    context["report_inputs"]["views_daily"] = []
+    context["report_inputs"]["normalized_report_metrics"]["views_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["views_daily"] = []
+    context["report_inputs"]["normalized_report_metrics"]["impressions_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["impressions_daily"] = []
+    context["report_inputs"]["page_views_total"] = 9999
+    context["report_inputs"]["daily_page_views"] = [{"date": "2026-05-15", "value": 9999}]
+    context["report_inputs"]["normalized_report_metrics"]["page_views_total"] = 9999
+    context["report_inputs"]["normalized_report_metrics"]["daily_page_views"] = [
+        {"date": "2026-05-15", "value": 9999}
+    ]
+    context["report_inputs"]["unavailable_metrics"] = {"views": "not_returned_by_meta"}
+
+    blocks = build_instagram_business_5_blocks(context)
+    views = json.loads(blocks[2]["data_json"])
+    summary = json.loads(blocks[4]["data_json"])
+    unavailable_summary_keys = [
+        key
+        for key, value in summary["metrics_summary"].items()
+        if value["is_available"] is False
+    ]
+
+    assert views["metric_key"] == "views"
+    assert views["total"] is None
+    assert views["formatted_total"] == "N/A"
+    assert views["is_available"] is False
+    assert views["availability_status"] == "unavailable"
+    assert views["unavailable_reason"] == "not_returned_by_meta"
+    assert views["raw_metric_name"] is None
+    assert views["source_metrics_used"] == []
+    assert summary["metrics_summary"]["views"]["value"] is None
+    assert summary["metrics_summary"]["views"]["formatted_value"] == "N/A"
+    assert unavailable_summary_keys == ["views"]
+    assert "page_views_total" not in json.dumps([views, summary])
+
+
+def test_instagram_business_views_total_without_series_is_available():
+    context = _instagram_context()
+    context["report_inputs"]["views"] = 32600
+    context["report_inputs"]["views_daily"] = []
+    context["report_inputs"]["normalized_report_metrics"]["views_total"] = 32600
+    context["report_inputs"]["normalized_report_metrics"]["views_daily"] = []
+    context["report_inputs"]["instagram_metric_audit"] = {
+        "metrics": {
+            "views": {
+                "metric_name_requested": "views",
+                "metric_type": "total_value",
+                "response_shape": "total_value",
+            }
+        }
+    }
+
+    blocks = build_instagram_business_5_blocks(context)
+    views = json.loads(blocks[2]["data_json"])
+
+    assert views["metric_key"] == "views"
+    assert views["title"] == "VIEWS"
+    assert views["metric_label"] == "Views"
+    assert views["total"] == 32600
+    assert views["value"] == 32600
+    assert views["value_available"] is True
+    assert views["series_available"] is False
+    assert views["is_available"] is True
+    assert views["availability"] == "available"
+    assert views["metric_type"] == "total_value"
+    assert views["daily_series"] == []
+    assert views["chart"]["is_available"] is False
+    assert views["unavailable_message"] is None
+    assert views["daily_series_reason"] == "No daily trend was available for this metric."
+
+
+def test_instagram_business_views_ai_context_without_series_is_aggregate_only():
+    context = _instagram_context()
+    context["report_inputs"]["views"] = 32600
+    context["report_inputs"]["views_daily"] = []
+    context["report_inputs"]["normalized_report_metrics"]["views_total"] = 32600
+    context["report_inputs"]["normalized_report_metrics"]["views_daily"] = []
+    context["report_inputs"]["instagram_metric_audit"] = {
+        "metrics": {
+            "views": {
+                "metric_name_requested": "views",
+                "metric_type": "total_value",
+                "response_shape": "total_value",
+            }
+        }
+    }
+
+    blocks = build_instagram_business_5_blocks(context)
+    views = json.loads(blocks[2]["data_json"])
+    insight_lower = views["insight"].lower()
+
+    assert views["ai_insight_context"] == {
+        "metric_key": "views",
+        "metric_value": 32600,
+        "series_available": False,
+        "series": [],
+        "availability": "available",
+        "metric_type": "total_value",
+    }
+    assert "serie diaria" not in insight_lower
+    assert "daily trend" not in insight_lower
+    assert "pico" not in insight_lower
+    assert "highest" not in insight_lower
+    assert "lowest" not in insight_lower
+    assert "mejor día" not in insight_lower
+    assert "peor día" not in insight_lower
+
+
+def test_instagram_business_total_interactions_without_series_is_available():
+    context = _instagram_context()
+    context["report_inputs"]["daily_engagement"] = []
+    context["report_inputs"]["normalized_report_metrics"]["interactions_daily"] = []
+    context["report_inputs"]["normalized_report_metrics"]["total_interactions_total"] = 407
+    context["report_inputs"]["normalized_report_metrics"]["interactions_total"] = 407
+    context["report_inputs"]["total_interactions"] = 407
+    context["report_inputs"]["accounts_engaged"] = 285
+    context["report_inputs"]["engagement"] = 407
+    context["report_inputs"]["instagram_metric_audit"] = {
+        "metrics": {
+            "engagement": {
+                "source_metric": "total_interactions",
+                "metric_type": "total_value",
+            },
+            "total_interactions": {
+                "metric_name_requested": "total_interactions",
+                "metric_type": "total_value",
+                "response_shape": "total_value",
+            },
+        }
+    }
+
+    blocks = build_instagram_business_5_blocks(context)
+    engagement = json.loads(blocks[3]["data_json"])
+    insight_lower = engagement["insight"].lower()
 
     assert engagement["metric_key"] == "engagement"
-    assert engagement["total"] is None
-    assert engagement["formatted_total"] == "N/A"
-    assert engagement["is_available"] is False
-    assert engagement["unavailable_message"] == "Meta did not return engagement for the selected period."
+    assert engagement["total"] == 407
+    assert engagement["value_available"] is True
+    assert engagement["series_available"] is False
+    assert engagement["is_available"] is True
+    assert engagement["availability"] == "available"
+    assert engagement["metric_type"] == "total_value"
+    assert engagement["daily_series"] == []
+    assert engagement["unavailable_message"] is None
+    assert "serie diaria" not in insight_lower
+    assert "daily trend" not in insight_lower
+    assert "pico" not in insight_lower
 
-    assert summary["metrics_summary"]["page_views"]["value"] is None
-    assert summary["metrics_summary"]["page_views"]["formatted_value"] == "N/A"
-    assert summary["metrics_summary"]["engagement"]["value"] is None
+
+def test_instagram_business_metric_without_value_or_series_is_unavailable():
+    context = _instagram_context()
+    context["report_inputs"]["views"] = None
+    context["report_inputs"]["views_daily"] = []
+    context["report_inputs"]["normalized_report_metrics"]["views_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["views_daily"] = []
+    context["report_inputs"]["unavailable_metrics"] = {"views": "not_returned_by_meta"}
+
+    blocks = build_instagram_business_5_blocks(context)
+    views = json.loads(blocks[2]["data_json"])
+
+    assert views["metric_key"] == "views"
+    assert views["total"] is None
+    assert views["value_available"] is False
+    assert views["series_available"] is False
+    assert views["is_available"] is False
+    assert views["availability"] == "unavailable"
+    assert views["unavailable_reason"] == "not_returned_by_meta"
+    assert views["unavailable_message"] == "Meta did not return Views for the selected Instagram Business period."
 
 
-def test_build_5_blocks_engagement_uses_daily_series_when_available():
-    context = _base_context(integration_type="instagram_business")
+def test_build_instagram_business_5_blocks_engagement_uses_daily_series_when_available():
+    context = _instagram_context()
     context["report_inputs"]["daily_engagement"] = [
         {"date": "2026-05-15", "value": 11},
         {"date": "2026-05-16", "value": 9},
     ]
-    blocks = build_5_blocks(context)
-    engagement = json.loads(blocks[2]["data_json"])
+    context["report_inputs"]["engagement"] = None
+    context["report_inputs"]["total_interactions"] = None
+    context["report_inputs"]["accounts_engaged"] = None
+    context["report_inputs"]["content_interactions"] = None
+    context["report_inputs"]["normalized_report_metrics"]["total_interactions_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["accounts_engaged_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["interactions_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["engagement_total"] = None
+    context["report_inputs"]["normalized_report_metrics"]["content_interactions_total"] = None
+    context["engagement"] = None
+    blocks = build_instagram_business_5_blocks(context)
+    engagement = json.loads(blocks[3]["data_json"])
     assert engagement["metric_key"] == "engagement"
     assert engagement["daily_series"][0]["value"] == 11
+    assert engagement["total"] == 20
     assert "insight_full" in engagement
 
 
@@ -371,27 +641,30 @@ def test_build_5_blocks_daily_series_preserves_last_period_date_when_present():
     assert organic_impressions["highest_day"]["date"] == "2026-05-21"
 
 
-def test_build_5_blocks_summary_metrics_use_renderable_primitives():
-    blocks = build_5_blocks(_base_context(integration_type="instagram_business"))
+def test_build_instagram_business_5_blocks_summary_metrics_use_renderable_primitives():
+    blocks = build_instagram_business_5_blocks(_instagram_context())
     summary = json.loads(blocks[4]["data_json"])
     metrics_summary = summary["metrics_summary"]
-    assert metrics_summary["organic_impressions"] == {
-        "label": "Organic Impressions",
-        "value": 10187,
-        "formatted_value": "10,187",
+    assert metrics_summary["reach"] == {
+        "label": "Reach",
+        "value": 9400,
+        "formatted_value": "9,400",
         "is_available": True,
-        "description": "Organic post impressions",
-        "raw_metric_name": None,
-        "normalized_field": "organic_impressions",
+        "description": "Total reach",
+        "raw_metric_name": "reach",
+        "normalized_field": "reach",
         "provider": "instagram_business",
         "availability_status": "available",
-        "source_metrics_used": [],
+        "source_metrics_used": ["reach"],
     }
-    assert metrics_summary["engagement"]["value"] == 320
-    assert metrics_summary["followers"]["value"] == 1200
-    assert metrics_summary["page_views"]["value"] == 5748
-    assert isinstance(metrics_summary["page_views"]["formatted_value"], str)
-    assert not isinstance(metrics_summary["page_views"]["value"], dict)
+    assert metrics_summary["engagement"]["value"] == 785
+    assert metrics_summary["followers"]["value"] == 11242
+    assert metrics_summary["views"]["value"] == 12100
+    assert isinstance(metrics_summary["views"]["formatted_value"], str)
+    assert not isinstance(metrics_summary["views"]["value"], dict)
+    assert "organic_impressions" not in metrics_summary
+    assert "page_views" not in metrics_summary
+    assert "fans" not in metrics_summary
 
 
 def test_build_5_blocks_metric_insights_are_human_and_actionable():

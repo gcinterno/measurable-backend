@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -61,6 +62,8 @@ def _redact_instagram_business_tokens(value: Any) -> Any:
         return redacted
     if isinstance(value, list):
         return [_redact_instagram_business_tokens(item) for item in value]
+    if isinstance(value, str):
+        return re.sub(r"(access_token=)[^&\s]+", r"\1<redacted>", value)
     return value
 
 
@@ -349,7 +352,7 @@ def fetch_instagram_business_login_profile(access_token: str) -> dict[str, Any]:
     base = str(settings.instagram_graph_api_base or "").strip().rstrip("/")
     url = f"{base}/me"
     params = {
-        "fields": "id,username,account_type,name,profile_picture_url,followers_count",
+        "fields": "id,username,account_type,name,profile_picture_url,followers_count,media_count",
     }
     response = requests.get(url, params=params, headers={"Authorization": f"Bearer {access_token}"}, timeout=30)
     try:
@@ -393,6 +396,9 @@ def fetch_instagram_business_login_insights_metric_with_metadata(
     since: str | None = None,
     until: str | None = None,
     period: str = "day",
+    metric_type: str | None = None,
+    breakdown: str | None = None,
+    timeframe: str | None = None,
 ) -> dict[str, Any]:
     _require_instagram_business_login_config()
     version = str(settings.instagram_graph_api_version or "").strip().strip("/")
@@ -403,6 +409,12 @@ def fetch_instagram_business_login_insights_metric_with_metadata(
         "metric": metric_name,
         "period": period,
     }
+    if metric_type:
+        params["metric_type"] = str(metric_type)
+    if breakdown:
+        params["breakdown"] = str(breakdown)
+    if timeframe:
+        params["timeframe"] = str(timeframe)
     if since:
         params["since"] = str(since)
     if until:
@@ -421,4 +433,71 @@ def fetch_instagram_business_login_insights_metric_with_metadata(
     response_payload["_instagram_graph_endpoint"] = f"/{instagram_user_id}/insights"
     response_payload["_instagram_metric_name"] = metric_name
     response_payload["_instagram_period"] = period
+    response_payload["_instagram_metric_type"] = metric_type
+    response_payload["_instagram_breakdown"] = breakdown
+    response_payload["_instagram_timeframe"] = timeframe
+    return response_payload
+
+
+def fetch_instagram_business_login_media_page(
+    access_token: str,
+    instagram_user_id: str,
+    *,
+    fields: str,
+    limit: int = 25,
+    after: str | None = None,
+) -> dict[str, Any]:
+    _require_instagram_business_login_config()
+    version = str(settings.instagram_graph_api_version or "").strip().strip("/")
+    base = str(settings.instagram_graph_api_base or "").strip().rstrip("/")
+    version_path = f"/{version}" if version else ""
+    url = f"{base}{version_path}/{instagram_user_id}/media"
+    params: dict[str, str] = {
+        "fields": fields,
+        "limit": str(limit),
+    }
+    if after:
+        params["after"] = str(after)
+    response = requests.get(url, params=params, headers={"Authorization": f"Bearer {access_token}"}, timeout=30)
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = response.text
+    response_payload: dict[str, Any] = payload if isinstance(payload, dict) else {"raw": payload}
+    response_payload["_instagram_http_status_code"] = response.status_code
+    response_payload["_instagram_raw_body"] = _truncate_instagram_business_log_value(
+        _redact_instagram_business_tokens(payload)
+    )
+    response_payload["_instagram_graph_host"] = INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST
+    response_payload["_instagram_graph_endpoint"] = f"/{instagram_user_id}/media"
+    return response_payload
+
+
+def fetch_instagram_business_login_media_insights_metric_with_metadata(
+    access_token: str,
+    media_id: str,
+    *,
+    metric_name: str,
+) -> dict[str, Any]:
+    _require_instagram_business_login_config()
+    version = str(settings.instagram_graph_api_version or "").strip().strip("/")
+    base = str(settings.instagram_graph_api_base or "").strip().rstrip("/")
+    version_path = f"/{version}" if version else ""
+    url = f"{base}{version_path}/{media_id}/insights"
+    params: dict[str, str] = {
+        "metric": metric_name,
+    }
+    response = requests.get(url, params=params, headers={"Authorization": f"Bearer {access_token}"}, timeout=30)
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = response.text
+    response_payload: dict[str, Any] = payload if isinstance(payload, dict) else {"raw": payload}
+    response_payload["_instagram_http_status_code"] = response.status_code
+    response_payload["_instagram_raw_body"] = _truncate_instagram_business_log_value(
+        _redact_instagram_business_tokens(payload)
+    )
+    response_payload["_instagram_graph_host"] = INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST
+    response_payload["_instagram_graph_endpoint"] = f"/{media_id}/insights"
+    response_payload["_instagram_metric_name"] = metric_name
     return response_payload
