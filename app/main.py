@@ -152,7 +152,11 @@ from .report_recipe_enforcement import (
 )
 from .report_recipes import (
     FACEBOOK_INSTAGRAM_10_RECIPE_ID,
+    FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES,
     FACEBOOK_PAGES_5_RECIPE,
+    INSTAGRAM_BUSINESS_5_RECIPE,
+    INSTAGRAM_BUSINESS_5_RECIPE_ID,
+    INSTAGRAM_BUSINESS_5_SEMANTIC_NAMES,
     ReportRecipe,
     get_report_recipe,
     get_report_recipes_for_platform,
@@ -10582,17 +10586,30 @@ def _normalize_instagram_insight_series(
 INSTAGRAM_BUSINESS_LOGIN_ACCOUNT_INSIGHT_METRICS: tuple[str, ...] = (
     "reach",
     "views",
-    "impressions",
     "accounts_engaged",
     "total_interactions",
-    "profile_views",
-    "website_clicks",
-    "follower_count",
     "likes",
     "comments",
     "shares",
     "saves",
     "replies",
+    "profile_links_taps",
+    "follows_and_unfollows",
+)
+INSTAGRAM_BUSINESS_LOGIN_TIME_SERIES_ACCOUNT_INSIGHT_METRICS: tuple[str, ...] = (
+    "reach",
+)
+INSTAGRAM_BUSINESS_LOGIN_TOTAL_VALUE_ACCOUNT_INSIGHT_METRICS: tuple[str, ...] = (
+    "views",
+    "accounts_engaged",
+    "total_interactions",
+    "likes",
+    "comments",
+    "shares",
+    "saves",
+    "replies",
+    "profile_links_taps",
+    "follows_and_unfollows",
 )
 INSTAGRAM_BUSINESS_LOGIN_MEDIA_FIELDS = (
     "id,caption,media_type,permalink,timestamp,like_count,comments_count"
@@ -10607,6 +10624,141 @@ INSTAGRAM_BUSINESS_LOGIN_MEDIA_INSIGHT_METRICS: tuple[str, ...] = (
     "replies",
     "total_interactions",
 )
+
+
+def _instagram_business_login_metric_request_config(metric_name: str) -> dict[str, str | None]:
+    metric = str(metric_name or "").strip()
+    if metric in INSTAGRAM_BUSINESS_LOGIN_TIME_SERIES_ACCOUNT_INSIGHT_METRICS:
+        return {
+            "period": "day",
+            "metric_type": None,
+            "breakdown": None,
+            "timeframe": None,
+        }
+    if metric in INSTAGRAM_BUSINESS_LOGIN_TOTAL_VALUE_ACCOUNT_INSIGHT_METRICS:
+        return {
+            "period": "day",
+            "metric_type": "total_value",
+            "breakdown": None,
+            "timeframe": None,
+        }
+    return {
+        "period": "day",
+        "metric_type": None,
+        "breakdown": None,
+        "timeframe": None,
+    }
+
+
+def _instagram_business_login_error_message(payload: dict[str, Any]) -> str | None:
+    error_payload = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    message = str(error_payload.get("message") or payload.get("_instagram_raw_body") or "").strip()
+    return message or None
+
+
+def _instagram_business_login_response_shape(payload: dict[str, Any]) -> dict[str, Any]:
+    status_code = payload.get("_instagram_http_status_code")
+    data = payload.get("data")
+    data_rows = len(data) if isinstance(data, list) else 0
+    metric_row = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else {}
+    values = metric_row.get("values") if isinstance(metric_row, dict) else None
+    total_value = metric_row.get("total_value") if isinstance(metric_row, dict) else None
+    has_values = isinstance(values, list) and bool(values)
+    has_total_value = isinstance(total_value, dict) and "value" in total_value
+    error_message = _instagram_business_login_error_message(payload) or ""
+    error_message_lower = error_message.lower()
+    if status_code != 200:
+        if "metric_type=total_value" in error_message_lower or (
+            "metric_type" in error_message_lower and "should be specified" in error_message_lower
+        ):
+            response_shape = "parameter_incompatible"
+        elif (
+            "must be one of" in error_message_lower
+            or "not valid" in error_message_lower
+            or "not support" in error_message_lower
+        ):
+            response_shape = "metric_not_supported"
+        else:
+            response_shape = "http_error"
+    elif not isinstance(data, list):
+        response_shape = "malformed_response"
+    elif not data:
+        response_shape = "not_returned_by_meta"
+    elif has_total_value:
+        response_shape = "total_value"
+    elif isinstance(values, list):
+        response_shape = "values" if has_values else "empty_values"
+    else:
+        response_shape = "unknown_shape"
+    return {
+        "response_shape": response_shape,
+        "data_rows": data_rows,
+        "has_total_value": has_total_value,
+        "has_values": has_values,
+        "values_count": len(values) if isinstance(values, list) else 0,
+        "error_message": error_message or None,
+    }
+
+
+def _normalize_instagram_business_login_insight_payload(
+    payload: dict[str, Any],
+    *,
+    metric_name: str,
+) -> dict[str, Any]:
+    shape = _instagram_business_login_response_shape(payload)
+    status_code = payload.get("_instagram_http_status_code")
+    data = payload.get("data")
+    metric_row = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else {}
+    raw_values: list[Any] = []
+    total_value: int | None = None
+    latest_value: int | None = None
+    end_time: str | None = None
+    normalized_series: list[dict[str, int | str | None]] = []
+    raw_total_value: Any = None
+    unavailable_reason: str | None = None
+
+    if status_code != 200:
+        unavailable_reason = shape.get("error_message") or "http_error"
+    elif shape["response_shape"] == "total_value":
+        total_value_payload = metric_row.get("total_value") if isinstance(metric_row, dict) else {}
+        raw_total_value = total_value_payload.get("value") if isinstance(total_value_payload, dict) else None
+        total_value = _normalize_instagram_insight_value(raw_total_value)
+        latest_value = total_value
+        if total_value is None:
+            unavailable_reason = "empty_total_value"
+    elif shape["response_shape"] in {"values", "empty_values"}:
+        values = metric_row.get("values") if isinstance(metric_row, dict) else []
+        (
+            total_value,
+            latest_value,
+            end_time,
+            normalized_series,
+            raw_values,
+        ) = _normalize_instagram_insight_series(values if isinstance(values, list) else [])
+        if total_value is None:
+            unavailable_reason = "not_returned_by_meta"
+    elif shape["response_shape"] == "not_returned_by_meta":
+        unavailable_reason = "not_returned_by_meta"
+    elif shape["response_shape"] == "malformed_response":
+        unavailable_reason = "malformed_response"
+    else:
+        unavailable_reason = "unknown_response_shape"
+
+    is_available = total_value is not None
+    if is_available:
+        unavailable_reason = None
+    return {
+        **shape,
+        "metric": metric_name,
+        "value": total_value,
+        "latest_value": latest_value,
+        "end_time": end_time,
+        "series": normalized_series,
+        "raw_values": raw_values,
+        "raw_total_value": raw_total_value,
+        "availability": "available" if is_available else "unavailable",
+        "unavailable_reason": unavailable_reason,
+    }
 
 
 def _instagram_business_login_parse_date(value: Any) -> date | None:
@@ -15214,6 +15366,121 @@ FACEBOOK_PAGES_FIVE_SLIDE_TYPES = [
     "executive_summary",
 ]
 
+INSTAGRAM_BUSINESS_FIVE_SLIDE_TYPES = list(INSTAGRAM_BUSINESS_5_SEMANTIC_NAMES)
+
+REPORT_EXPECTED_SLIDE_TYPES_BY_SOURCE_SET: dict[tuple[str, ...], tuple[str, ...]] = {
+    ("facebook_pages",): tuple(FACEBOOK_PAGES_FIVE_SLIDE_TYPES),
+    ("instagram_business",): tuple(INSTAGRAM_BUSINESS_FIVE_SLIDE_TYPES),
+    ("facebook_pages", "instagram_business"): tuple(FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES),
+}
+
+INSTAGRAM_BUSINESS_FORBIDDEN_REPORT_TERMS = (
+    "facebook pages",
+    "organic visibility",
+    "page_posts_impressions_organic",
+    "page views",
+    "facebook reactions",
+    '"fans"',
+)
+
+
+def _normalize_report_source_identity(value: Any) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"facebook", "facebook_page", "facebook_pages", "meta_pages", "meta_pages_v1", "meta_pages_v2"}:
+        return "facebook_pages"
+    if normalized in {
+        "instagram",
+        "instagram_business",
+        "instagram_business_login",
+        "instagram_account",
+        "instagram_business_v1",
+    }:
+        return "instagram_business"
+    if normalized in {"facebook_instagram", "facebook_instagram_10", "multi_source", "multi_source_v1"}:
+        return "facebook_instagram"
+    if normalized == "meta":
+        return None
+    if normalized in {"meta_ads", "meta-ad", "metaads", "meta_ads_account"}:
+        return "meta_ads"
+    return normalized or None
+
+
+def _report_source_candidate_values(value: Any) -> list[Any]:
+    if not isinstance(value, dict):
+        return [value]
+    return [
+        value.get("source_type"),
+        value.get("integration_type"),
+        value.get("source"),
+        value.get("provider"),
+        value.get("report_type"),
+        value.get("generation_mode"),
+    ]
+
+
+def _normalize_selected_report_sources(values: list[Any]) -> list[str]:
+    sources: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for candidate in _report_source_candidate_values(value):
+            source = _normalize_report_source_identity(candidate)
+            if not source or source == "facebook_instagram":
+                continue
+            if source not in seen:
+                seen.add(source)
+                sources.append(source)
+    return sorted(sources)
+
+
+def _selected_sources_for_meta_dataset_report(
+    *,
+    report_source: str,
+    generation_mode: str,
+    report_inputs: dict[str, Any],
+) -> list[str]:
+    if generation_mode == "instagram_business" or report_source == "instagram_business_v1":
+        return ["instagram_business"]
+    if generation_mode == "meta_pages" or report_source == "meta_pages_v2":
+        return ["facebook_pages"]
+
+    explicit_sources = report_inputs.get("sources")
+    if isinstance(explicit_sources, list):
+        selected = _normalize_selected_report_sources(explicit_sources)
+        if selected:
+            return selected
+    selected = _normalize_selected_report_sources(
+        [
+            report_inputs.get("source_type"),
+            report_inputs.get("integration_type"),
+            report_inputs.get("provider"),
+            generation_mode,
+            report_source,
+        ]
+    )
+    if selected:
+        return selected
+    return []
+
+
+def _report_type_for_selected_sources(sources: list[str]) -> str:
+    normalized = _normalize_selected_report_sources(sources)
+    if normalized == ["facebook_pages", "instagram_business"]:
+        return "facebook_instagram"
+    if len(normalized) == 1:
+        return normalized[0]
+    return "legacy"
+
+
+def _report_definition_for_selected_sources(sources: list[str]) -> str | None:
+    report_type = _report_type_for_selected_sources(sources)
+    if report_type == "instagram_business":
+        return INSTAGRAM_BUSINESS_5_RECIPE_ID
+    if report_type == "facebook_pages":
+        return FACEBOOK_PAGES_5_RECIPE.id
+    if report_type == "facebook_instagram":
+        return FACEBOOK_INSTAGRAM_10_RECIPE_ID
+    return None
+
 
 def _block_spec_data(block_spec: dict[str, Any]) -> dict[str, Any]:
     raw_data = block_spec.get("data_json")
@@ -15227,6 +15494,87 @@ def _block_spec_data(block_spec: dict[str, Any]) -> dict[str, Any]:
     else:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _block_spec_slide_key(block_spec: dict[str, Any]) -> str:
+    block_data = _block_spec_data(block_spec)
+    for key in ("semantic_name", "semanticName", "slide_type"):
+        value = block_data.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    for key in ("semantic_name", "semanticName", "slide_type"):
+        value = block_spec.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _report_slide_keys(block_specs: list[dict[str, Any]]) -> list[str]:
+    return [_block_spec_slide_key(block_spec) for block_spec in block_specs]
+
+
+def _validate_report_blocks_for_sources(
+    *,
+    selected_sources: list[str],
+    block_specs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    source_key = tuple(_normalize_selected_report_sources(selected_sources))
+    expected_slide_types = REPORT_EXPECTED_SLIDE_TYPES_BY_SOURCE_SET.get(source_key)
+    if not expected_slide_types:
+        return block_specs
+    if source_key != ("instagram_business",) and len(block_specs) != len(expected_slide_types):
+        return block_specs
+
+    allowed_slide_types = set(expected_slide_types)
+    slide_keys = _report_slide_keys(block_specs)
+    invalid_slide_keys = [
+        slide_key
+        for slide_key in slide_keys
+        if not slide_key or slide_key not in allowed_slide_types
+    ]
+    if invalid_slide_keys:
+        logger.error(
+            "report_slide_source_validation_failed",
+            extra={
+                "selected_sources": list(source_key),
+                "expected_slide_keys": list(expected_slide_types),
+                "actual_slide_keys": slide_keys,
+                "invalid_slide_keys": invalid_slide_keys,
+            },
+        )
+        raise http_error(
+            500,
+            "report_slide_source_mismatch",
+            "Report structure does not match the selected data source.",
+        )
+
+    if source_key == ("instagram_business",):
+        payload_text = json.dumps(
+            [_block_spec_data(block_spec) for block_spec in block_specs],
+            default=str,
+            sort_keys=True,
+        ).lower()
+        forbidden_terms = [
+            term
+            for term in INSTAGRAM_BUSINESS_FORBIDDEN_REPORT_TERMS
+            if term in payload_text
+        ]
+        if forbidden_terms:
+            logger.error(
+                "instagram_report_forbidden_facebook_payload_detected",
+                extra={
+                    "selected_sources": list(source_key),
+                    "slide_keys": slide_keys,
+                    "forbidden_terms": forbidden_terms,
+                },
+            )
+            raise http_error(
+                500,
+                "report_slide_source_mismatch",
+                "Report structure does not match the selected data source.",
+            )
+
+    return block_specs
 
 
 def _facebook_pages_report_slide_types(block_specs: list[dict[str, Any]]) -> list[str]:
@@ -17821,6 +18169,471 @@ def _build_facebook_pages_metric_slide_payload(
     return customized
 
 
+INSTAGRAM_BUSINESS_METRIC_LABELS_EN: dict[str, str] = {
+    "followers": "Followers",
+    "reach": "Reach",
+    "views": "Views",
+    "engagement": "Engagement / Interactions",
+    "accounts_engaged": "Accounts Engaged",
+    "total_interactions": "Total Interactions",
+    "likes": "Likes",
+    "comments": "Comments",
+    "shares": "Shares",
+    "saves": "Saves",
+    "replies": "Replies",
+    "profile_views": "Profile Views",
+    "profile_activity": "Profile Activity",
+    "profile_links_taps": "Profile Links Taps",
+    "follows_and_unfollows": "Follows and Unfollows",
+    "top_content": "Top Content",
+}
+
+INSTAGRAM_BUSINESS_METRIC_LABELS_ES: dict[str, str] = {
+    "followers": "Seguidores",
+    "reach": "Alcance",
+    "views": "Visualizaciones",
+    "engagement": "Engagement / interacciones",
+    "accounts_engaged": "Cuentas con engagement",
+    "total_interactions": "Interacciones totales",
+    "likes": "Me gusta",
+    "comments": "Comentarios",
+    "shares": "Compartidos",
+    "saves": "Guardados",
+    "replies": "Respuestas",
+    "profile_views": "Vistas de perfil",
+    "profile_activity": "Actividad del perfil",
+    "profile_links_taps": "Toques en enlaces del perfil",
+    "follows_and_unfollows": "Seguimientos y bajas",
+    "top_content": "Top content",
+}
+
+INSTAGRAM_BUSINESS_TOTAL_KEYS: dict[str, tuple[str, ...]] = {
+    "followers": ("followers", "followers_count", "followers_total", "follower_count"),
+    "reach": ("reach", "reach_total", "viewers", "viewers_total"),
+    "views": ("views", "views_total"),
+    "engagement": (
+        "total_interactions",
+        "total_interactions_total",
+        "engagement",
+        "engagement_total",
+        "accounts_engaged",
+        "accounts_engaged_total",
+        "content_interactions",
+        "content_interactions_total",
+        "interactions",
+        "interactions_total",
+    ),
+    "accounts_engaged": ("accounts_engaged", "accounts_engaged_total"),
+    "total_interactions": ("total_interactions", "total_interactions_total"),
+    "likes": ("likes", "likes_total"),
+    "comments": ("comments", "comments_total"),
+    "shares": ("shares", "shares_total"),
+    "saves": ("saves", "saves_total"),
+    "replies": ("replies", "replies_total"),
+    "profile_views": (
+        "profile_views",
+        "profile_views_total",
+        "profile_visits",
+        "profile_visits_total",
+        "page_visits",
+        "page_visits_total",
+    ),
+    "profile_activity": (
+        "profile_activity",
+        "profile_activity_total",
+        "profile_taps",
+        "profile_taps_total",
+        "profile_links_taps",
+        "profile_links_taps_total",
+        "website_clicks",
+        "website_clicks_total",
+        "link_clicks",
+        "link_clicks_total",
+    ),
+    "profile_links_taps": ("profile_links_taps", "profile_links_taps_total", "profile_taps", "profile_taps_total"),
+    "follows_and_unfollows": ("follows_and_unfollows", "follows_and_unfollows_total"),
+}
+
+INSTAGRAM_BUSINESS_DAILY_KEYS: dict[str, tuple[str, ...]] = {
+    "followers": ("followers_daily", "follower_count_daily", "followers_growth_daily"),
+    "reach": ("reach_daily", "daily_reach", "viewers_daily"),
+    "views": ("views_daily", "daily_views"),
+    "engagement": (
+        "daily_engagement",
+        "engagement_daily",
+        "total_interactions_daily",
+        "daily_total_interactions",
+        "accounts_engaged_daily",
+        "daily_accounts_engaged",
+        "content_interactions_daily",
+        "interactions_daily",
+    ),
+    "accounts_engaged": ("accounts_engaged_daily", "daily_accounts_engaged"),
+    "total_interactions": ("total_interactions_daily", "daily_total_interactions", "interactions_daily"),
+    "profile_views": ("profile_views_daily", "profile_visits_daily", "page_visits_daily"),
+    "profile_activity": (
+        "profile_activity_daily",
+        "profile_taps_daily",
+        "profile_links_taps_daily",
+        "website_clicks_daily",
+        "link_clicks_daily",
+    ),
+    "profile_links_taps": ("profile_links_taps_daily", "profile_taps_daily"),
+}
+
+
+def _instagram_business_normalized_metrics(context: dict[str, Any]) -> dict[str, Any]:
+    report_inputs = _meta_report_inputs(context)
+    normalized_metrics = report_inputs.get("normalized_report_metrics")
+    return normalized_metrics if isinstance(normalized_metrics, dict) else {}
+
+
+def _instagram_business_metric_sources(context: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    report_inputs = _meta_report_inputs(context)
+    normalized_metrics = _instagram_business_normalized_metrics(context)
+    sources: list[tuple[str, dict[str, Any]]] = []
+    if report_inputs:
+        sources.append(("report_inputs", report_inputs))
+    if normalized_metrics:
+        sources.append(("normalized_report_metrics", normalized_metrics))
+    sources.append(("context", context))
+    return sources
+
+
+def _instagram_business_metric_audit_entry(
+    context: dict[str, Any],
+    metric_key: str,
+) -> dict[str, Any]:
+    report_inputs = _meta_report_inputs(context)
+    audit = report_inputs.get("instagram_metric_audit")
+    if not isinstance(audit, dict):
+        return {}
+    metrics = audit.get("metrics") if isinstance(audit.get("metrics"), dict) else {}
+    entry = metrics.get(metric_key) if isinstance(metrics, dict) else None
+    return entry if isinstance(entry, dict) else {}
+
+
+def _instagram_business_source_metric_name(metric_key: str, matched_key: str | None) -> str | None:
+    key = str(matched_key or "").strip()
+    if not key:
+        return None
+    if key in {"reach", "reach_total", "viewers", "viewers_total", "reach_daily", "daily_reach", "viewers_daily"}:
+        return "reach"
+    if key.startswith("views"):
+        return "views"
+    if key.startswith("impressions"):
+        return "impressions"
+    if key.startswith("accounts_engaged"):
+        return "accounts_engaged"
+    if key.startswith("total_interactions") or key.startswith("interactions"):
+        return "total_interactions"
+    if key.startswith("content_interactions"):
+        return "content_interactions"
+    if key.startswith("profile_links_taps"):
+        return "profile_links_taps"
+    if key.startswith("follows_and_unfollows"):
+        return "follows_and_unfollows"
+    if key.startswith("profile_views") or key.startswith("profile_visits") or key.startswith("page_visits"):
+        return "profile_views"
+    if key.startswith("website_clicks") or key.startswith("link_clicks") or key.startswith("profile_"):
+        return "profile_activity"
+    if key in {"followers", "followers_count", "followers_total", "follower_count"}:
+        return "follower_count"
+    if key.endswith("_total"):
+        return key[: -len("_total")]
+    return metric_key
+
+
+def _instagram_business_total_details(
+    context: dict[str, Any],
+    metric_key: str,
+) -> tuple[float | int | None, str | None, str | None]:
+    for source_name, source in _instagram_business_metric_sources(context):
+        for candidate_key in INSTAGRAM_BUSINESS_TOTAL_KEYS.get(metric_key, (metric_key,)):
+            value = normalizeMetricValue(source.get(candidate_key))
+            if value is not None:
+                return value, candidate_key, f"{source_name}.{candidate_key}"
+    return None, None, None
+
+
+def _instagram_business_daily_series_details(
+    context: dict[str, Any],
+    metric_key: str,
+) -> tuple[list[dict[str, Any]], str | None, str | None]:
+    for source_name, source in _instagram_business_metric_sources(context):
+        for candidate_key in INSTAGRAM_BUSINESS_DAILY_KEYS.get(metric_key, ()):
+            points = _extract_series_candidate(source.get(candidate_key))
+            if not points:
+                continue
+            daily_series = _normalize_daily_series_result(points)
+            if daily_series:
+                return daily_series, candidate_key, f"{source_name}.{candidate_key}"
+    return [], None, None
+
+
+def _instagram_business_unavailable_reason(
+    context: dict[str, Any],
+    metric_key: str,
+) -> str | None:
+    report_inputs = _meta_report_inputs(context)
+    unavailable = report_inputs.get("unavailable_metrics")
+    candidate_keys = [
+        metric_key,
+        *INSTAGRAM_BUSINESS_TOTAL_KEYS.get(metric_key, ()),
+        *INSTAGRAM_BUSINESS_DAILY_KEYS.get(metric_key, ()),
+    ]
+    if isinstance(unavailable, dict):
+        for key in candidate_keys:
+            reason = str(unavailable.get(key) or "").strip()
+            if reason:
+                return reason
+    if isinstance(unavailable, (list, tuple, set)):
+        unavailable_keys = {str(key or "").strip() for key in unavailable}
+        if any(key in unavailable_keys for key in candidate_keys):
+            return "not_returned_by_meta"
+    return None
+
+
+def _instagram_business_metric_details(context: dict[str, Any], metric_key: str) -> dict[str, Any]:
+    total, total_key, total_path = _instagram_business_total_details(context, metric_key)
+    daily_series, daily_key, daily_path = _instagram_business_daily_series_details(context, metric_key)
+    if total is None and daily_series:
+        total = _meta_metric_total_for_series(metric_key, daily_series)
+    matched_key = total_key or daily_key
+    audit_entry = _instagram_business_metric_audit_entry(context, metric_key)
+    source_metric = (
+        str(audit_entry.get("source_metric") or "").strip()
+        or _instagram_business_source_metric_name(metric_key, matched_key)
+    )
+    metric_type = str(audit_entry.get("metric_type") or "").strip() or None
+    if metric_type is None:
+        if source_metric in INSTAGRAM_BUSINESS_LOGIN_TOTAL_VALUE_ACCOUNT_INSIGHT_METRICS:
+            metric_type = "total_value"
+        elif daily_series:
+            metric_type = "time_series"
+    is_available = total is not None or bool(daily_series)
+    unavailable_reason = None if is_available else (
+        _instagram_business_unavailable_reason(context, metric_key) or "not_returned_by_meta"
+    )
+    unavailable_message = None if is_available else (
+        f"Meta did not return {INSTAGRAM_BUSINESS_METRIC_LABELS_EN.get(metric_key, metric_key)} "
+        "for the selected Instagram Business period."
+    )
+    return {
+        "total": total if is_available else None,
+        "daily_series": daily_series,
+        "source_metric": source_metric if is_available else None,
+        "raw_metric_name": source_metric if is_available else None,
+        "metric_type": metric_type,
+        "normalized_field": matched_key,
+        "normalized_path": total_path or daily_path,
+        "provider": "instagram_business",
+        "availability_status": "available" if is_available else "unavailable",
+        "source_metrics_used": [source_metric] if is_available and source_metric else [],
+        "unavailable_reason": unavailable_reason,
+        "unavailable_message": unavailable_message,
+    }
+
+
+def _build_instagram_business_metric_slide_payload(
+    context: dict[str, Any],
+    *,
+    metric_key: str,
+    title: str,
+    label: str,
+    semantic_name: str,
+) -> dict[str, Any]:
+    details = _instagram_business_metric_details(context, metric_key)
+    daily_series = details["daily_series"] if isinstance(details.get("daily_series"), list) else []
+    total = details.get("total")
+    is_available = total is not None or bool(daily_series)
+    value_available = total is not None
+    series_available = bool(daily_series)
+    label_en = INSTAGRAM_BUSINESS_METRIC_LABELS_EN.get(metric_key, title)
+    label_es = INSTAGRAM_BUSINESS_METRIC_LABELS_ES.get(metric_key, label_en)
+    metric_type = details.get("metric_type")
+    no_series_message = "No daily trend was available for this metric."
+    payload: dict[str, Any] = {
+        "slide_type": semantic_name,
+        "metric_key": metric_key,
+        "metric_label": label_en,
+        "metric_label_en": label_en,
+        "metric_label_es": label_es,
+        "title": title,
+        "label": label,
+        "semantic_name": semantic_name,
+        "primary_metric_label": label.upper(),
+        "secondary_metric": None,
+        "value": total if is_available else None,
+        "total": total if is_available else None,
+        "formatted_total": _format_metric_summary_value(total if is_available else None),
+        "is_available": is_available,
+        "value_available": value_available,
+        "series_available": series_available,
+        "availability": details.get("availability_status"),
+        "metric_value": total if value_available else None,
+        "metric_type": metric_type,
+        "metric_source": details.get("source_metric") if is_available else "not_available",
+        "raw_metric_name": details.get("raw_metric_name"),
+        "normalized_field": details.get("normalized_field"),
+        "provider": "instagram_business",
+        "availability_status": details.get("availability_status"),
+        "source_metrics_used": details.get("source_metrics_used") if isinstance(details.get("source_metrics_used"), list) else [],
+        "unavailable_reason": details.get("unavailable_reason") if not is_available else None,
+        "unavailable_message": details.get("unavailable_message") if not is_available else None,
+        "daily_series": daily_series,
+        "highest_day": getHighestDay(daily_series) if daily_series and is_available else None,
+        "lowest_day": getLowestDay(daily_series) if daily_series and is_available else None,
+        "daily_series_reason": "" if series_available else no_series_message,
+        "daily_trend_message": "" if series_available else no_series_message,
+        "daily_series_source_path": details.get("normalized_path"),
+        "daily_series_source_metric_key": details.get("normalized_field"),
+        "current_value": normalizeMetricValue(total) if is_available else None,
+        "ai_insight_context": {
+            "metric_key": metric_key,
+            "metric_value": total if value_available else None,
+            "series_available": series_available,
+            "series": daily_series,
+            "availability": details.get("availability_status"),
+            "metric_type": metric_type,
+        },
+        "chart": {
+            "label": label,
+            "metric": metric_key,
+            "points": daily_series,
+            "data": daily_series,
+            "series": daily_series,
+            "timeframe": context.get("report_timeframe") if isinstance(context.get("report_timeframe"), dict) else {},
+            "is_available": is_available and series_available,
+            "series_available": series_available,
+        },
+    }
+    insight_payload = build_metric_ai_insight(payload, context)
+    payload.update(insight_payload)
+    payload["insight_full"] = payload["insight"]
+    _log_report_product_event(
+        "REPORT_PRODUCT_METRIC_SELECTED" if is_available else "REPORT_PRODUCT_METRIC_UNAVAILABLE",
+        context=context,
+        slide_type=semantic_name,
+        raw_metric_name=str(payload.get("raw_metric_name") or metric_key),
+        normalized_field=str(payload.get("normalized_field") or metric_key),
+        availability_status=str(payload.get("availability_status") or ""),
+        source_metrics_used=payload.get("source_metrics_used") if isinstance(payload.get("source_metrics_used"), list) else None,
+    )
+    return payload
+
+
+def _build_instagram_business_summary_metric_card(
+    context: dict[str, Any],
+    metric_key: str,
+    *,
+    include_when_unavailable: bool = False,
+) -> dict[str, Any] | None:
+    explicit_unavailable_reason = _instagram_business_unavailable_reason(context, metric_key)
+    details = _instagram_business_metric_details(context, metric_key)
+    is_available = str(details.get("availability_status") or "") == "available"
+    if not is_available and not include_when_unavailable and not explicit_unavailable_reason:
+        return None
+    label = INSTAGRAM_BUSINESS_METRIC_LABELS_EN.get(metric_key, metric_key.replace("_", " ").title())
+    payload = {
+        "metric_key": metric_key,
+        "metric_label": label,
+        "metric_label_en": label,
+        "total": details.get("total"),
+        "is_available": is_available,
+        "unavailable_reason": details.get("unavailable_reason"),
+        "unavailable_message": details.get("unavailable_message"),
+        "raw_metric_name": details.get("raw_metric_name"),
+        "normalized_field": details.get("normalized_field"),
+        "provider": "instagram_business",
+        "availability_status": details.get("availability_status"),
+        "source_metrics_used": details.get("source_metrics_used"),
+    }
+    card = _build_summary_metric_card(metric_key, payload)
+    card.update(
+        {
+            "raw_metric_name": payload.get("raw_metric_name"),
+            "normalized_field": payload.get("normalized_field"),
+            "provider": "instagram_business",
+            "availability_status": payload.get("availability_status"),
+            "source_metrics_used": payload.get("source_metrics_used") if isinstance(payload.get("source_metrics_used"), list) else [],
+        }
+    )
+    return card
+
+
+def _build_instagram_business_final_summary(
+    slides: dict[str, dict[str, Any]],
+    context: dict[str, Any],
+) -> dict[str, str]:
+    period_label = str((context.get("report_timeframe") or {}).get("label") or "el periodo").strip()
+    parts: list[str] = []
+    followers = slides.get("followers", {})
+    reach = slides.get("reach", {})
+    views = slides.get("views", {})
+    engagement = slides.get("engagement", {})
+    accounts_engaged = slides.get("accounts_engaged", {})
+    total_interactions = slides.get("total_interactions", {})
+    top_content = _rank_facebook_page_top_content(_meta_top_content(context), limit=5)
+
+    if followers.get("is_available"):
+        parts.append(f"Followers cerró en {followers.get('formatted_value')}")
+    if reach.get("is_available"):
+        parts.append(f"Reach registró {reach.get('formatted_total') or reach.get('formatted_value')}")
+    if views.get("is_available"):
+        parts.append(f"Views registró {views.get('formatted_total') or views.get('formatted_value')}")
+    if engagement.get("is_available"):
+        parts.append(f"Engagement / Interactions registró {engagement.get('formatted_total') or engagement.get('formatted_value')}")
+    if accounts_engaged.get("is_available"):
+        parts.append(f"Accounts Engaged alcanzó {accounts_engaged.get('formatted_value')}")
+    if total_interactions.get("is_available"):
+        parts.append(f"Total Interactions alcanzó {total_interactions.get('formatted_value')}")
+    if top_content:
+        parts.append(f"Top Content incluye {len(top_content)} publicaciones")
+
+    if parts:
+        summary = (
+            f"Durante {period_label}, Instagram Business muestra " + ", ".join(parts) + ". "
+            "La lectura ejecutiva debe priorizar publicaciones y formatos que concentran alcance, vistas e interacciones."
+        )
+    else:
+        summary = (
+            f"Durante {period_label}, Meta did not return the main Instagram Business metrics for the selected period. "
+            "El reporte conserva la estructura y evita interpretar métricas no disponibles como cero."
+        )
+
+    unavailable = [
+        str(payload.get("label") or payload.get("metric_label_en") or key.replace("_", " ").title())
+        for key, payload in slides.items()
+        if isinstance(payload, dict) and not payload.get("is_available")
+    ]
+    if unavailable:
+        summary += f" Métricas no disponibles por ahora: {', '.join(unavailable)}."
+
+    best_metric = None
+    for payload in (engagement, reach, views):
+        if payload.get("is_available"):
+            best_metric = payload
+            break
+    if best_metric and best_metric.get("highest_day"):
+        day_label = _metric_day_label(best_metric.get("highest_day"))
+        recommendation = (
+            f"Revisa qué publicación o formato impulsó el pico de {best_metric.get('metric_label_en')} en {day_label} "
+            "y úsalo como referencia para el siguiente periodo."
+        )
+    elif top_content:
+        recommendation = (
+            "Usa el top content para repetir formatos con mayor alcance e interacción y ajustar llamadas a la acción del perfil."
+        )
+    else:
+        recommendation = "Prioriza las métricas Instagram disponibles y mantén separadas las no retornadas por Meta."
+
+    return {
+        "ai_summary": truncateInsight(summary, 520),
+        "recommendation": truncateInsight(recommendation, 220),
+    }
+
+
 def _build_context_metric_summary_card(
     context: dict[str, Any],
     *,
@@ -18438,8 +19251,10 @@ def build_metric_ai_insight(metric_slide: dict[str, Any], context: dict[str, Any
     label = str(metric_slide.get("metric_label") or metric_slide.get("metric_label_en") or metric_key.title())
     total = metric_slide.get("formatted_total") or _format_metric_summary_value(metric_slide.get("total"))
     daily_series = metric_slide.get("daily_series") if isinstance(metric_slide.get("daily_series"), list) else []
-    highest_label = _metric_day_label(metric_slide.get("highest_day"))
-    lowest_label = _metric_day_label(metric_slide.get("lowest_day"))
+    series_available = bool(metric_slide.get("series_available")) if "series_available" in metric_slide else bool(daily_series)
+    value_available = bool(metric_slide.get("value_available")) if "value_available" in metric_slide else metric_slide.get("total") is not None
+    highest_label = _metric_day_label(metric_slide.get("highest_day")) if series_available else None
+    lowest_label = _metric_day_label(metric_slide.get("lowest_day")) if series_available else None
     unavailable_message = str(
         metric_slide.get("unavailable_message") or _metric_unavailable_message_for_context(context)
     )
@@ -18456,7 +19271,28 @@ def build_metric_ai_insight(metric_slide: dict[str, Any], context: dict[str, Any
             "insight_max_chars": 260,
         }
 
-    trend = _metric_trend_sentence(label, daily_series)
+    if value_available and not series_available:
+        source_metric = str(metric_slide.get("raw_metric_name") or metric_slide.get("metric_source") or metric_key)
+        metric_type = str(metric_slide.get("metric_type") or "").strip()
+        metric_type_text = " as an aggregate value" if metric_type == "total_value" else ""
+        if metric_key == "engagement" and source_metric == "total_interactions":
+            full = (
+                f"Total Interactions reached {total} during the selected period{metric_type_text}. "
+                "Use it as the account-level interaction total for this reporting window."
+            )
+        else:
+            full = (
+                f"{label} reached {total} during the selected period{metric_type_text}. "
+                "Use the aggregate value as the executive reference for this reporting window."
+            )
+        return {
+            "insight_short": truncateInsight(full, 260),
+            "insight": truncateInsight(full, 420),
+            "insight_tone": "executive_ai",
+            "insight_max_chars": 260,
+        }
+
+    trend = _metric_trend_sentence(label, daily_series) if series_available else ""
     peak = f" El pico más alto aparece en {highest_label}." if highest_label else ""
     low = f" El punto más bajo fue {lowest_label}." if lowest_label and lowest_label != highest_label else ""
 
@@ -20654,6 +21490,296 @@ def _build_facebook_pages_5_summary_block(
     )
 
 
+def _enforce_instagram_business_5_recipe(
+    block_specs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    try:
+        return cast(
+            list[dict[str, Any]],
+            enforce_report_recipe(block_specs, INSTAGRAM_BUSINESS_5_RECIPE),
+        )
+    except ReportRecipeEnforcementError as exc:
+        logger.error(
+            "instagram_business_recipe_enforcement_failed",
+            extra=exc.to_log_payload(),
+        )
+        raise http_error(
+            500,
+            "instagram_business_recipe_enforcement_failed",
+            "Instagram Business report structure does not match the canonical Recipe.",
+        ) from exc
+
+
+def _build_instagram_business_5_cover_block(
+    *,
+    dataset: dict,
+    report_timeframe: dict,
+    resolved_branding: dict,
+    order: int,
+) -> dict:
+    return _meta_report_block(
+        "title",
+        order,
+        {
+            "slide_number": order,
+            "slide_type": "cover",
+            "text": "Instagram Business Report - Summary & Insights",
+            "subtitle": dataset["page_name"],
+            "page_name": dataset["page_name"],
+            "platform": "Instagram Business",
+            "timeframe": report_timeframe,
+            "period_label": report_timeframe.get("label"),
+            "period_since": report_timeframe.get("since"),
+            "period_until": report_timeframe.get("until"),
+            "branding": resolved_branding,
+            "brand_name": resolved_branding.get("resolved_brand_name"),
+            "brand_logo_url": resolved_branding.get("resolved_logo_url"),
+            "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
+            "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
+            "cover_branding": {
+                "resolved_brand_name": resolved_branding.get("resolved_brand_name"),
+                "resolved_logo_url": resolved_branding.get("resolved_logo_url"),
+            },
+            "provider": "instagram_business",
+            "availability_status": "available",
+            "source_metrics_used": [],
+            "semantic_name": "cover",
+        },
+        ["text", "subtitle"],
+    )
+
+
+def _build_instagram_business_5_metric_block(
+    *,
+    order: int,
+    payload: dict[str, Any],
+) -> dict:
+    return _meta_report_block(
+        "stat",
+        order,
+        {
+            "slide_number": order,
+            **payload,
+        },
+    )
+
+
+def _instagram_business_summary_card_from_slide(
+    metric_key: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    card = _build_summary_metric_card(metric_key, payload)
+    card.update(
+        {
+            "raw_metric_name": payload.get("raw_metric_name"),
+            "normalized_field": payload.get("normalized_field"),
+            "provider": "instagram_business",
+            "availability_status": payload.get("availability_status"),
+            "source_metrics_used": payload.get("source_metrics_used") if isinstance(payload.get("source_metrics_used"), list) else [],
+        }
+    )
+    return card
+
+
+def _build_instagram_business_5_summary_payload(
+    context: dict,
+    *,
+    period_label: str,
+    reach_payload: dict[str, Any],
+    views_payload: dict[str, Any],
+    engagement_payload: dict[str, Any],
+) -> dict[str, Any]:
+    top_content = _rank_facebook_page_top_content(_meta_top_content(context), limit=5)
+    top_content_title = (
+        "Top 5 Content This Month"
+        if "month" in period_label.lower()
+        else "Top 5 Content in Selected Period"
+    )
+    metrics_summary: dict[str, dict[str, Any]] = {
+        "reach": _instagram_business_summary_card_from_slide("reach", reach_payload),
+        "views": _instagram_business_summary_card_from_slide("views", views_payload),
+        "engagement": _instagram_business_summary_card_from_slide("engagement", engagement_payload),
+    }
+    followers_card = _build_instagram_business_summary_metric_card(context, "followers")
+    if followers_card is not None:
+        metrics_summary["followers"] = followers_card
+    for optional_metric in (
+        "accounts_engaged",
+        "total_interactions",
+        "likes",
+        "comments",
+        "shares",
+        "saves",
+        "replies",
+        "profile_views",
+        "profile_activity",
+    ):
+        optional_card = _build_instagram_business_summary_metric_card(context, optional_metric)
+        if optional_card is not None:
+            metrics_summary[optional_metric] = optional_card
+
+    final_insights = _build_instagram_business_final_summary(
+        {
+            "followers": metrics_summary.get("followers", {}),
+            "reach": reach_payload,
+            "views": views_payload,
+            "engagement": engagement_payload,
+            "accounts_engaged": metrics_summary.get("accounts_engaged", {}),
+            "total_interactions": metrics_summary.get("total_interactions", {}),
+        },
+        context,
+    )
+    source_metrics_used = [
+        str(card.get("raw_metric_name") or key)
+        for key, card in metrics_summary.items()
+        if isinstance(card, dict) and card.get("is_available")
+    ]
+    if top_content:
+        source_metrics_used.append("media_insights")
+    ai_summary = final_insights["ai_summary"]
+    return {
+        "slide_number": 5,
+        "slide_type": "instagram_summary",
+        "title": "Executive Summary",
+        "title_en": "Executive Summary",
+        "top_content_title": top_content_title,
+        "top_content": top_content,
+        "branding": context.get("branding") if isinstance(context.get("branding"), dict) else {},
+        "metrics_summary": metrics_summary,
+        "ai_summary": ai_summary,
+        "recommendation": final_insights["recommendation"],
+        "text": ai_summary,
+        "insight": ai_summary,
+        "insight_short": ai_summary,
+        "semantic_name": "instagram_summary",
+        "provider": "instagram_business",
+        "availability_status": "available",
+        "source_metrics_used": source_metrics_used,
+        "timeframe": context.get("report_timeframe") or {},
+    }
+
+
+def _build_instagram_business_5_summary_block(
+    *,
+    order: int,
+    metric_context: dict,
+    period_label: str,
+    reach_payload: dict[str, Any],
+    views_payload: dict[str, Any],
+    engagement_payload: dict[str, Any],
+) -> dict:
+    return _meta_report_block(
+        "text",
+        order,
+        _build_instagram_business_5_summary_payload(
+            metric_context,
+            period_label=period_label,
+            reach_payload=reach_payload,
+            views_payload=views_payload,
+            engagement_payload=engagement_payload,
+        ),
+        ["text"],
+    )
+
+
+def build_instagram_business_5_blocks(dataset: dict[str, Any]) -> list[dict[str, Any]]:
+    report_timeframe = dataset["report_timeframe"]
+    period_label = str(report_timeframe.get("label") or "Selected period")
+    resolved_branding = resolve_report_branding(
+        None,
+        None,
+        str(dataset.get("plan") or ""),
+        preferred_branding=dataset.get("branding") if isinstance(dataset.get("branding"), dict) else None,
+    )
+    report_inputs = dict(_meta_report_inputs(dataset))
+    report_inputs["integration_type"] = "instagram_business"
+    metric_context = {**dataset, "report_inputs": report_inputs, "branding": resolved_branding}
+    _log_report_product_event(
+        "REPORT_PRODUCT_RESOLVER_STARTED",
+        context=metric_context,
+        slide_type="instagram_business_5_slide_report",
+        raw_metric_name="instagram_business_metrics",
+        normalized_field="instagram_business_report_metrics",
+        availability_status="started",
+    )
+    reach_payload = _build_instagram_business_metric_slide_payload(
+        metric_context,
+        metric_key="reach",
+        title="REACH",
+        label="TOTAL REACH",
+        semantic_name="instagram_reach",
+    )
+    views_payload = _build_instagram_business_metric_slide_payload(
+        metric_context,
+        metric_key="views",
+        title="VIEWS",
+        label="TOTAL VIEWS",
+        semantic_name="instagram_views",
+    )
+    engagement_payload = _build_instagram_business_metric_slide_payload(
+        metric_context,
+        metric_key="engagement",
+        title="ENGAGEMENT / INTERACTIONS",
+        label="TOTAL INTERACTIONS",
+        semantic_name="instagram_engagement",
+    )
+    blocks = [
+        _build_instagram_business_5_cover_block(
+            dataset=metric_context,
+            report_timeframe=report_timeframe,
+            resolved_branding=resolved_branding,
+            order=1,
+        ),
+        _build_instagram_business_5_metric_block(order=2, payload=reach_payload),
+        _build_instagram_business_5_metric_block(order=3, payload=views_payload),
+        _build_instagram_business_5_metric_block(order=4, payload=engagement_payload),
+        _build_instagram_business_5_summary_block(
+            order=5,
+            metric_context=metric_context,
+            period_label=period_label,
+            reach_payload=reach_payload,
+            views_payload=views_payload,
+            engagement_payload=engagement_payload,
+        ),
+    ]
+    final_blocks = _renumber_blocks(blocks[:5])
+    final_blocks = _validate_report_blocks_for_sources(
+        selected_sources=["instagram_business"],
+        block_specs=final_blocks,
+    )
+    final_blocks = _enforce_instagram_business_5_recipe(final_blocks)
+    _log_json_event(
+        "INSTAGRAM_BUSINESS_REPORT_BLOCKS_CREATED",
+        {
+            "report_id": metric_context.get("report_id"),
+            "dataset_id": metric_context.get("dataset_id"),
+            "page_name": metric_context.get("page_name"),
+            "selected_sources": ["instagram_business"],
+            "resolved_report_type": "instagram_business",
+            "resolved_report_definition": INSTAGRAM_BUSINESS_5_RECIPE_ID,
+            "slide_keys": _report_slide_keys(final_blocks),
+            "generation_status": "blocks_created",
+        },
+    )
+    _log_report_product_event(
+        "REPORT_PRODUCT_COMPLETED",
+        context=metric_context,
+        slide_type="instagram_business_5_slide_report",
+        raw_metric_name="instagram_business_metrics",
+        normalized_field="report_blocks",
+        availability_status="available",
+        source_metrics_used=[
+            "reach",
+            "views",
+            "accounts_engaged",
+            "total_interactions",
+            "profile_links_taps",
+            "media_insights",
+        ],
+    )
+    return final_blocks
+
+
 def build_5_blocks(dataset: dict) -> list[dict]:
     # Source of truth for official social 5-slide report structure:
     # cover, organic impressions, engagement, page views, summary.
@@ -21471,6 +22597,13 @@ def _build_meta_dataset_report_blocks(
     slide_limits: dict[str, Any],
     block_build_context: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], bool]:
+    selected_sources = _selected_sources_for_meta_dataset_report(
+        report_source=report_source,
+        generation_mode=str(block_build_context.get("generation_mode") or ""),
+        report_inputs=report_inputs,
+    )
+    if selected_sources == ["instagram_business"]:
+        return build_instagram_business_5_blocks(block_build_context), False
     use_facebook_pages_5_recipe_path = should_enforce_facebook_pages_5_recipe(
         report_source=report_source,
         integration_type=str(report_inputs.get("integration_type") or "").strip(),
@@ -22790,6 +23923,325 @@ def create_multi_source_report(
     )
 
 
+def _preferred_single_source_integration_providers(
+    source_type: str,
+    report_inputs: dict[str, Any],
+) -> list[str]:
+    providers: list[str] = []
+    for value in (report_inputs.get("provider"), report_inputs.get("source")):
+        provider = str(value or "").strip()
+        if provider and provider not in providers:
+            providers.append(provider)
+    if source_type == "instagram_business":
+        for provider in (
+            INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            "instagram_business",
+            "meta_business_suite",
+            "meta",
+        ):
+            if provider not in providers:
+                providers.append(provider)
+    elif source_type == "facebook_pages":
+        for provider in ("meta", "facebook_pages"):
+            if provider not in providers:
+                providers.append(provider)
+    return providers
+
+
+def _resolve_single_source_integration(
+    db: Session,
+    *,
+    workspace_id: int,
+    source_type: str,
+    report_inputs: dict[str, Any],
+    payload: MetaPagesReportCreateIn | InstagramBusinessReportCreateIn | MetaAdsReportCreateIn,
+) -> Integration:
+    raw_integration_id = getattr(payload, "integration_id", None)
+    if raw_integration_id is not None:
+        try:
+            integration_id = int(raw_integration_id)
+        except (TypeError, ValueError):
+            integration_id = None
+        if integration_id is not None:
+            integration = (
+                db.query(Integration)
+                .filter(Integration.id == integration_id, Integration.workspace_id == workspace_id)
+                .first()
+            )
+            if integration is not None:
+                return integration
+
+    for provider in _preferred_single_source_integration_providers(source_type, report_inputs):
+        integration = (
+            db.query(Integration)
+            .filter(Integration.workspace_id == workspace_id, Integration.provider == provider)
+            .order_by(Integration.id.asc())
+            .first()
+        )
+        if integration is not None:
+            return integration
+
+    if source_type == "instagram_business":
+        return _get_or_create_instagram_business_login_integration_for_workspace(db, workspace_id)
+    return _get_or_create_meta_integration_for_workspace(db, workspace_id)
+
+
+def _single_source_external_account_candidates(
+    source_type: str,
+    report_inputs: dict[str, Any],
+    payload: MetaPagesReportCreateIn | InstagramBusinessReportCreateIn | MetaAdsReportCreateIn,
+) -> list[str]:
+    keys = (
+        ("account_id", "instagram_account_id", "instagram_business_account_id", "ig_user_id", "page_id")
+        if source_type == "instagram_business"
+        else ("facebook_page_id", "page_id", "account_id")
+    )
+    values: list[str] = []
+    for key in keys:
+        for value in (report_inputs.get(key), getattr(payload, key, None)):
+            text = str(value or "").strip()
+            if text and text not in values:
+                values.append(text)
+    return values
+
+
+def _resolve_single_source_integration_account(
+    db: Session,
+    *,
+    integration: Integration,
+    source_type: str,
+    report_inputs: dict[str, Any],
+    payload: MetaPagesReportCreateIn | InstagramBusinessReportCreateIn | MetaAdsReportCreateIn,
+) -> IntegrationAccount | None:
+    raw_account_pk = getattr(payload, "integration_account_id", None)
+    if raw_account_pk is not None:
+        try:
+            account_pk = int(raw_account_pk)
+        except (TypeError, ValueError):
+            account_pk = None
+        if account_pk is not None:
+            account = (
+                db.query(IntegrationAccount)
+                .filter(
+                    IntegrationAccount.id == account_pk,
+                    IntegrationAccount.integration_id == integration.id,
+                    IntegrationAccount.workspace_id == integration.workspace_id,
+                )
+                .first()
+            )
+            if account is not None:
+                return account
+
+    external_ids = _single_source_external_account_candidates(source_type, report_inputs, payload)
+    if not external_ids:
+        return None
+    return (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration.id,
+            IntegrationAccount.workspace_id == integration.workspace_id,
+            IntegrationAccount.external_account_id.in_(external_ids),
+        )
+        .order_by(IntegrationAccount.id.asc())
+        .first()
+    )
+
+
+def _single_source_report_source_label(source_type: str, report_inputs: dict[str, Any], dataset: Dataset) -> str:
+    if source_type == "instagram_business":
+        for key in ("account_name", "page_name", "username", "instagram_username"):
+            value = str(report_inputs.get(key) or "").strip()
+            if value:
+                return value
+        return dataset.name or "Instagram Business"
+    for key in ("page_name", "account_name"):
+        value = str(report_inputs.get(key) or "").strip()
+        if value:
+            return value
+    return dataset.name or "Facebook Pages"
+
+
+def _build_single_source_report_source(
+    db: Session,
+    *,
+    report: Report,
+    dataset: Dataset,
+    payload: MetaPagesReportCreateIn | InstagramBusinessReportCreateIn | MetaAdsReportCreateIn,
+    selected_sources: list[str],
+    report_inputs: dict[str, Any],
+) -> ReportSource | None:
+    normalized_sources = _normalize_selected_report_sources(selected_sources)
+    if len(normalized_sources) != 1 or normalized_sources[0] not in {"facebook_pages", "instagram_business"}:
+        return None
+    source_type = normalized_sources[0]
+    integration = _resolve_single_source_integration(
+        db,
+        workspace_id=report.workspace_id,
+        source_type=source_type,
+        report_inputs=report_inputs,
+        payload=payload,
+    )
+    integration_account = _resolve_single_source_integration_account(
+        db,
+        integration=integration,
+        source_type=source_type,
+        report_inputs=report_inputs,
+        payload=payload,
+    )
+    label = _single_source_report_source_label(source_type, report_inputs, dataset)
+    external_accounts = _single_source_external_account_candidates(source_type, report_inputs, payload)
+    channel = "instagram" if source_type == "instagram_business" else "facebook"
+    return ReportSource(
+        report_id=report.id,
+        workspace_id=report.workspace_id,
+        provider=integration.provider,
+        source_type=source_type,
+        integration_id=integration.id,
+        integration_account_id=integration_account.id if integration_account is not None else None,
+        dataset_id=dataset.id,
+        position=0,
+        label=label,
+        config_json={
+            "source_type": source_type,
+            "provider": integration.provider,
+            "channel": channel,
+            "social_network": channel,
+            "account_name": label,
+            "username": report_inputs.get("username") or report_inputs.get("instagram_username"),
+            "instagram_username": report_inputs.get("instagram_username") or report_inputs.get("username"),
+            "external_account_id": external_accounts[0] if external_accounts else None,
+        },
+    )
+
+
+def _persist_single_source_report_source(
+    db: Session,
+    *,
+    report: Report,
+    dataset: Dataset,
+    payload: MetaPagesReportCreateIn | InstagramBusinessReportCreateIn | MetaAdsReportCreateIn,
+    selected_sources: list[str],
+    report_inputs: dict[str, Any],
+) -> ReportSource | None:
+    report_source = _build_single_source_report_source(
+        db,
+        report=report,
+        dataset=dataset,
+        payload=payload,
+        selected_sources=selected_sources,
+        report_inputs=report_inputs,
+    )
+    if report_source is None:
+        return None
+    db.add(report_source)
+    db.commit()
+    db.refresh(report_source)
+    return report_source
+
+
+def _set_report_generation_status(
+    db: Session,
+    report: Report,
+    *,
+    status: str,
+    selected_sources: list[str],
+    resolved_report_type: str,
+    resolved_report_definition: str | None,
+    slide_keys: list[str] | None = None,
+    error_code: str | None = None,
+) -> Report:
+    updates: dict[str, object] = {
+        "sources": selected_sources,
+        "report_type": resolved_report_type,
+        "resolved_report_definition": resolved_report_definition,
+        "report_status": status,
+        "generation_status": status,
+    }
+    if slide_keys is not None:
+        updates["slide_keys"] = slide_keys
+    if error_code:
+        updates["generation_error"] = {
+            "code": error_code,
+            "message": "Report generation failed.",
+        }
+    return _update_report_metadata(db, report, updates)
+
+
+def _mark_report_generation_failed(
+    db: Session,
+    report: Report,
+    *,
+    selected_sources: list[str],
+    resolved_report_type: str,
+    resolved_report_definition: str | None,
+    slide_keys: list[str] | None,
+    error_code: str,
+    exc: Exception,
+) -> None:
+    try:
+        db.rollback()
+        _set_report_generation_status(
+            db,
+            report,
+            status="failed",
+            selected_sources=selected_sources,
+            resolved_report_type=resolved_report_type,
+            resolved_report_definition=resolved_report_definition,
+            slide_keys=slide_keys,
+            error_code=error_code,
+        )
+    except Exception:
+        db.rollback()
+        logger.exception("report_generation_failed_status_update_failed", extra={"report_id": report.id})
+    logger.exception(
+        "report_generation_failed",
+        extra={
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "dataset_id": report.dataset_id,
+            "selected_sources": selected_sources,
+            "resolved_report_type": resolved_report_type,
+            "resolved_report_definition": resolved_report_definition,
+            "slide_keys": slide_keys or [],
+            "generation_status": "failed",
+            "error_code": error_code,
+            "error_type": type(exc).__name__,
+        },
+    )
+
+
+def _generation_failure_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException):
+        return exc
+    return http_error(
+        500,
+        "report_generation_failed",
+        "Report generation failed.",
+    )
+
+
+def _persist_report_block_specs(
+    db: Session,
+    *,
+    report_version: ReportVersion,
+    block_specs: list[dict[str, Any]],
+) -> list[ReportBlock]:
+    blocks = [
+        ReportBlock(
+            report_version_id=report_version.id,
+            type=str(block_spec["type"]),
+            order=int(block_spec["order"]),
+            data_json=str(block_spec["data_json"]),
+            editable_fields_json=str(block_spec["editable_fields_json"]),
+        )
+        for block_spec in block_specs
+    ]
+    for block in blocks:
+        db.add(block)
+    db.commit()
+    return blocks
+
+
 def _create_meta_dataset_report(
     *,
     dataset: Dataset,
@@ -22812,11 +24264,17 @@ def _create_meta_dataset_report(
         if payload.requested_slides is not None
         else payload.slide_count
     )
+    is_instagram_business_report = (
+        generation_mode == "instagram_business"
+        or report_source == "instagram_business_v1"
+    )
+    if is_instagram_business_report:
+        requested_slides = 5
     slide_limits = resolve_report_slide_limits(
         db,
         dataset.workspace_id,
         requested_slides=requested_slides,
-        default_slides=11,
+        default_slides=5 if is_instagram_business_report else 11,
     )
     logger.info(
         "[PlanLimits][report.create]",
@@ -23022,7 +24480,34 @@ def _create_meta_dataset_report(
         "report_inputs": report_inputs_for_blocks,
         "branding": report_branding,
         "requested_slides": slide_limits["requested_slides"],
+        "generation_mode": generation_mode,
     }
+    selected_sources = _selected_sources_for_meta_dataset_report(
+        report_source=report_source,
+        generation_mode=generation_mode,
+        report_inputs=report_inputs,
+    )
+    resolved_report_type = _report_type_for_selected_sources(selected_sources)
+    resolved_report_definition = _report_definition_for_selected_sources(selected_sources)
+    block_build_context.update(
+        {
+            "selected_sources": selected_sources,
+            "resolved_report_type": resolved_report_type,
+            "resolved_report_definition": resolved_report_definition,
+        }
+    )
+    logger.info(
+        "report_generation_routing_resolved",
+        extra={
+            "report_id": None,
+            "workspace_id": dataset.workspace_id,
+            "dataset_id": dataset.id,
+            "selected_sources": selected_sources,
+            "resolved_report_type": resolved_report_type,
+            "resolved_report_definition": resolved_report_definition,
+            "generation_status": "routing_resolved",
+        },
+    )
     block_specs, use_facebook_pages_5_recipe_path = _build_meta_dataset_report_blocks(
         report_source=report_source,
         report_inputs=report_inputs,
@@ -23119,6 +24604,13 @@ def _create_meta_dataset_report(
         pipeline_result=ai_agent_pipeline_result,
     )
     block_specs = block_specs[: int(slide_limits["effective_slide_limit"])]
+    block_specs = _validate_report_blocks_for_sources(
+        selected_sources=selected_sources,
+        block_specs=block_specs,
+    )
+    if selected_sources == ["instagram_business"]:
+        block_specs = _enforce_instagram_business_5_recipe(block_specs)
+    final_slide_keys = _report_slide_keys(block_specs)
     logger.info(
         "[ReportBlocks][build.final]",
         extra={
@@ -23126,6 +24618,10 @@ def _create_meta_dataset_report(
             "requested_slides": slide_limits["requested_slides"],
             "effective_slide_limit": slide_limits["effective_slide_limit"],
             "blocks_generados": len(block_specs),
+            "selected_sources": selected_sources,
+            "resolved_report_type": resolved_report_type,
+            "resolved_report_definition": resolved_report_definition,
+            "slide_keys": final_slide_keys,
         },
     )
     logger.info(
@@ -23206,6 +24702,11 @@ def _create_meta_dataset_report(
         description=json.dumps(
             {
                 "source": report_source,
+                "sources": selected_sources,
+                "report_type": resolved_report_type,
+                "resolved_report_definition": resolved_report_definition,
+                "report_status": "processing",
+                "generation_status": "processing",
                 "locale": locale,
                 "timeframe": report_timeframe,
                 "claude_payload": claude_payload,
@@ -23222,6 +24723,27 @@ def _create_meta_dataset_report(
     db.add(report)
     db.commit()
     db.refresh(report)
+    try:
+        _persist_single_source_report_source(
+            db,
+            report=report,
+            dataset=dataset,
+            payload=payload,
+            selected_sources=selected_sources,
+            report_inputs=report_inputs,
+        )
+    except Exception as exc:
+        _mark_report_generation_failed(
+            db,
+            report,
+            selected_sources=selected_sources,
+            resolved_report_type=resolved_report_type,
+            resolved_report_definition=resolved_report_definition,
+            slide_keys=final_slide_keys,
+            error_code="report_source_persistence_failed",
+            exc=exc,
+        )
+        raise _generation_failure_http_error(exc)
     logger.info(
         "[ReportBranding][resolved]",
         extra={
@@ -23325,10 +24847,23 @@ def _create_meta_dataset_report(
         },
     )
 
-    report_version = ReportVersion(report_id=report.id, version=1)
-    db.add(report_version)
-    db.commit()
-    db.refresh(report_version)
+    try:
+        report_version = ReportVersion(report_id=report.id, version=1)
+        db.add(report_version)
+        db.commit()
+        db.refresh(report_version)
+    except Exception as exc:
+        _mark_report_generation_failed(
+            db,
+            report,
+            selected_sources=selected_sources,
+            resolved_report_type=resolved_report_type,
+            resolved_report_definition=resolved_report_definition,
+            slide_keys=final_slide_keys,
+            error_code="report_version_persistence_failed",
+            exc=exc,
+        )
+        raise _generation_failure_http_error(exc)
 
     for block_spec in block_specs:
         raw_data = block_spec.get("data_json")
@@ -23516,19 +25051,46 @@ def _create_meta_dataset_report(
                 },
             )
 
-    blocks = [
-        ReportBlock(
-            report_version_id=report_version.id,
-            type=str(block_spec["type"]),
-            order=int(block_spec["order"]),
-            data_json=str(block_spec["data_json"]),
-            editable_fields_json=str(block_spec["editable_fields_json"]),
+    try:
+        _persist_report_block_specs(
+            db,
+            report_version=report_version,
+            block_specs=block_specs,
         )
-        for block_spec in block_specs
-    ]
-    for block in blocks:
-        db.add(block)
-    db.commit()
+        report = _set_report_generation_status(
+            db,
+            report,
+            status="completed",
+            selected_sources=selected_sources,
+            resolved_report_type=resolved_report_type,
+            resolved_report_definition=resolved_report_definition,
+            slide_keys=final_slide_keys,
+        )
+    except Exception as exc:
+        _mark_report_generation_failed(
+            db,
+            report,
+            selected_sources=selected_sources,
+            resolved_report_type=resolved_report_type,
+            resolved_report_definition=resolved_report_definition,
+            slide_keys=final_slide_keys,
+            error_code="report_blocks_persistence_failed",
+            exc=exc,
+        )
+        raise _generation_failure_http_error(exc)
+    logger.info(
+        "report_generation_completed",
+        extra={
+            "report_id": report.id,
+            "workspace_id": report.workspace_id,
+            "dataset_id": dataset.id,
+            "selected_sources": selected_sources,
+            "resolved_report_type": resolved_report_type,
+            "resolved_report_definition": resolved_report_definition,
+            "slide_keys": final_slide_keys,
+            "generation_status": "completed",
+        },
+    )
     try:
         _generate_and_store_report_thumbnail(
             db=db,
@@ -23880,11 +25442,13 @@ def list_reports(
                 continue
             if channel_filter and metadata_channel != channel_filter:
                 continue
+            explicit_status = _report_status(report)
+            fallback_status = "completed" if version_counts.get(report.id, 0) > 0 else "pending"
             response.append(
                 ReportListItemOut(
                     id=report.id,
                     name=report.name,
-                    status="completed" if version_counts.get(report.id, 0) > 0 else "pending",
+                    status=explicit_status or fallback_status,
                     folder_id=report.folder_id,
                     folder_name=report.folder_name,
                     integration_metadata=integration_metadata,
@@ -29303,6 +30867,12 @@ def _run_instagram_business_login_sync(
     metrics_failed: list[str] = []
 
     for metric_name in requested_metrics:
+        logged_graph_endpoint = f"/{_mask_instagram_business_login_user_id(instagram_user_id)}/insights"
+        request_config = _instagram_business_login_metric_request_config(metric_name)
+        request_period = request_config["period"] or "day"
+        request_metric_type = request_config["metric_type"]
+        request_breakdown = request_config["breakdown"]
+        request_timeframe = request_config["timeframe"]
         logger.info(
             "INSTAGRAM_BUSINESS_LOGIN_INSIGHTS_REQUEST %s",
             json.dumps(
@@ -29317,8 +30887,11 @@ def _run_instagram_business_login_sync(
                     "integration_id": integration.id,
                     "instagram_user_id": _mask_instagram_business_login_user_id(instagram_user_id),
                     "metric": metric_name,
-                    "endpoint": f"/{instagram_user_id}/insights",
-                    "period": "day",
+                    "endpoint": logged_graph_endpoint,
+                    "period": request_period,
+                    "metric_type": request_metric_type,
+                    "breakdown": request_breakdown,
+                    "timeframe": request_timeframe,
                     "since": timeframe_config["since"],
                     "until": timeframe_config["until"],
                 },
@@ -29334,7 +30907,10 @@ def _run_instagram_business_login_sync(
                 metric_name=metric_name,
                 since=timeframe_config["since"],
                 until=timeframe_config["until"],
-                period="day",
+                period=request_period,
+                metric_type=request_metric_type,
+                breakdown=request_breakdown,
+                timeframe=request_timeframe,
             )
         except requests.RequestException as exc:
             insight_payload = {
@@ -29343,49 +30919,83 @@ def _run_instagram_business_login_sync(
                 "error": {"message": str(exc)},
             }
         status_code = insight_payload.get("_instagram_http_status_code")
-        data = insight_payload.get("data")
-        is_success = status_code == 200
-        if is_success:
+        metric_result = _normalize_instagram_business_login_insight_payload(
+            insight_payload,
+            metric_name=metric_name,
+        )
+        is_http_success = status_code == 200
+        if is_http_success:
             metrics_successful.append(metric_name)
         else:
             metrics_failed.append(metric_name)
-        metric_row = data[0] if isinstance(data, list) and data else {}
-        values = metric_row.get("values") if isinstance(metric_row, dict) else []
-        metric_total_value, metric_latest_value, metric_end_time, normalized_series, raw_values = (
-            _normalize_instagram_insight_series(values if isinstance(values, list) else [])
-        )
-        metric_dataset_value = (
-            metric_latest_value
-            if metric_name in {"follower_count", "online_followers"}
-            else metric_total_value
-        )
-        normalized_metrics[metric_name] = metric_dataset_value if is_success else None
-        metric_series[metric_name] = normalized_series if is_success else []
-        if not is_success:
-            error_payload = insight_payload.get("error") if isinstance(insight_payload.get("error"), dict) else {}
-            unavailable_metrics[metric_name] = str(
-                error_payload.get("message")
-                or insight_payload.get("_instagram_raw_body")
-                or "metric_unavailable"
-            )
-        elif metric_dataset_value is None:
-            unavailable_metrics[metric_name] = "empty_response"
+        metric_dataset_value = metric_result.get("value")
+        normalized_series = metric_result.get("series") if isinstance(metric_result.get("series"), list) else []
+        raw_values = metric_result.get("raw_values") if isinstance(metric_result.get("raw_values"), list) else []
+        metric_latest_value = metric_result.get("latest_value")
+        metric_end_time = metric_result.get("end_time")
+        normalized_metrics[metric_name] = metric_dataset_value
+        metric_series[metric_name] = normalized_series
+        if metric_result.get("availability") != "available":
+            unavailable_metrics[metric_name] = str(metric_result.get("unavailable_reason") or "metric_unavailable")
         metric_audit[metric_name] = {
             "metric_name_requested": metric_name,
             "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
             "graph_endpoint": f"/{instagram_user_id}/insights",
             "permission": "instagram_business_manage_insights",
-            "period": "day",
+            "period": request_period,
+            "metric_type": request_metric_type,
+            "breakdown": request_breakdown,
+            "timeframe": request_timeframe,
             "since": timeframe_config["since"],
             "until": timeframe_config["until"],
             "status_code": status_code,
+            "response_shape": metric_result.get("response_shape"),
+            "data_rows": metric_result.get("data_rows"),
+            "has_total_value": metric_result.get("has_total_value"),
+            "has_values": metric_result.get("has_values"),
+            "values_count": metric_result.get("values_count"),
+            "availability": metric_result.get("availability"),
             "raw_values": raw_values,
-            "sum_value": metric_total_value if is_success else None,
-            "dataset_value": metric_dataset_value if is_success else None,
-            "latest_value": metric_latest_value if is_success else None,
-            "end_time": metric_end_time if is_success else None,
+            "raw_total_value": metric_result.get("raw_total_value"),
+            "sum_value": metric_dataset_value if metric_result.get("availability") == "available" else None,
+            "dataset_value": metric_dataset_value if metric_result.get("availability") == "available" else None,
+            "latest_value": metric_latest_value if metric_result.get("availability") == "available" else None,
+            "end_time": metric_end_time if metric_result.get("availability") == "available" else None,
             "error": unavailable_metrics.get(metric_name),
         }
+        logger.info(
+            "INSTAGRAM_INSIGHT_RESPONSE %s",
+            json.dumps(
+                {
+                    "route": route_name,
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                    "host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                    "permission": "instagram_business_manage_insights",
+                    "workspace_id": integration.workspace_id,
+                    "integration_id": integration.id,
+                    "instagram_user_id": _mask_instagram_business_login_user_id(instagram_user_id),
+                    "metric": metric_name,
+                    "status_code": status_code,
+                    "metric_type": request_metric_type,
+                    "period": request_period,
+                    "breakdown": request_breakdown,
+                    "timeframe": request_timeframe,
+                    "since": timeframe_config["since"],
+                    "until": timeframe_config["until"],
+                    "data_rows": metric_result.get("data_rows"),
+                    "response_shape": metric_result.get("response_shape"),
+                    "has_total_value": metric_result.get("has_total_value"),
+                    "has_values": metric_result.get("has_values"),
+                    "values_count": metric_result.get("values_count"),
+                    "availability": metric_result.get("availability"),
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
         logger.info(
             "INSTAGRAM_BUSINESS_LOGIN_INSIGHTS_RESPONSE %s",
             json.dumps(
@@ -29401,9 +31011,16 @@ def _run_instagram_business_login_sync(
                     "instagram_user_id": _mask_instagram_business_login_user_id(instagram_user_id),
                     "metric": metric_name,
                     "status_code": status_code,
-                    "success": is_success,
-                    "data_rows": len(data) if isinstance(data, list) else 0,
-                    "raw_body": insight_payload.get("_instagram_raw_body"),
+                    "success": is_http_success,
+                    "metric_type": request_metric_type,
+                    "period": request_period,
+                    "since": timeframe_config["since"],
+                    "until": timeframe_config["until"],
+                    "data_rows": metric_result.get("data_rows"),
+                    "response_shape": metric_result.get("response_shape"),
+                    "has_total_value": metric_result.get("has_total_value"),
+                    "has_values": metric_result.get("has_values"),
+                    "availability": metric_result.get("availability"),
                 },
                 ensure_ascii=False,
                 default=str,
@@ -29412,22 +31029,25 @@ def _run_instagram_business_login_sync(
         )
 
     reach_daily = metric_series.get("reach") or []
-    impressions_daily = metric_series.get("impressions") or []
+    impressions_daily: list[dict[str, int | str | None]] = []
     views_daily = metric_series.get("views") or []
-    profile_views_daily = metric_series.get("profile_views") or []
-    website_clicks_daily = metric_series.get("website_clicks") or []
+    profile_views_daily: list[dict[str, int | str | None]] = []
+    website_clicks_daily: list[dict[str, int | str | None]] = []
+    profile_links_taps_daily = metric_series.get("profile_links_taps") or []
     daily_engagement = (
         metric_series.get("total_interactions")
         or metric_series.get("accounts_engaged")
         or []
     )
-    followers_growth_daily = metric_series.get("follower_count") or []
-    followers_count = _first_non_none(profile_followers_count, normalized_metrics.get("follower_count"))
+    followers_growth_daily: list[dict[str, int | str | None]] = []
+    followers_count = profile_followers_count
     media_count = profile_media_count
     views_total = normalized_metrics.get("views")
-    impressions_total = normalized_metrics.get("impressions")
-    profile_views_total = normalized_metrics.get("profile_views")
-    website_clicks_total = normalized_metrics.get("website_clicks")
+    impressions_total: int | None = None
+    profile_views_total: int | None = None
+    website_clicks_total: int | None = None
+    profile_links_taps_total = normalized_metrics.get("profile_links_taps")
+    follows_and_unfollows_total = normalized_metrics.get("follows_and_unfollows")
     component_interactions_total = _sum_instagram_business_login_values(
         normalized_metrics.get("likes"),
         normalized_metrics.get("comments"),
@@ -29489,6 +31109,8 @@ def _run_instagram_business_login_sync(
             "content_interactions",
             "website_clicks",
             "profile_views",
+            "profile_links_taps",
+            "follows_and_unfollows",
             "daily_trend",
             "timeframe_preset",
             "timeframe_since",
@@ -29517,6 +31139,8 @@ def _run_instagram_business_login_sync(
             "content_interactions": component_interactions_total,
             "website_clicks": website_clicks_total,
             "profile_views": profile_views_total,
+            "profile_links_taps": profile_links_taps_total,
+            "follows_and_unfollows": follows_and_unfollows_total,
             "daily_trend": json.dumps(reach_daily),
             "timeframe_preset": timeframe_config["preset"],
             "timeframe_since": timeframe_config["since"],
@@ -29562,6 +31186,10 @@ def _run_instagram_business_login_sync(
         "views": views_total,
         "profile_views": profile_views_total,
         "profile_visits": profile_views_total,
+        "profile_links_taps": profile_links_taps_total,
+        "profile_activity": profile_links_taps_total,
+        "profile_taps": profile_links_taps_total,
+        "follows_and_unfollows": follows_and_unfollows_total,
         "engagement": engagement_total,
         "engagement_total": engagement_total,
         "engagement_source_metric": engagement_source_metric,
@@ -29574,7 +31202,7 @@ def _run_instagram_business_login_sync(
         "saves": normalized_metrics.get("saves"),
         "replies": normalized_metrics.get("replies"),
         "website_clicks": website_clicks_total,
-        "link_clicks": website_clicks_total,
+        "link_clicks": profile_links_taps_total,
         "followers_growth": None,
         "daily_trend": reach_daily,
         "daily_engagement": daily_engagement,
@@ -29644,9 +31272,9 @@ def _run_instagram_business_login_sync(
             ),
             "link_clicks": _build_meta_report_metric_entry(
                 facebook_ui_target_label="Clics en el enlace",
-                source_metric_name="website_clicks" if website_clicks_total is not None else None,
-                total=website_clicks_total,
-                daily_series=website_clicks_daily,
+                source_metric_name="profile_links_taps" if profile_links_taps_total is not None else None,
+                total=profile_links_taps_total,
+                daily_series=profile_links_taps_daily,
                 timeframe_since=timeframe_config["since"],
                 timeframe_until=timeframe_config["until"],
             ),
@@ -29660,8 +31288,8 @@ def _run_instagram_business_login_sync(
             ),
             "followers_growth": _build_meta_report_metric_entry(
                 facebook_ui_target_label="Seguidores",
-                source_metric_name="follower_count" if normalized_metrics.get("follower_count") is not None else None,
-                total=normalized_metrics.get("follower_count"),
+                source_metric_name="followers_count" if followers_count is not None else None,
+                total=followers_count,
                 daily_series=followers_growth_daily,
                 timeframe_since=timeframe_config["since"],
                 timeframe_until=timeframe_config["until"],
@@ -29684,12 +31312,16 @@ def _run_instagram_business_login_sync(
             "shares_total": normalized_metrics.get("shares"),
             "saves_total": normalized_metrics.get("saves"),
             "replies_total": normalized_metrics.get("replies"),
-            "link_clicks_total": website_clicks_total,
-            "link_clicks_daily": website_clicks_daily,
+            "profile_links_taps_total": profile_links_taps_total,
+            "profile_taps_total": profile_links_taps_total,
+            "profile_activity_total": profile_links_taps_total,
+            "follows_and_unfollows_total": follows_and_unfollows_total,
+            "link_clicks_total": profile_links_taps_total,
+            "link_clicks_daily": profile_links_taps_daily,
             "page_visits_total": profile_views_total,
             "page_visits_daily": profile_views_daily,
             "followers_total": followers_count,
-            "followers_growth_total": normalized_metrics.get("follower_count"),
+            "followers_growth_total": followers_count,
             "followers_growth_daily": followers_growth_daily,
             "posts_analyzed_count": posts_analyzed_count,
             "top_content": top_content,
