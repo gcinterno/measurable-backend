@@ -9,6 +9,10 @@ from app.report_recipes import (
     FACEBOOK_PAGES_5_RECIPE,
     FACEBOOK_PAGES_5_RECIPE_ID,
     FACEBOOK_PAGES_PLATFORM,
+    INSTAGRAM_BUSINESS_5_RECIPE,
+    INSTAGRAM_BUSINESS_5_RECIPE_ID,
+    INSTAGRAM_BUSINESS_5_SEMANTIC_NAMES,
+    INSTAGRAM_BUSINESS_PLATFORM,
     MULTI_SOURCE_PLATFORM,
     REPORT_RECIPES,
     ReportRecipe,
@@ -58,10 +62,26 @@ def test_facebook_instagram_10_recipe_is_canonical() -> None:
     validate_facebook_instagram_10_recipe(recipe)
 
 
+def test_instagram_business_5_recipe_is_canonical() -> None:
+    recipe = get_report_recipe(INSTAGRAM_BUSINESS_5_RECIPE_ID)
+
+    assert recipe is INSTAGRAM_BUSINESS_5_RECIPE
+    assert recipe.id == "instagram_business_5"
+    assert recipe.platform == "instagram_business"
+    assert recipe.name == "Instagram Business · 5 Slides"
+    assert recipe.version == 1
+    assert len(recipe.slides) == 5
+    assert [slide.order for slide in recipe.slides] == [1, 2, 3, 4, 5]
+    assert [slide.semantic_name for slide in recipe.slides] == list(INSTAGRAM_BUSINESS_5_SEMANTIC_NAMES)
+    assert not hasattr(recipe, "slide_count")
+    assert all(not hasattr(slide, "kind") for slide in recipe.slides)
+
+
 def test_list_report_recipes_is_deterministic() -> None:
     assert list_report_recipes() == (
         FACEBOOK_INSTAGRAM_10_RECIPE,
         FACEBOOK_PAGES_5_RECIPE,
+        INSTAGRAM_BUSINESS_5_RECIPE,
     )
 
 
@@ -76,7 +96,9 @@ def test_get_report_recipes_for_platform_filters_catalog() -> None:
     assert get_report_recipes_for_platform(MULTI_SOURCE_PLATFORM) == (
         FACEBOOK_INSTAGRAM_10_RECIPE,
     )
-    assert get_report_recipes_for_platform("instagram_business") == ()
+    assert get_report_recipes_for_platform(INSTAGRAM_BUSINESS_PLATFORM) == (
+        INSTAGRAM_BUSINESS_5_RECIPE,
+    )
 
 
 def test_report_recipes_catalog_is_read_only() -> None:

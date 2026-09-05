@@ -659,6 +659,10 @@ def test_canonical_multi_source_report_uses_catalog_aligned_recipe_builder_by_de
     assert recipe_response.json()["integration_metadata"]["source_name"] == "Facebook + Instagram"
     assert recipe_response.json()["report_sources"][0]["provider"] == "meta"
     assert recipe_response.json()["report_sources"][1]["provider"] == "instagram_business_login"
+    assert [source["source_type"] for source in recipe_response.json()["report_sources"]] == [
+        "facebook_pages",
+        "instagram_business",
+    ]
     recipe_block_specs = _persisted_block_specs(recipe_response.json()["id"])
     recipe_payloads = _block_payloads(recipe_block_specs)
     assert len(recipe_block_specs) == 10

@@ -268,10 +268,40 @@ def test_official_facebook_pages_5_path_uses_controlled_selector(monkeypatch: py
     assert calls == [context]
 
 
+def test_official_instagram_business_5_path_uses_instagram_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = [{"type": "official", "order": 1, "data_json": "{}", "editable_fields_json": "[]"}]
+    calls: list[dict[str, Any]] = []
+
+    def fake_instagram_business_5_builder(context: dict[str, Any]) -> list[dict[str, Any]]:
+        calls.append(context)
+        return expected
+
+    def fail_facebook_pages_5_builder(context: dict[str, Any]) -> list[dict[str, Any]]:
+        raise AssertionError("Facebook Pages 5 Recipe builder should not run")
+
+    def fail_generic_builder(requested_slides: int, context: dict[str, Any]) -> list[dict[str, Any]]:
+        raise AssertionError("Generic build_blocks should not run for Instagram Business 5")
+
+    context = _base_context(integration_type="instagram_business")
+    monkeypatch.setattr(main_module, "build_instagram_business_5_blocks", fake_instagram_business_5_builder)
+    monkeypatch.setattr(main_module, "build_facebook_pages_5_blocks", fail_facebook_pages_5_builder)
+    monkeypatch.setattr(main_module, "build_blocks", fail_generic_builder)
+
+    blocks, used_recipe_path = main_module._build_meta_dataset_report_blocks(
+        report_source="instagram_business_v1",
+        report_inputs={"integration_type": "instagram_business"},
+        slide_limits=_slide_limits(),
+        block_build_context=context,
+    )
+
+    assert blocks == expected
+    assert used_recipe_path is False
+    assert calls == [context]
+
+
 @pytest.mark.parametrize(
     ("report_source", "integration_type"),
     [
-        ("meta_pages_v2", "instagram_business"),
         ("meta_ads", "meta_ads"),
         ("multi_source_v1", "facebook_pages"),
         ("legacy", "facebook_pages"),

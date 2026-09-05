@@ -34,6 +34,7 @@ from app.models import (
     ReferralConversion,
     Report,
     ReportBlock,
+    ReportSource,
     ReportVersion,
     Subscription,
     User,
@@ -65,6 +66,7 @@ REPORT_TABLES = [
     UserAttribution.__table__,
     ReferralConversion.__table__,
     Report.__table__,
+    ReportSource.__table__,
     ReportVersion.__table__,
     ReportBlock.__table__,
 ]
@@ -670,6 +672,39 @@ def _report_block_payloads(report_id: int) -> list[dict]:
         db.close()
 
 
+def _report_sources(report_id: int) -> list[dict]:
+    db = SessionLocal()
+    try:
+        sources = (
+            db.query(ReportSource)
+            .filter(ReportSource.report_id == report_id)
+            .order_by(ReportSource.position.asc(), ReportSource.id.asc())
+            .all()
+        )
+        return [
+            {
+                "provider": source.provider,
+                "source_type": source.source_type,
+                "integration_id": source.integration_id,
+                "integration_account_id": source.integration_account_id,
+                "dataset_id": source.dataset_id,
+            }
+            for source in sources
+        ]
+    finally:
+        db.close()
+
+
+def _report_description(report_id: int) -> dict:
+    db = SessionLocal()
+    try:
+        report = db.get(Report, report_id)
+        assert report is not None
+        return json.loads(report.description or "{}")
+    finally:
+        db.close()
+
+
 def test_instagram_business_report_succeeds_when_attribution_tables_are_missing(client):
     refs = _seed_report_dataset(integration_type="instagram_business")
     _drop_optional_referral_tables()
@@ -691,8 +726,63 @@ def test_instagram_business_report_succeeds_when_attribution_tables_are_missing(
     assert payload["dataset_id"] == refs["dataset_id"]
     assert payload["version"] == 1
     blocks = _report_block_payloads(payload["report_id"])
-    assert [block.get("title") for block in blocks] == [f"Slide {index}" for index in range(1, 6)]
+    assert [block.get("semantic_name") for block in blocks] == [
+        "cover",
+        "instagram_reach",
+        "instagram_views",
+        "instagram_engagement",
+        "instagram_summary",
+    ]
+    assert "Facebook Pages" not in json.dumps(blocks)
+    assert "Organic Visibility" not in json.dumps(blocks)
+    assert "Page Views" not in json.dumps(blocks)
     assert "meta_ads_spend_delivery" not in json.dumps(blocks)
+    report_sources = _report_sources(payload["report_id"])
+    assert [source["source_type"] for source in report_sources] == ["instagram_business"]
+    description = _report_description(payload["report_id"])
+    assert description["sources"] == ["instagram_business"]
+    assert description["report_type"] == "instagram_business"
+    assert description["resolved_report_definition"] == "instagram_business_5"
+    assert description["report_status"] == "completed"
+
+
+def test_instagram_business_report_exception_marks_report_failed(client, monkeypatch):
+    refs = _seed_report_dataset(integration_type="instagram_business")
+
+    def fail_persist_report_block_specs(*_args, **_kwargs):
+        raise RuntimeError("forced persistence failure")
+
+    monkeypatch.setattr(main_module, "_persist_report_block_specs", fail_persist_report_block_specs)
+
+    response = client.post(
+        "/reports/instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "dataset_id": refs["dataset_id"],
+            "title": "Instagram Report",
+            "locale": "en",
+            "requested_slides": 5,
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "code": "report_generation_failed",
+        "message": "Report generation failed.",
+    }
+    db = SessionLocal()
+    try:
+        report = db.query(Report).order_by(Report.id.desc()).first()
+        assert report is not None
+        description = json.loads(report.description or "{}")
+        assert description["report_status"] == "failed"
+        assert description["generation_status"] == "failed"
+        assert description["sources"] == ["instagram_business"]
+        assert description["report_type"] == "instagram_business"
+        assert description["generation_error"]["code"] == "report_blocks_persistence_failed"
+        assert description["report_status"] != "processing"
+    finally:
+        db.close()
 
 
 @pytest.mark.parametrize(
@@ -724,8 +814,16 @@ def test_instagram_business_report_resolves_suite_child_and_legacy_integration_i
     assert payload["dataset_id"] == refs["dataset_id"]
     assert payload["version"] == 1
     blocks = _report_block_payloads(payload["report_id"])
-    assert [block.get("title") for block in blocks] == [f"Slide {index}" for index in range(1, 6)]
+    assert [block.get("semantic_name") for block in blocks] == [
+        "cover",
+        "instagram_reach",
+        "instagram_views",
+        "instagram_engagement",
+        "instagram_summary",
+    ]
     assert "meta_ads_spend_delivery" not in json.dumps(blocks)
+    report_sources = _report_sources(payload["report_id"])
+    assert [source["source_type"] for source in report_sources] == ["instagram_business"]
 
 
 def test_instagram_business_report_resolves_account_id_aliases_from_suite_assets(client):

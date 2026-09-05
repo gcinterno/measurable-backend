@@ -70,14 +70,30 @@ def _assert_facebook_instagram_10_recipe(payload: dict) -> None:
     ]
 
 
+def _assert_instagram_business_5_recipe(payload: dict) -> None:
+    assert payload["id"] == "instagram_business_5"
+    assert payload["platform"] == "instagram_business"
+    assert payload["name"] == "Instagram Business · 5 Slides"
+    assert payload["version"] == 1
+    assert payload["slide_count"] == 5
+    assert payload["slides"] == [
+        {"order": 1, "semantic_name": "cover"},
+        {"order": 2, "semantic_name": "instagram_reach"},
+        {"order": 3, "semantic_name": "instagram_views"},
+        {"order": 4, "semantic_name": "instagram_engagement"},
+        {"order": 5, "semantic_name": "instagram_summary"},
+    ]
+
+
 def test_report_recipe_catalog_lists_registered_recipes(client: TestClient) -> None:
     response = client.get("/report-recipes")
 
     assert response.status_code == 200
     payload = response.json()
-    assert len(payload) == 2
+    assert len(payload) == 3
     _assert_facebook_instagram_10_recipe(payload[0])
     _assert_facebook_pages_5_recipe(payload[1])
+    _assert_instagram_business_5_recipe(payload[2])
 
 
 def test_report_recipe_catalog_supports_platform_filter(client: TestClient) -> None:
@@ -94,9 +110,11 @@ def test_report_recipe_catalog_supports_platform_filter(client: TestClient) -> N
     assert len(multi_source_payload) == 1
     _assert_facebook_instagram_10_recipe(multi_source_payload[0])
 
-    empty_response = client.get("/report-recipes", params={"platform": "instagram_business"})
-    assert empty_response.status_code == 200
-    assert empty_response.json() == []
+    instagram_response = client.get("/report-recipes", params={"platform": "instagram_business"})
+    assert instagram_response.status_code == 200
+    instagram_payload = instagram_response.json()
+    assert len(instagram_payload) == 1
+    _assert_instagram_business_5_recipe(instagram_payload[0])
 
 
 def test_report_recipe_catalog_returns_existing_recipe(client: TestClient) -> None:
@@ -111,6 +129,13 @@ def test_report_recipe_catalog_returns_facebook_instagram_recipe(client: TestCli
 
     assert response.status_code == 200
     _assert_facebook_instagram_10_recipe(response.json())
+
+
+def test_report_recipe_catalog_returns_instagram_business_recipe(client: TestClient) -> None:
+    response = client.get("/report-recipes/instagram_business_5")
+
+    assert response.status_code == 200
+    _assert_instagram_business_5_recipe(response.json())
 
 
 def test_report_recipe_catalog_returns_404_for_unknown_recipe(client: TestClient) -> None:

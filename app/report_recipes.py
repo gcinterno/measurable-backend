@@ -7,8 +7,18 @@ from typing import Mapping
 
 FACEBOOK_PAGES_5_RECIPE_ID = "facebook_pages_5"
 FACEBOOK_PAGES_PLATFORM = "facebook_pages"
+INSTAGRAM_BUSINESS_5_RECIPE_ID = "instagram_business_5"
+INSTAGRAM_BUSINESS_PLATFORM = "instagram_business"
 FACEBOOK_INSTAGRAM_10_RECIPE_ID = "facebook_instagram_10"
 MULTI_SOURCE_PLATFORM = "multi_source"
+
+INSTAGRAM_BUSINESS_5_SEMANTIC_NAMES: tuple[str, ...] = (
+    "cover",
+    "instagram_reach",
+    "instagram_views",
+    "instagram_engagement",
+    "instagram_summary",
+)
 
 FACEBOOK_INSTAGRAM_10_SEMANTIC_NAMES: tuple[str, ...] = (
     "cover",
@@ -58,6 +68,17 @@ FACEBOOK_PAGES_5_RECIPE = ReportRecipe(
     ),
 )
 
+INSTAGRAM_BUSINESS_5_RECIPE = ReportRecipe(
+    id=INSTAGRAM_BUSINESS_5_RECIPE_ID,
+    platform=INSTAGRAM_BUSINESS_PLATFORM,
+    name="Instagram Business · 5 Slides",
+    version=1,
+    slides=tuple(
+        ReportRecipeSlide(order=index, semantic_name=semantic_name)
+        for index, semantic_name in enumerate(INSTAGRAM_BUSINESS_5_SEMANTIC_NAMES, start=1)
+    ),
+)
+
 FACEBOOK_INSTAGRAM_10_RECIPE = ReportRecipe(
     id=FACEBOOK_INSTAGRAM_10_RECIPE_ID,
     platform=MULTI_SOURCE_PLATFORM,
@@ -72,6 +93,7 @@ FACEBOOK_INSTAGRAM_10_RECIPE = ReportRecipe(
 _REGISTERED_REPORT_RECIPES: tuple[ReportRecipe, ...] = (
     FACEBOOK_INSTAGRAM_10_RECIPE,
     FACEBOOK_PAGES_5_RECIPE,
+    INSTAGRAM_BUSINESS_5_RECIPE,
 )
 
 
@@ -185,6 +207,10 @@ __all__ = [
     "FACEBOOK_PAGES_5_RECIPE",
     "FACEBOOK_PAGES_5_RECIPE_ID",
     "FACEBOOK_PAGES_PLATFORM",
+    "INSTAGRAM_BUSINESS_5_RECIPE",
+    "INSTAGRAM_BUSINESS_5_RECIPE_ID",
+    "INSTAGRAM_BUSINESS_5_SEMANTIC_NAMES",
+    "INSTAGRAM_BUSINESS_PLATFORM",
     "MULTI_SOURCE_PLATFORM",
     "REPORT_RECIPES",
     "ReportRecipe",

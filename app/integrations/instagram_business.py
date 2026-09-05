@@ -396,6 +396,9 @@ def fetch_instagram_business_login_insights_metric_with_metadata(
     since: str | None = None,
     until: str | None = None,
     period: str = "day",
+    metric_type: str | None = None,
+    breakdown: str | None = None,
+    timeframe: str | None = None,
 ) -> dict[str, Any]:
     _require_instagram_business_login_config()
     version = str(settings.instagram_graph_api_version or "").strip().strip("/")
@@ -406,6 +409,12 @@ def fetch_instagram_business_login_insights_metric_with_metadata(
         "metric": metric_name,
         "period": period,
     }
+    if metric_type:
+        params["metric_type"] = str(metric_type)
+    if breakdown:
+        params["breakdown"] = str(breakdown)
+    if timeframe:
+        params["timeframe"] = str(timeframe)
     if since:
         params["since"] = str(since)
     if until:
@@ -424,6 +433,9 @@ def fetch_instagram_business_login_insights_metric_with_metadata(
     response_payload["_instagram_graph_endpoint"] = f"/{instagram_user_id}/insights"
     response_payload["_instagram_metric_name"] = metric_name
     response_payload["_instagram_period"] = period
+    response_payload["_instagram_metric_type"] = metric_type
+    response_payload["_instagram_breakdown"] = breakdown
+    response_payload["_instagram_timeframe"] = timeframe
     return response_payload
 
 
