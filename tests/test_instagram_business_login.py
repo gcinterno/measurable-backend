@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 
@@ -32,6 +33,9 @@ from app.models import (
     IntegrationAccount,
     IntegrationToken,
     MetaPage,
+    Report,
+    ReportSource,
+    ReportVersion,
     Subscription,
     User,
     Workspace,
@@ -57,7 +61,24 @@ INSTAGRAM_LOGIN_TABLES = [
     MetaPage.__table__,
     Dataset.__table__,
     DatasetFile.__table__,
+    Report.__table__,
+    ReportVersion.__table__,
+    ReportSource.__table__,
 ]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def enforce_sqlite_foreign_keys():
+    def _enable_foreign_keys(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    event.listen(engine, "connect", _enable_foreign_keys)
+    engine.dispose()
+    yield
+    engine.dispose()
+    event.remove(engine, "connect", _enable_foreign_keys)
 
 
 @pytest.fixture(autouse=True)
@@ -327,7 +348,7 @@ def test_instagram_business_login_disconnect_clears_token_and_cached_account(cli
     assert payload["status"] == "disconnected"
     assert payload["integration_id"] == refs["integration_id"]
     assert payload["cleared_accounts"] == 1
-    assert payload["cleared_integration_accounts"] == 2
+    assert payload["cleared_integration_accounts"] == 0
     assert payload["cleared_tokens"] == 1
     assert payload["token_cleared"] is True
 
@@ -346,11 +367,26 @@ def test_instagram_business_login_disconnect_clears_token_and_cached_account(cli
         integration = db.get(Integration, int(refs["integration_id"]))
         assert integration is not None
         assert integration.status == "disconnected"
-        assert db.query(IntegrationAccount).filter(IntegrationAccount.integration_id == integration.id).count() == 0
+        assert db.query(IntegrationAccount).filter(IntegrationAccount.integration_id == integration.id).count() == 2
         assert db.query(IntegrationToken).count() == 0
         assert db.query(MetaPage).filter(MetaPage.integration_id == integration.id).count() == 0
     finally:
         db.close()
+
+    repeated_response = client.delete(
+        "/integrations/instagram-business-login/disconnect",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert repeated_response.status_code == 200
+    repeated_payload = repeated_response.json()
+    assert repeated_payload["success"] is True
+    assert repeated_payload["status"] == "disconnected"
+    assert repeated_payload["cleared_accounts"] == 0
+    assert repeated_payload["cleared_integration_accounts"] == 0
+    assert repeated_payload["cleared_tokens"] == 0
+    assert repeated_payload["token_cleared"] is False
 
 
 def test_instagram_business_login_disconnect_is_idempotent_without_existing_integration(client):
@@ -370,6 +406,158 @@ def test_instagram_business_login_disconnect_is_idempotent_without_existing_inte
     assert payload["integration_id"] is None
     assert payload["cleared_accounts"] == 0
     assert payload["cleared_tokens"] == 0
+
+
+def test_instagram_business_login_disconnect_preserves_report_source_and_reconnects(client, monkeypatch):
+    refs = _seed_connected_instagram_login()
+    db = SessionLocal()
+    try:
+        account = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == int(refs["integration_id"]),
+                IntegrationAccount.external_account_id == refs["instagram_account_id"],
+            )
+            .one()
+        )
+        dataset = Dataset(
+            workspace_id=int(refs["workspace_id"]),
+            name="Historical Instagram dataset",
+            description="Historical report data",
+            data={"provider": "instagram_business_login", "reach": 123},
+        )
+        db.add(dataset)
+        db.flush()
+        report = Report(
+            workspace_id=int(refs["workspace_id"]),
+            dataset_id=dataset.id,
+            name="Historical Instagram report",
+            description=json.dumps({"report_status": "complete"}),
+        )
+        db.add(report)
+        db.flush()
+        report_source = ReportSource(
+            report_id=report.id,
+            workspace_id=int(refs["workspace_id"]),
+            provider="instagram_business_login",
+            source_type="instagram_business",
+            integration_id=int(refs["integration_id"]),
+            integration_account_id=account.id,
+            dataset_id=dataset.id,
+            position=0,
+            label="IG Login Account",
+            config_json={"external_account_id": refs["instagram_account_id"]},
+        )
+        db.add(report_source)
+        db.add(ReportVersion(report_id=report.id, version=1))
+        db.commit()
+        historical_ids = {
+            "account_id": account.id,
+            "dataset_id": dataset.id,
+            "report_id": report.id,
+            "report_source_id": report_source.id,
+        }
+    finally:
+        db.close()
+
+    disconnect_response = client.delete(
+        "/integrations/instagram-business-login/disconnect",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert disconnect_response.status_code == 200
+    assert disconnect_response.json()["status"] == "disconnected"
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, int(refs["integration_id"]))
+        assert integration is not None
+        assert integration.status == "disconnected"
+        assert db.get(Report, historical_ids["report_id"]) is not None
+        assert db.get(Dataset, historical_ids["dataset_id"]) is not None
+        assert db.get(IntegrationAccount, historical_ids["account_id"]) is not None
+        report_source = db.get(ReportSource, historical_ids["report_source_id"])
+        assert report_source is not None
+        assert report_source.integration_id == int(refs["integration_id"])
+        assert report_source.integration_account_id == historical_ids["account_id"]
+    finally:
+        db.close()
+
+    report_response = client.get(
+        f"/reports/{historical_ids['report_id']}",
+        headers=_auth_headers(int(refs["user_id"])),
+    )
+    assert report_response.status_code == 200
+    assert report_response.json()["report_sources"][0]["integration_account_id"] == historical_ids["account_id"]
+
+    repeated_response = client.delete(
+        "/integrations/instagram-business-login/disconnect",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    assert repeated_response.status_code == 200
+    assert repeated_response.json()["status"] == "disconnected"
+
+    connect_response = client.get(
+        "/integrations/instagram-business-login/connect",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"], "reconnect": True},
+    )
+    assert connect_response.status_code == 200
+    assert connect_response.json()["integration_id"] == refs["integration_id"]
+    state = parse_qs(urlparse(connect_response.json()["auth_url"]).query)["state"][0]
+
+    monkeypatch.setattr(
+        main_module,
+        "exchange_instagram_business_login_code_for_token",
+        lambda _code: {
+            "access_token": "reconnected-ig-login-token",
+            "scope": "instagram_business_basic,instagram_business_manage_insights",
+            "_http_status_code": 200,
+        },
+    )
+    monkeypatch.setattr(
+        main_module,
+        "fetch_instagram_business_login_profile",
+        lambda _token: {
+            "id": refs["instagram_account_id"],
+            "username": "iglogin",
+            "account_type": "BUSINESS",
+            "name": "IG Login Account Reconnected",
+            "_http_status_code": 200,
+        },
+    )
+
+    callback_response = client.get(
+        "/integrations/instagram-business-login/callback",
+        params={"code": "reconnect-code", "state": state},
+    )
+    assert callback_response.status_code == 200
+    assert '"status": "connected"' in callback_response.text
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, int(refs["integration_id"]))
+        assert integration is not None
+        assert integration.status == "connected"
+        account = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id == refs["instagram_account_id"],
+            )
+            .one()
+        )
+        assert account.id == historical_ids["account_id"]
+        assert account.display_name == "IG Login Account Reconnected"
+        assert db.query(IntegrationAccount).filter(IntegrationAccount.integration_id == integration.id).count() == 2
+        assert db.query(IntegrationToken).count() == 1
+        report_source = db.get(ReportSource, historical_ids["report_source_id"])
+        assert report_source is not None
+        assert report_source.integration_account_id == account.id
+    finally:
+        db.close()
 
 
 def test_instagram_business_login_callback_saves_standalone_provider_and_token(client, monkeypatch):

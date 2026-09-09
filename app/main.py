@@ -30239,18 +30239,18 @@ def _disconnect_instagram_business_login_integration(
         .all()
     )
     integration_account_ids = [account.id for account in integration_accounts]
-    cleared_tokens = (
+    tokens = (
         db.query(IntegrationToken)
         .filter(IntegrationToken.account_id.in_(integration_account_ids))
-        .count()
+        .all()
         if integration_account_ids
-        else 0
+        else []
     )
 
+    for token in tokens:
+        db.delete(token)
     for record in meta_records:
         db.delete(record)
-    for account in integration_accounts:
-        db.delete(account)
     integration.status = "disconnected"
     db.add(integration)
     db.commit()
@@ -30264,8 +30264,9 @@ def _disconnect_instagram_business_login_integration(
                 "workspace_id": workspace_id or integration.workspace_id,
                 "integration_id": integration.id,
                 "cleared_accounts": len(meta_records),
-                "cleared_integration_accounts": len(integration_accounts),
-                "cleared_tokens": cleared_tokens,
+                "cleared_integration_accounts": 0,
+                "preserved_integration_accounts": len(integration_accounts),
+                "cleared_tokens": len(tokens),
             },
             ensure_ascii=False,
             default=str,
@@ -30275,9 +30276,9 @@ def _disconnect_instagram_business_login_integration(
     return InstagramBusinessLoginDisconnectOut(
         integration_id=integration.id,
         cleared_accounts=len(meta_records),
-        cleared_integration_accounts=len(integration_accounts),
-        cleared_tokens=cleared_tokens,
-        token_cleared=cleared_tokens > 0,
+        cleared_integration_accounts=0,
+        cleared_tokens=len(tokens),
+        token_cleared=bool(tokens),
     )
 
 
