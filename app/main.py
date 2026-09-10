@@ -163,6 +163,7 @@ from .report_recipes import (
     list_report_recipes,
 )
 from .report_templates import router as report_templates_router
+from .scheduled_reports import router as scheduled_reports_router
 from .report_generation import (
     ReportDraft, ExecutableReportConfiguration, GenerateReportCommand, GenerationError,
     GenerationOptions, GenerationResult, ReportingPeriod, SourceIdentity, generate_report, lock_generation_workspace,
@@ -2830,6 +2831,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(report_templates_router)
+app.include_router(scheduled_reports_router)
 
 
 @app.on_event("startup")
