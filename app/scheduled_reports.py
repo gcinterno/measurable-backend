@@ -7,7 +7,7 @@ import json
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -525,10 +525,29 @@ def list_scheduled_report_runs(schedule_id: int, workspace_id: int = Query(gt=0)
     _schedule(db, schedule_id, workspace_id)
     query = db.query(ScheduledReportRun).filter(ScheduledReportRun.schedule_id == schedule_id, ScheduledReportRun.workspace_id == workspace_id)
     rows = query.order_by(ScheduledReportRun.scheduled_for.desc(), ScheduledReportRun.id.desc()).offset(offset).limit(limit).all()
-    fields = ("id", "schedule_id", "workspace_id", "trigger_type", "timezone", "configuration_revision", "configuration_hash",
-              "idempotency_key", "status", "stage", "attempt_count", "report_id", "report_version_id", "error_code", "reporting_start_date", "reporting_end_date")
-    dates = ("scheduled_for", "reporting_period_start", "reporting_period_end", "retry_after", "started_at", "completed_at", "created_at")
-    # Raw provider error_detail is deliberately not serialized. Future workers must redact persisted diagnostics.
-    items = [{**{key: getattr(row, key) for key in fields}, **{key: _utc(getattr(row, key)) for key in dates},
-              "upgrade_required": row.status == "QUOTA_BLOCKED"} for row in rows]
+    from .scheduled_report_execution import run_output
+    items = [run_output(row) for row in rows]
     return {"items": items, "total": query.count(), "limit": limit, "offset": offset}
+
+
+@router.post("/{schedule_id}/run-now", status_code=202)
+def run_scheduled_report_now(schedule_id: int, response: Response, workspace_id: int = Query(gt=0),
+                             idempotency_key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200),
+                             current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Durably accept execution; the same worker pipeline handles manual and recurring runs."""
+    from .scheduled_report_execution import request_run_now, run_output, quota_state
+    require_workspace_access(db, current_user, workspace_id)
+    schedule = _schedule(db, schedule_id, workspace_id, lock=True)
+    try:
+        run, created = request_run_now(db, schedule, idempotency_key)
+        if created:
+            quota = quota_state(db, workspace_id)
+            if quota["capacity_remaining"] == 0:
+                run.status, run.error_code, run.failure_class = "QUOTA_BLOCKED", "monthly_report_limit_reached", "TERMINAL"
+                run.completed_at, run.quota_json = _now(), quota
+        _commit(db)
+        response.status_code = 403 if run.status == "QUOTA_BLOCKED" else 200 if run.status == "SUCCEEDED" else 202
+        return run_output(run)
+    except GenerationError as exc:
+        db.rollback()
+        raise http_error(exc.status_code, exc.code, str(exc)) from exc

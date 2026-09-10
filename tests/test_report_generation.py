@@ -600,6 +600,15 @@ def test_multi_source_manual_and_service_generation_have_identical_blocks(factor
         assert block_sets[0] == block_sets[1]
 
 
+def _downgrade_execution_for_ledger_migration(connection):
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    migration = runpy.run_path(str(Path(__file__).parents[1] / "alembic/versions/20260910_000032_scheduled_report_execution.py"))
+    with Operations.context(MigrationContext.configure(connection)):
+        migration["downgrade"]()
+
+
 def test_postgres_migration_preserves_historical_reports_and_usage(postgres_factory):
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
@@ -608,6 +617,7 @@ def test_postgres_migration_preserves_historical_reports_and_usage(postgres_fact
     migration = runpy.run_path(str(Path(__file__).parents[1] / "alembic/versions/20260909_000030_add_report_generations.py"))
     engine = postgres_factory.kw["bind"]
     with engine.begin() as connection:
+        _downgrade_execution_for_ledger_migration(connection)
         ReportGeneration.__table__.drop(connection)
         with Operations.context(MigrationContext.configure(connection)):
             migration["upgrade"]()
@@ -776,6 +786,7 @@ def test_postgres_migration_downgrade_is_guarded(postgres_factory):
     migration = runpy.run_path(str(Path(__file__).parents[1] / "alembic/versions/20260909_000030_add_report_generations.py"))
     engine = postgres_factory.kw["bind"]
     with engine.begin() as connection:
+        _downgrade_execution_for_ledger_migration(connection)
         ReportGeneration.__table__.drop(connection)
         with Operations.context(MigrationContext.configure(connection)):
             migration["upgrade"]()
@@ -799,6 +810,7 @@ def test_postgres_migration_backfill_100000_reports(postgres_factory, record_pro
     migration = runpy.run_path(str(Path(__file__).parents[1] / "alembic/versions/20260909_000030_add_report_generations.py"))
     engine = postgres_factory.kw["bind"]
     with engine.begin() as connection:
+        _downgrade_execution_for_ledger_migration(connection)
         connection.execute(text("INSERT INTO reports (workspace_id, dataset_id, name, description) SELECT :workspace, :dataset, 'Legacy ' || n, '{}' FROM generate_series(1, 100000) n"),
                            {"workspace": command.workspace_id, "dataset": command.sources[0].dataset_id})
         ReportGeneration.__table__.drop(connection)

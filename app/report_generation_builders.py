@@ -118,7 +118,7 @@ def validate_source_dataset_identity(source: SourceIdentity, dataset: Dataset, a
         aliases = providers._meta_ads_dataset_account_aliases(row)
         normalize = providers._normalize_meta_ad_account_id
     elif source.source_type in {"facebook_pages", "instagram_business"}:
-        normalize = providers._normalize_instagram_business_alias if source.source_type == "instagram_business" else lambda value: str(value or "").strip()
+        normalize = providers._normalize_instagram_business_alias if source.source_type == "instagram_business" else lambda value: str(value or "").strip().removeprefix(providers.META_PAGE_ACCOUNT_PREFIX)
         aliases = {normalize(value) for value in providers._single_source_external_account_candidates(source.source_type, row, None)}
     else:
         return
