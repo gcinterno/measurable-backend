@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import logging
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from sqlalchemy import event, func
@@ -376,7 +376,8 @@ def _persist_report_draft(db: Session, command: GenerateReportCommand, draft: Re
     return BuiltReport(report.id, version.id, draft.outcome)
 
 
-def _finalize_generation(db: Session, command: GenerateReportCommand, reservation: GenerationReservation, draft: ReportDraft) -> GenerationResult:
+def _finalize_generation(db: Session, command: GenerateReportCommand, reservation: GenerationReservation, draft: ReportDraft,
+                         ownership_guard: Callable[[Session], None] | None = None) -> GenerationResult:
     def reject_commit(_session: Session) -> None:
         raise GenerationError("generation_transaction_violation", "Only canonical generation may commit.", status_code=500)
 
@@ -394,6 +395,8 @@ def _finalize_generation(db: Session, command: GenerateReportCommand, reservatio
         now = _database_now(db)
         if generation.state != "reserved" or generation.attempt_token != reservation.attempt_token or _utc(generation.lease_expires_at) <= now:
             raise GenerationError("generation_reservation_lost", "Generation reservation expired or was superseded; retry with the same identity.", status_code=409)
+        if ownership_guard is not None:
+            ownership_guard(db)
         event.listen(db, "before_commit", reject_commit)
         event.listen(db, "after_flush", track_created_rows)
         guarded = True
@@ -429,7 +432,21 @@ def _finalize_generation(db: Session, command: GenerateReportCommand, reservatio
             event.remove(db, "after_flush", track_created_rows)
 
 
-def generate_report(db: Session, command: GenerateReportCommand) -> GenerationResult:
+def renew_generation_reservation(db: Session, reservation: GenerationReservation) -> None:
+    """Caller owns a short transaction; renewal cannot resurrect an expired attempt."""
+    lock_generation_workspace(db, reservation.workspace_id)
+    now = _database_now(db)
+    changed = db.query(ReportGeneration).filter(
+        ReportGeneration.id == reservation.generation_id, ReportGeneration.state == "reserved",
+        ReportGeneration.attempt_token == reservation.attempt_token, ReportGeneration.lease_expires_at > now,
+    ).update({"lease_expires_at": now + RESERVATION_TTL}, synchronize_session=False)
+    if changed != 1:
+        raise GenerationError("generation_reservation_lost", "Generation reservation is no longer owned.", status_code=409)
+
+
+def generate_report(db: Session, command: GenerateReportCommand, *,
+                    on_reserved: Callable[[GenerationReservation], None] | None = None,
+                    ownership_guard: Callable[[Session], None] | None = None) -> GenerationResult:
     """Reserve briefly, build without a Session, then atomically persist and consume.
 
     Callers must not have unrelated pending writes. In-flight retries return a retryable
@@ -441,11 +458,13 @@ def generate_report(db: Session, command: GenerateReportCommand) -> GenerationRe
     if isinstance(reservation, GenerationResult):
         return reservation
     try:
+        if on_reserved is not None:
+            on_reserved(reservation)
         prepared = prepare_report_inputs(db, command)
         db.rollback()
         draft = build_report(command, prepared)
         _validate_draft(command, draft)
-        return _finalize_generation(db, command, reservation, draft)
+        return _finalize_generation(db, command, reservation, draft, ownership_guard)
     except Exception as exc:
         _release_reservation(db, reservation, getattr(exc, "code", type(exc).__name__))
         raise

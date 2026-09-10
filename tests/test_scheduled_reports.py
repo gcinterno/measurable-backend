@@ -452,8 +452,8 @@ def test_changed_provider_identity_is_not_silently_reused(factory, client):
     assert response.json()["availability"]["execution_unavailable_reason"] == "source_identity_changed"
 
 
-def test_no_execution_or_run_now_route_registered():
-    assert not any("scheduled-reports" in route.path and any(word in route.path for word in ("run-now", "dispatch", "execute")) for route in main.app.routes)
+def test_dispatch_and_execution_are_not_public_routes():
+    assert not any("scheduled-reports" in route.path and any(word in route.path for word in ("dispatch", "execute")) for route in main.app.routes)
 
 
 @pytest.mark.parametrize("operation", ["resume", "edit"])

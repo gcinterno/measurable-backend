@@ -97,7 +97,8 @@ class ScheduledReportRun(Base):
     __table_args__ = (
         ForeignKeyConstraint(["schedule_id", "workspace_id", "configuration_revision", "configuration_hash"],
                              ["scheduled_report_revisions.schedule_id", "scheduled_report_revisions.workspace_id", "scheduled_report_revisions.revision", "scheduled_report_revisions.configuration_hash"], name="fk_scheduled_report_runs_revision"),
-        UniqueConstraint("schedule_id", "scheduled_for", name="uq_scheduled_report_run_occurrence"),
+        Index("uq_scheduled_report_run_occurrence", "schedule_id", "scheduled_for", unique=True,
+              postgresql_where=text("trigger_type = 'SCHEDULED'"), sqlite_where=text("trigger_type = 'SCHEDULED'")),
         UniqueConstraint("workspace_id", "idempotency_key", name="uq_scheduled_report_run_identity"),
         CheckConstraint("status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'QUOTA_BLOCKED', 'SKIPPED', 'CANCELLED')", name="ck_scheduled_report_run_status"),
         CheckConstraint("trigger_type IN ('SCHEDULED', 'MANUAL')", name="ck_scheduled_report_run_trigger"),
@@ -108,6 +109,9 @@ class ScheduledReportRun(Base):
         Index("ix_scheduled_report_runs_status", "workspace_id", "status"),
         Index("ix_scheduled_report_runs_report", "report_id"),
         Index("ix_scheduled_report_runs_version", "report_version_id"),
+        Index("ix_scheduled_report_runs_generation", "generation_id"),
+        Index("ix_scheduled_report_runs_runnable", "retry_after", "id", postgresql_where=text("status = 'QUEUED'"), sqlite_where=text("status = 'QUEUED'")),
+        Index("ix_scheduled_report_runs_expired", "lease_expires_at", "id", postgresql_where=text("status = 'RUNNING'"), sqlite_where=text("status = 'RUNNING'")),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -131,6 +135,14 @@ class ScheduledReportRun(Base):
     error_code: Mapped[str | None] = mapped_column(String(100))
     error_detail: Mapped[str | None] = mapped_column(Text)
     retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(String(120))
+    lease_token: Mapped[str | None] = mapped_column(String(36))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_class: Mapped[str | None] = mapped_column(String(30))
+    execution_sources_json: Mapped[list | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    generation_id: Mapped[int | None] = mapped_column(ForeignKey("report_generations.id", name="fk_scheduled_report_runs_generation", ondelete="SET NULL"))
+    quota_json: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

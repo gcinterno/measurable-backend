@@ -28451,12 +28451,18 @@ def shopify_sync(
     connection = _resolve_shopify_connection(db, current_user=current_user, workspace_id=payload.workspace_id)
     if connection is None:
         raise http_error(404, "shopify_not_connected", "Shopify connection not found.")
+    return _run_shopify_connection_sync(db=db, connection=connection, timeframe=payload.timeframe,
+                                        start_date=payload.start_date, end_date=payload.end_date)
+
+
+def _run_shopify_connection_sync(*, db: Session, connection: ShopifyConnection, timeframe: str,
+                                 start_date: str | None, end_date: str | None) -> ShopifySyncOut:
     if not str(connection.access_token_encrypted or "").strip():
         raise http_error(401, "shopify_reconnect_required", "Shopify reconnect required.")
     timeframe = resolve_shopify_timeframe(
-        payload.timeframe,
-        start_date=payload.start_date,
-        end_date=payload.end_date,
+        timeframe,
+        start_date=start_date,
+        end_date=end_date,
     )
     try:
         access_token = decrypt_secret(connection.access_token_encrypted)
