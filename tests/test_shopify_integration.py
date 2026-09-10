@@ -62,6 +62,7 @@ SHOPIFY_TABLES = [
     DatasetFile.__table__,
     ShopifySnapshot.__table__,
     Report.__table__,
+    Base.metadata.tables["report_generations"],
     ReportSource.__table__,
     ReportVersion.__table__,
     ReportBlock.__table__,

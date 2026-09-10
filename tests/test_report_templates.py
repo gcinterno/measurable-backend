@@ -60,6 +60,7 @@ REPORT_TEMPLATE_TABLES = [
     ReportTemplateVersion.__table__,
     Dataset.__table__,
     Report.__table__,
+    Base.metadata.tables["report_generations"],
 ]
 
 

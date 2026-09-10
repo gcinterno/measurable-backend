@@ -38,6 +38,7 @@ from .models import (
     ReferralPartner,
     Report,
     ReportBlock,
+    ReportGeneration,
     ReportVersion,
     Schedule,
     Subscription,
@@ -457,7 +458,8 @@ def resolve_report_quota_period(
     period_end = _normalize_quota_datetime(
         subscription.current_period_end if subscription is not None else None
     )
-    if period_start is not None and period_end is not None and period_end > period_start:
+    current_time = _normalize_quota_datetime(now) or datetime.now(timezone.utc)
+    if period_start is not None and period_end is not None and period_start <= current_time < period_end:
         return period_start, period_end
     return _default_report_quota_period(now=now)
 
@@ -474,19 +476,41 @@ def get_workspace_report_quota_status(
     report_limit = limits["reports_per_month"]
     period_start, period_end = resolve_report_quota_period(subscription, now=now)
 
-    reports_used = int(
+    consumed_generations = int(
+        db.query(func.count(ReportGeneration.id))
+        .filter(ReportGeneration.workspace_id == workspace_id)
+        .filter(ReportGeneration.state == "consumed")
+        .filter(ReportGeneration.charged_at >= period_start)
+        .filter(ReportGeneration.charged_at < period_end)
+        .scalar()
+        or 0
+    )
+    # Include pre-cutover writers during a rolling deployment without double counting.
+    legacy_reports = int(
         db.query(func.count(Report.id))
         .filter(Report.workspace_id == workspace_id)
         .filter(Report.created_at >= period_start)
         .filter(Report.created_at < period_end)
+        .filter(~db.query(ReportGeneration.id).filter(ReportGeneration.report_id == Report.id).exists())
         .scalar()
         or 0
+    )
+    reports_used = consumed_generations + legacy_reports
+    reservation_time = _normalize_quota_datetime(now) or datetime.now(timezone.utc)
+    reports_reserved = int(
+        db.query(func.count(ReportGeneration.id))
+        .filter(ReportGeneration.workspace_id == workspace_id, ReportGeneration.state == "reserved")
+        .filter(ReportGeneration.reserved_at >= period_start, ReportGeneration.reserved_at < period_end)
+        .filter(ReportGeneration.lease_expires_at > reservation_time)
+        .scalar() or 0
     )
     reports_limit = int(report_limit) if report_limit is not None else None
     reports_remaining = None if reports_limit is None else max(reports_limit - reports_used, 0)
     limit_reached = False if reports_limit is None else reports_used >= reports_limit
     return {
         "reports_used": reports_used,
+        "reports_reserved": reports_reserved,
+        "capacity_remaining": None if reports_limit is None else max(reports_limit - reports_used - reports_reserved, 0),
         "reports_limit": reports_limit,
         "reports_remaining": reports_remaining,
         "limit_reached": limit_reached,
@@ -5314,55 +5338,12 @@ def finalize_export_response(export: Export, report: Report, response: Any) -> d
 
 def _run_local_job(db: Session, job: Job) -> None:
     if job.type == "generate_report":
-        data = json.loads(job.payload_json or "{}")
-        report_id = data.get("report_id")
-        dataset_id = data.get("dataset_id")
-        title = data.get("title") or data.get("name") or f"Report {job.id}"
-
-        if report_id:
-            report = db.get(Report, int(report_id))
-        else:
-            report = None
-
-        if not report:
-            if not dataset_id:
-                raise ValueError("missing dataset_id for report creation")
-            report = Report(
-                workspace_id=job.workspace_id,
-                dataset_id=int(dataset_id),
-                name=title,
-                description="dummy",
-            )
-            db.add(report)
-            db.commit()
-            db.refresh(report)
-
-        version = ReportVersion(report_id=report.id, version=1)
-        db.add(version)
-        db.commit()
-        db.refresh(version)
-
-        blocks = [
-            ReportBlock(
-                report_version_id=version.id,
-                type="title",
-                order=0,
-                data_json=json.dumps({"title": title}),
-                editable_fields_json=json.dumps(["title"]),
-            ),
-            ReportBlock(
-                report_version_id=version.id,
-                type="chart",
-                order=1,
-                data_json=json.dumps({"series": []}),
-                editable_fields_json=json.dumps(["series"]),
-            ),
-        ]
-        db.add_all(blocks)
-        db.commit()
+        raise RuntimeError("Legacy report jobs are disabled; use canonical generate_report with an explicit generation command.")
 
 
 def enqueue_job(db: Session, job_type: str, payload: dict, workspace_id: int) -> Job:
+    if job_type == "generate_report":
+        raise RuntimeError("Report generation must use canonical generate_report, not the generic job queue.")
     job = Job(
         workspace_id=workspace_id,
         type=job_type,

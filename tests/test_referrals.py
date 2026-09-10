@@ -50,7 +50,11 @@ REFERRAL_TABLES = [
     Subscription.__table__,
     EmailVerificationCode.__table__,
     Dataset.__table__,
+    Base.metadata.tables["dataset_files"],
     Report.__table__,
+    Base.metadata.tables["report_generations"],
+    Base.metadata.tables["report_versions"],
+    Base.metadata.tables["report_blocks"],
     ReportSource.__table__,
     ReferralPartner.__table__,
     ReferralClick.__table__,
@@ -70,7 +74,8 @@ def referral_schema():
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.setattr("app.main.send_auth_email", lambda **kwargs: None)
-    monkeypatch.setattr("app.main.enqueue_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.main._generate_and_store_report_thumbnail", lambda **kwargs: None)
+    monkeypatch.setattr("app.main.generate_meta_pages_ai_summary", lambda *args, **kwargs: "Report summary")
     monkeypatch.setattr("app.services.generate_six_digit_code", lambda: "123456")
 
     def override_get_db():
@@ -129,7 +134,7 @@ def _seed_verified_user_with_dataset() -> dict[str, int]:
         db.flush()
         db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
         db.add(Subscription(workspace_id=workspace.id, plan="core", status="active"))
-        dataset = Dataset(workspace_id=workspace.id, name="Dataset", description="Test", data={})
+        dataset = Dataset(workspace_id=workspace.id, name="Dataset", description="Test", data={"page_name": "Example", "reach": 100})
         db.add(dataset)
         db.flush()
         db.add(

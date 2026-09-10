@@ -66,6 +66,7 @@ REPORT_TABLES = [
     UserAttribution.__table__,
     ReferralConversion.__table__,
     Report.__table__,
+    Base.metadata.tables["report_generations"],
     ReportSource.__table__,
     ReportVersion.__table__,
     ReportBlock.__table__,
@@ -746,7 +747,7 @@ def test_instagram_business_report_succeeds_when_attribution_tables_are_missing(
     assert description["report_status"] == "completed"
 
 
-def test_instagram_business_report_exception_marks_report_failed(client, monkeypatch):
+def test_instagram_business_report_exception_rolls_back_generation(client, monkeypatch):
     refs = _seed_report_dataset(integration_type="instagram_business")
 
     def fail_persist_report_block_specs(*_args, **_kwargs):
@@ -772,15 +773,10 @@ def test_instagram_business_report_exception_marks_report_failed(client, monkeyp
     }
     db = SessionLocal()
     try:
-        report = db.query(Report).order_by(Report.id.desc()).first()
-        assert report is not None
-        description = json.loads(report.description or "{}")
-        assert description["report_status"] == "failed"
-        assert description["generation_status"] == "failed"
-        assert description["sources"] == ["instagram_business"]
-        assert description["report_type"] == "instagram_business"
-        assert description["generation_error"]["code"] == "report_blocks_persistence_failed"
-        assert description["report_status"] != "processing"
+        assert db.query(Report).count() == 0
+        assert db.query(ReportVersion).count() == 0
+        assert db.query(ReportBlock).count() == 0
+        assert db.query(ReportSource).count() == 0
     finally:
         db.close()
 

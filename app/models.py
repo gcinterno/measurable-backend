@@ -5,6 +5,7 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -843,6 +844,37 @@ class Report(Base):
     shares: Mapped[list[ReportShare]] = relationship(
         back_populates="report", cascade="all, delete-orphan", passive_deletes=True
     )
+
+
+class ReportGeneration(Base):
+    __tablename__ = "report_generations"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "logical_key", name="uq_report_generations_identity"),
+        UniqueConstraint("report_id", name="uq_report_generations_report"),
+        CheckConstraint("outcome IN ('completed', 'configured', 'legacy')", name="ck_report_generations_outcome"),
+        CheckConstraint("state IN ('reserved', 'consumed', 'failed')", name="ck_report_generations_state"),
+        CheckConstraint("(state = 'consumed' AND charged_at IS NOT NULL AND completed_at IS NOT NULL AND outcome IS NOT NULL) OR (state IN ('reserved', 'failed') AND charged_at IS NULL AND report_id IS NULL AND report_version_id IS NULL)", name="ck_report_generations_consumption"),
+        CheckConstraint("state != 'reserved' OR (attempt_token IS NOT NULL AND lease_expires_at IS NOT NULL)", name="ck_report_generations_reservation"),
+        Index("ix_report_generations_workspace_charged_at", "workspace_id", "charged_at"),
+        Index("ix_report_generations_capacity", "workspace_id", "state", "reserved_at", "lease_expires_at"),
+        Index("ix_report_generations_version", "report_version_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    logical_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    command_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_id: Mapped[Optional[int]] = mapped_column(ForeignKey("reports.id", ondelete="SET NULL"))
+    report_version_id: Mapped[Optional[int]] = mapped_column(ForeignKey("report_versions.id", ondelete="SET NULL"))
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    outcome: Mapped[Optional[str]] = mapped_column(String(20))
+    reserved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    attempt_token: Mapped[Optional[str]] = mapped_column(String(36))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    last_error_code: Mapped[Optional[str]] = mapped_column(String(100))
+    charged_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class ReportVersion(Base):

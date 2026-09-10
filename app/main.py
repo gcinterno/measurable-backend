@@ -163,6 +163,11 @@ from .report_recipes import (
     list_report_recipes,
 )
 from .report_templates import router as report_templates_router
+from .report_generation import (
+    ReportDraft, ExecutableReportConfiguration, GenerateReportCommand, GenerationError,
+    GenerationOptions, GenerationResult, ReportingPeriod, SourceIdentity, generate_report, lock_generation_workspace,
+)
+from .report_generation_builders import BuilderParameters, PreparedGeneration, copy_generation_row
 from .models import (
     AccountDeletionFeedback,
     AuditLog,
@@ -2627,12 +2632,15 @@ def _resolve_report_version_for_path(
     return None, "not_found"
 
 
-def _update_report_metadata(db: Session, report: Report, updates: dict[str, object]) -> Report:
+def _update_report_metadata(db: Session, report: Report, updates: dict[str, object], *, commit: bool = True) -> Report:
     metadata = _report_metadata(report)
     metadata.update(updates)
     report.description = json.dumps(metadata)
     db.add(report)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(report)
     return report
 
@@ -2741,18 +2749,21 @@ def _generate_and_store_report_thumbnail(
             "report_version": report_version.version,
         },
     )
+    report_id = report.id
+    version_number = report_version.version
+    db.rollback()
     try:
         screenshot_bytes, thumbnail_debug = generate_thumbnail_from_export_page(
             export_url=export_url,
-            report_id=report.id,
+            report_id=report_id,
             auth_token=export_token,
         )
     except HTTPException:
         logger.exception(
             "Report thumbnail generation failed but report creation will continue",
             extra={
-                "report_id": report.id,
-                "report_version": report_version.version,
+                "report_id": report_id,
+                "report_version": version_number,
                 "export_url": export_url,
             },
         )
@@ -2761,13 +2772,13 @@ def _generate_and_store_report_thumbnail(
         logger.exception(
             "Unexpected report thumbnail generation failure but report creation will continue",
             extra={
-                "report_id": report.id,
-                "report_version": report_version.version,
+                "report_id": report_id,
+                "report_version": version_number,
                 "export_url": export_url,
             },
         )
         return None
-    thumbnail_s3_key = store_report_thumbnail(report.id, screenshot_bytes)
+    thumbnail_s3_key = store_report_thumbnail(report_id, screenshot_bytes)
     _update_report_metadata(
         db,
         report,
@@ -2779,7 +2790,7 @@ def _generate_and_store_report_thumbnail(
     logger.info(
         "Report thumbnail stored",
         extra={
-            "report_id": report.id,
+            "report_id": report_id,
             "thumbnail_target_key": thumbnail_s3_key,
             "slide_selector_used": thumbnail_debug.get("slide_selector_used"),
             "resolved_report_branding_logo_url": report_logo_url,
@@ -6580,7 +6591,7 @@ def _meta_pages_redirect_uri() -> str | None:
     return get_meta_pages_redirect_uri()
 
 
-def _get_or_create_meta_integration_for_workspace(db: Session, workspace_id: int) -> Integration:
+def _get_or_create_meta_integration_for_workspace(db: Session, workspace_id: int, *, commit: bool = True) -> Integration:
     integration = (
         db.query(Integration)
         .filter(Integration.workspace_id == workspace_id, Integration.provider == "meta")
@@ -6597,7 +6608,10 @@ def _get_or_create_meta_integration_for_workspace(db: Session, workspace_id: int
         status="disconnected",
     )
     db.add(integration)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(integration)
     logger.warning(
         "Meta integration created workspace_id=%s integration_id=%s provider=%s",
@@ -6652,7 +6666,7 @@ def _get_or_create_instagram_business_integration_for_workspace(db: Session, wor
     return integration
 
 
-def _get_or_create_instagram_business_login_integration_for_workspace(db: Session, workspace_id: int) -> Integration:
+def _get_or_create_instagram_business_login_integration_for_workspace(db: Session, workspace_id: int, *, commit: bool = True) -> Integration:
     integration = (
         db.query(Integration)
         .filter(Integration.workspace_id == workspace_id, Integration.provider == INSTAGRAM_BUSINESS_LOGIN_PROVIDER)
@@ -6669,7 +6683,10 @@ def _get_or_create_instagram_business_login_integration_for_workspace(db: Sessio
         status="disconnected",
     )
     db.add(integration)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(integration)
     return integration
 
@@ -16542,10 +16559,8 @@ def _build_meta_ads_5_blocks(
 def _create_meta_ads_dataset_report(
     *,
     dataset: Dataset,
-    payload: MetaAdsReportCreateIn,
-    current_user: User,
-    request: Request | None,
-    db: Session,
+    payload: BuilderParameters,
+    prepared: PreparedGeneration,
     report_source: str,
     generation_mode: str,
     locale: str,
@@ -16553,7 +16568,7 @@ def _create_meta_ads_dataset_report(
     slide_limits: dict[str, Any],
     report_timeframe: dict[str, Any],
     report_row: dict[str, Any],
-) -> MetaPagesReportCreateOut:
+) -> ReportDraft:
     ai_plan_context = build_ai_agent_plan_context(
         plan=slide_limits["plan"],
         effective_slide_limit=slide_limits["effective_slide_limit"],
@@ -16571,7 +16586,7 @@ def _create_meta_ads_dataset_report(
         allow_ai_agents=bool(ai_plan_context["allow_ai_agents"]),
     )
     title = payload.title or "Meta Ads Performance Report"
-    report_branding = resolve_report_branding_for_workspace(db, dataset.workspace_id)
+    report_branding = prepared.branding
     block_specs = _build_meta_ads_5_blocks(
         dataset_data=report_row,
         report_timeframe=report_timeframe,
@@ -16581,13 +16596,9 @@ def _create_meta_ads_dataset_report(
         template=str(payload.template or "").strip() or None,
     )
     block_specs = block_specs[: int(slide_limits["effective_slide_limit"])]
-
-    report = Report(
-        workspace_id=dataset.workspace_id,
-        dataset_id=dataset.id,
+    return ReportDraft(
         name=title,
-        description=json.dumps(
-            {
+        metadata={
                 "source": report_source,
                 "locale": locale,
                 "timeframe": report_timeframe,
@@ -16598,70 +16609,8 @@ def _create_meta_ads_dataset_report(
                 "generation_mode": generation_mode,
                 "plan_capabilities": slide_limits["capabilities"],
                 **ai_agent_metadata,
-            }
-        ),
-    )
-    db.add(report)
-    db.commit()
-    db.refresh(report)
-    record_first_report_conversion(db, user_id=current_user.id)
-    db.commit()
-
-    report_version = ReportVersion(report_id=report.id, version=1)
-    db.add(report_version)
-    db.commit()
-    db.refresh(report_version)
-
-    blocks = [
-        ReportBlock(
-            report_version_id=report_version.id,
-            type=str(block_spec["type"]),
-            order=int(block_spec["order"]),
-            data_json=str(block_spec["data_json"]),
-            editable_fields_json=str(block_spec["editable_fields_json"]),
-        )
-        for block_spec in block_specs
-    ]
-    for block in blocks:
-        db.add(block)
-    db.commit()
-
-    try:
-        _generate_and_store_report_thumbnail(
-            db=db,
-            report=report,
-            report_version=report_version,
-            user_id=current_user.id,
-            sync_branding_from_user=False,
-        )
-    except HTTPException:
-        logger.exception("Meta Ads thumbnail generation failed", extra={"report_id": report.id})
-    except Exception:
-        logger.exception("Unexpected Meta Ads thumbnail generation failure", extra={"report_id": report.id})
-
-    _track_meta_event(
-        event_name="ReportCreated",
-        user=current_user,
-        request=request,
-        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
-        custom_data={
-            "report_id": report.id,
-            "workspace_id": dataset.workspace_id,
-            "dataset_id": dataset.id,
-            "generation_mode": generation_mode,
-            "report_source": report_source,
-        },
-    )
-    integration_metadata = derive_report_integration_metadata(db, report, dataset=dataset)
-    return MetaPagesReportCreateOut(
-        report_id=report.id,
-        version_id=report_version.id,
-        version=report_version.version,
-        dataset_id=dataset.id,
-        title=title,
-        locale=locale,
-        status="ready",
-        selected_integration_metadata=integration_metadata,
+            },
+        block_specs=tuple(block_specs), sources=payload.sources,
     )
 
 
@@ -22692,6 +22641,150 @@ def get_dataset(
     )
 
 
+def _manual_generation_source(db: Session, dataset: Dataset, payload: Any, builder: str, row: dict[str, Any]) -> SourceIdentity:
+    if builder in {"meta_pages", "instagram_business"}:
+        source_type = "instagram_business" if builder == "instagram_business" else "facebook_pages"
+        report_source = _build_single_source_report_source(
+            db, report=Report(workspace_id=dataset.workspace_id), dataset=dataset, payload=payload,
+            selected_sources=[source_type], report_inputs=row,
+        )
+        return SourceIdentity(
+            dataset_id=dataset.id, provider=report_source.provider, source_type=source_type,
+            integration_id=report_source.integration_id, integration_account_id=report_source.integration_account_id,
+            external_account_id=(report_source.config_json or {}).get("external_account_id"),
+            label=report_source.label, config_json=report_source.config_json,
+        )
+    if builder in {"shopify", "meta_ads"}:
+        integration_id = row.get("integration_id") or getattr(payload, "integration_id", None)
+        integration = db.get(Integration, int(integration_id)) if integration_id else None
+        if integration is None:
+            integration = db.query(Integration).filter(
+                Integration.workspace_id == dataset.workspace_id, Integration.provider == builder,
+            ).order_by(Integration.id).first()
+        if integration is None:
+            integration = Integration(workspace_id=dataset.workspace_id, provider=builder, name=builder, status="disconnected")
+            db.add(integration)
+            db.flush()
+        external_id = str(row.get("account_id") or row.get("ad_account_id") or getattr(payload, "ad_account_id", None) or "").strip() or None
+        account = db.query(IntegrationAccount).filter(
+            IntegrationAccount.integration_id == integration.id,
+            IntegrationAccount.external_account_id == external_id,
+        ).first() if external_id else None
+        return SourceIdentity(
+            dataset_id=dataset.id, provider=integration.provider, source_type=builder,
+            integration_id=integration.id, integration_account_id=account.id if account else None,
+            external_account_id=external_id, label=dataset.name,
+            config_json={"external_account_id": external_id},
+        )
+    return SourceIdentity(dataset.id, str(row.get("integration_type") or "dataset"), "dataset")
+
+
+def _manual_generation_error(exc: GenerationError) -> JSONResponse:
+    content = {"code": exc.code, "detail": str(exc), "message": str(exc), **exc.details}
+    for key in ("period_start", "period_end"):
+        if isinstance(content.get(key), datetime):
+            content[key] = content[key].isoformat()
+    return JSONResponse(status_code=exc.status_code, content=content)
+
+
+def _after_manual_generation(
+    db: Session, *, result: GenerationResult, current_user: User, request: Request | None, builder: str,
+) -> None:
+    if result.replayed:
+        return
+    report = db.get(Report, result.report_id)
+    version = db.get(ReportVersion, result.version_id)
+    try:
+        record_first_report_conversion(db, user_id=current_user.id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Report referral tracking failed", extra={"report_id": result.report_id})
+    if result.outcome == "completed" and builder != "multi_source":
+        try:
+            _generate_and_store_report_thumbnail(
+                db=db, report=report, report_version=version, user_id=current_user.id,
+                sync_branding_from_user=False,
+            )
+        except Exception:
+            db.rollback()
+            logger.exception("Report thumbnail generation failed", extra={"report_id": result.report_id})
+    try:
+        event_user = copy_generation_row(current_user)
+        event_data = {"report_id": result.report_id, "workspace_id": report.workspace_id,
+                      "dataset_id": report.dataset_id, "generation_mode": builder}
+        db.rollback()
+        _track_meta_event(
+            event_name="ReportCreated", user=event_user, request=request,
+            event_source_url=_tracking_event_source_url(request, f"/reports/{result.report_id}"),
+            custom_data=event_data,
+        )
+    except Exception:
+        logger.exception("Report analytics failed", extra={"report_id": result.report_id})
+
+
+def _generate_manual_report(
+    *, dataset: Dataset, payload: Any, current_user: User, request: Request | None, db: Session,
+    builder: str, sources: tuple[SourceIdentity, ...] | None = None, full_response: bool = False,
+) -> MetaPagesReportCreateOut | ReportOut | JSONResponse:
+    try:
+        actor_user_id = current_user.id
+        dataset_snapshot = copy_generation_row(dataset)
+        row = dataset_snapshot.data if isinstance(dataset_snapshot.data, dict) else {}
+        dataset_file = None
+        if not row and builder != "multi_source":
+            dataset_file = copy_generation_row(_get_latest_dataset_file(db, dataset_snapshot.id))
+        db.rollback()
+        if dataset_file is not None:
+            row = _load_dataset_row(dataset_file)
+        source_row = {**row, **extract_meta_pages_report_inputs(row)} if builder in {"meta_pages", "instagram_business"} else row
+        resolved_sources = sources
+        if resolved_sources is None:
+            lock_generation_workspace(db, dataset_snapshot.workspace_id)
+            resolved_sources = (_manual_generation_source(db, dataset_snapshot, payload, builder, source_row),)
+            db.commit()
+        timeframe = row.get("timeframe")
+        timeframe = timeframe if isinstance(timeframe, dict) and builder != "multi_source" else {}
+        command = GenerateReportCommand(
+            workspace_id=dataset_snapshot.workspace_id, actor_user_id=actor_user_id, sources=resolved_sources,
+            configuration=ExecutableReportConfiguration(
+                builder=builder,
+                requested_slides=payload.requested_slides if payload.requested_slides is not None else payload.slide_count,
+                template=getattr(payload, "template", None),
+            ),
+            period=ReportingPeriod(
+                timeframe=str(timeframe.get("key") or getattr(payload, "timeframe", None) or "last_28_days"),
+                start_date=_meta_ads_report_date_value(timeframe.get("since") or getattr(payload, "start_date", None)),
+                end_date=_meta_ads_report_date_value(timeframe.get("until") or getattr(payload, "end_date", None)),
+            ),
+            options=GenerationOptions(
+                title=payload.title, locale=normalize_report_locale(payload.locale),
+                ai_mode=normalize_ai_mode(payload.ai_mode), allow_configuration_only=builder == "multi_source",
+            ),
+            idempotency_key=request.headers.get("Idempotency-Key") if request is not None else None,
+        )
+        result = generate_report(db, command)
+    except GenerationError as exc:
+        db.rollback()
+        return _manual_generation_error(exc)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Canonical manual report generation failed")
+        raise _generation_failure_http_error(exc) from exc
+    _after_manual_generation(db, result=result, current_user=current_user, request=request, builder=builder)
+    if full_response:
+        output = get_report(result.report_id, current_user=current_user, db=db)
+        version = db.get(ReportVersion, result.version_id)
+        return output.model_copy(update={"version_id": version.id, "version": version.version})
+    report = db.get(Report, result.report_id)
+    version = db.get(ReportVersion, result.version_id)
+    return MetaPagesReportCreateOut(
+        report_id=report.id, version_id=version.id, version=version.version, dataset_id=report.dataset_id,
+        title=report.name, locale=_report_locale(report), status="ready",
+        selected_integration_metadata=derive_report_integration_metadata(db, report, dataset=dataset),
+    )
+
+
 @app.post("/reports", response_model=ReportOut)
 def create_report(
     payload: ReportCreateIn,
@@ -22700,240 +22793,34 @@ def create_report(
     db: Session = Depends(get_db),
 ) -> ReportOut:
     dataset = db.get(Dataset, payload.dataset_id)
-    if not dataset:
+    if dataset is None:
         raise http_error(404, "dataset_not_found", "Dataset not found.")
     _require_workspace_access(db, current_user.id, dataset.workspace_id)
-    report_limit_response = _enforce_report_creation_limit_or_response(db, dataset.workspace_id)
-    if report_limit_response is not None:
-        return report_limit_response
-    requested_slides = (
-        payload.requested_slides
-        if payload.requested_slides is not None
-        else payload.slide_count
-    )
-    slide_limits = resolve_report_slide_limits(
-        db,
-        dataset.workspace_id,
-        requested_slides=requested_slides,
-        default_slides=DEFAULT_GENERATED_REPORT_SLIDE_COUNT,
-    )
-    logger.info(
-        "[PlanLimits][report.create]",
-        extra={
-            "plan": slide_limits["plan"],
-            "requested_slides": slide_limits["requested_slides"],
-            "max_slides": slide_limits["max_slides"],
-            "effective_slide_limit": slide_limits["effective_slide_limit"],
-        },
-    )
-    ai_mode = normalize_ai_mode(payload.ai_mode)
-    ai_plan_context = build_ai_agent_plan_context(
-        plan=slide_limits["plan"],
-        effective_slide_limit=slide_limits["effective_slide_limit"],
-        dataset_context={"dataset_id": dataset.id},
-        report_context={"generation_mode": "standard", "ai_mode": ai_mode},
-    )
-    logger.info(
-        "[AIAgents][plan_context]",
-        extra={
-            "dataset_id": dataset.id,
-            "plan": ai_plan_context["plan"],
-            "ai_mode": ai_mode,
-            "max_slides": ai_plan_context["max_slides"],
-            "allow_ai_agents": ai_plan_context["allow_ai_agents"],
-            "effective_slide_limit": ai_plan_context["effective_slide_limit"],
-        },
-    )
-    if ai_mode == "agents" and not ai_plan_context["allow_ai_agents"]:
-        raise http_error(
-            403,
-            "plan_restricted",
-            "AI agents are not available for current plan.",
-    )
-    ai_agent_metadata = build_ai_agent_metadata(
-        ai_mode=ai_mode,
-        allow_ai_agents=bool(ai_plan_context["allow_ai_agents"]),
-    )
-
-    locale = normalize_report_locale(payload.locale)
-    report_branding = resolve_report_branding_for_workspace(
-        db,
-        dataset.workspace_id,
-    )
-    report = Report(
-        workspace_id=dataset.workspace_id,
-        dataset_id=dataset.id,
-        name=payload.title,
-        description=json.dumps(
-            {
-                "locale": locale,
-                "branding": report_branding,
-                "requested_slides": slide_limits["requested_slides"],
-                "effective_slide_limit": slide_limits["effective_slide_limit"],
-                "plan_at_generation": slide_limits["plan"],
-                "generation_mode": "standard",
-                "plan_capabilities": slide_limits["capabilities"],
-                **ai_agent_metadata,
-            }
-        ),
-    )
-    db.add(report)
-    db.commit()
-    db.refresh(report)
-    logger.info(
-        "[ReportBranding][resolved]",
-        extra={
-            "workspace_id": dataset.workspace_id,
-            "report_id": report.id,
-            "plan": slide_limits["plan"],
-            "brand_name_original": str(current_user.full_name).strip() if current_user.full_name else None,
-            "brand_logo_url_original": (
-                str(current_user.logo_url).strip()
-                if user_logo_column_available() and current_user.logo_url
-                else None
-            ),
-            "resolved_brand_name": report_branding.get("resolved_brand_name"),
-            "resolved_logo_url": report_branding.get("resolved_logo_url"),
-            "has_custom_branding": report_branding.get("has_custom_branding"),
-        },
-    )
-    if int(slide_limits["requested_slides"]) == 5:
-        metric_payloads: dict[str, dict[str, Any]] = {}
-        ai_summary_length = 0
-        for block_spec in block_specs:
-            raw_block_data = block_spec.get("data_json")
-            if isinstance(raw_block_data, str):
-                try:
-                    block_data = json.loads(raw_block_data)
-                except json.JSONDecodeError:
-                    block_data = {}
-            elif isinstance(raw_block_data, dict):
-                block_data = raw_block_data
-            else:
-                block_data = {}
-            semantic_name = str(block_data.get("semantic_name") or "").strip()
-            if semantic_name in {"organic_impressions_overview", "engagement_overview", "page_views_overview"}:
-                metric_payloads[semantic_name] = block_data
-            elif semantic_name == "executive_summary":
-                ai_summary_length = len(str(block_data.get("ai_summary") or block_data.get("text") or ""))
-        logger.info(
-            "[FiveSlideReport][structure]",
-            extra={
-                "report_id": report.id,
-                "integration": report_inputs.get("integration_type"),
-                "template": "executive_5_slide",
-                "slide_count": int(slide_limits["requested_slides"]),
-                "dataset_keys_available": sorted(report_row.keys()),
-                "slide_2_metric_key": metric_payloads.get("organic_impressions_overview", {}).get("metric_key"),
-                "slide_2_total": metric_payloads.get("organic_impressions_overview", {}).get("total"),
-                "slide_2_daily_series_length": len(metric_payloads.get("organic_impressions_overview", {}).get("daily_series") or []),
-                "slide_2_daily_series_source_path": metric_payloads.get("organic_impressions_overview", {}).get("daily_series_source_path"),
-                "slide_2_daily_series_source_metric_key": metric_payloads.get("organic_impressions_overview", {}).get("daily_series_source_metric_key"),
-                "slide_3_metric_key": metric_payloads.get("engagement_overview", {}).get("metric_key"),
-                "slide_3_total": metric_payloads.get("engagement_overview", {}).get("total"),
-                "slide_3_daily_series_length": len(metric_payloads.get("engagement_overview", {}).get("daily_series") or []),
-                "slide_3_daily_series_source_path": metric_payloads.get("engagement_overview", {}).get("daily_series_source_path"),
-                "slide_3_daily_series_source_metric_key": metric_payloads.get("engagement_overview", {}).get("daily_series_source_metric_key"),
-                "slide_4_metric_key": metric_payloads.get("page_views_overview", {}).get("metric_key"),
-                "slide_4_total": metric_payloads.get("page_views_overview", {}).get("total"),
-                "slide_4_daily_series_length": len(metric_payloads.get("page_views_overview", {}).get("daily_series") or []),
-                "slide_4_daily_series_source_path": metric_payloads.get("page_views_overview", {}).get("daily_series_source_path"),
-                "slide_4_daily_series_source_metric_key": metric_payloads.get("page_views_overview", {}).get("daily_series_source_metric_key"),
-                "slide_5_ai_summary_length": ai_summary_length,
-            },
-        )
-    record_first_report_conversion(db, user_id=current_user.id)
-    db.commit()
-    logger.info(
-        "[AIAgents][pipeline.final]",
-        extra={
-            "report_id": report.id,
-            "dataset_id": dataset.id,
-            "plan": ai_plan_context["plan"],
-            "ai_mode": ai_mode,
-            "allow_ai_agents": ai_plan_context["allow_ai_agents"],
-            "effective_slide_limit": ai_plan_context["effective_slide_limit"],
-            "fallback_used": ai_agent_metadata["ai_agent_fallback_used"],
-            "number_of_blocks_final": None,
-        },
-    )
-
-    enqueue_job(
-        db,
-        job_type="generate_report",
-        payload={
-            "dataset_id": dataset.id,
-            "report_id": report.id,
-            "locale": locale,
-            "requested_slides": slide_limits["requested_slides"],
-            "effective_slide_limit": slide_limits["effective_slide_limit"],
-            "plan_at_generation": slide_limits["plan"],
-            "generation_mode": "standard",
-            "ai_mode": ai_mode,
-            "ai_agent_metadata": ai_agent_metadata,
-        },
-        workspace_id=dataset.workspace_id,
-    )
-    _track_meta_event(
-        event_name="ReportCreated",
-        user=current_user,
-        request=request,
-        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
-        custom_data={
-            "report_id": report.id,
-            "workspace_id": dataset.workspace_id,
-            "dataset_id": dataset.id,
-            "generation_mode": "standard",
-        },
-    )
-
-    integration_metadata = derive_report_integration_metadata(db, report, dataset=dataset)
-    return ReportOut(
-        id=report.id,
-        workspace_id=dataset.workspace_id,
-        dataset_id=dataset.id,
-        title=payload.title,
-        status=None,
-        folder_id=report.folder_id,
-        folder_name=report.folder_name,
-        description=_report_metadata(report),
-        timeframe=_report_timeframe(report),
-        report_sources=_report_sources_out(db, report_id=report.id),
-        integration_metadata=integration_metadata,
-        locale=locale,
-        branding=_report_branding(db, report),
-        thumbnail_url=_report_thumbnail_url(report),
-        created_at=report.created_at,
-        updated_at=report.updated_at,
+    row = dataset.data if isinstance(dataset.data, dict) else {}
+    integration_type = _canonical_report_integration_type(row.get("integration_type"))
+    builder = {"facebook": "meta_pages", "instagram": "instagram_business", "meta_ads": "meta_ads", "shopify": "shopify"}.get(integration_type, "dataset")
+    return _generate_manual_report(
+        dataset=dataset, payload=payload, current_user=current_user, request=request, db=db,
+        builder=builder, full_response=True,
     )
 
 
 def _create_shopify_report(
     *,
     dataset: Dataset,
-    payload: ShopifyReportCreateIn,
-    current_user: User,
-    request: Request,
-    db: Session,
-) -> MetaPagesReportCreateOut:
+    payload: BuilderParameters,
+    prepared: PreparedGeneration,
+) -> ReportDraft:
     dataset_data = dataset.data if isinstance(dataset.data, dict) else {}
     if str(dataset_data.get("integration_type") or "").strip().lower() != "shopify":
         raise http_error(400, "invalid_shopify_dataset", "Dataset is not a Shopify dataset.")
-    dataset_file = _get_latest_dataset_file(db, dataset.id)
+    dataset_file = prepared.dataset_files[dataset.id]
     if dataset_file is None:
         raise http_error(404, "dataset_file_not_found", "Dataset file not found.")
     requested_slides = payload.requested_slides if payload.requested_slides is not None else payload.slide_count
     if requested_slides not in (None, 5):
         raise http_error(400, "invalid_shopify_slide_count", "Shopify MVP currently supports only 5-slide reports.")
-    report_limit_response = _enforce_report_creation_limit_or_response(db, dataset.workspace_id)
-    if report_limit_response is not None:
-        return report_limit_response
-    slide_limits = resolve_report_slide_limits(
-        db,
-        dataset.workspace_id,
-        requested_slides=5,
-        default_slides=5,
-    )
+    slide_limits = prepared.slide_limits
     locale = normalize_report_locale(payload.locale)
     ai_mode = normalize_ai_mode(payload.ai_mode)
     ai_plan_context = build_ai_agent_plan_context(
@@ -22948,25 +22835,13 @@ def _create_shopify_report(
         ai_mode=ai_mode,
         allow_ai_agents=bool(ai_plan_context["allow_ai_agents"]),
     )
-    report_branding = resolve_report_branding_for_workspace(db, dataset.workspace_id)
+    report_branding = prepared.branding
     title = payload.title or f"{dataset_data.get('shop_name') or dataset_data.get('shop_domain') or 'Shopify'} Overview"
     timeframe = dataset_data.get("timeframe") if isinstance(dataset_data.get("timeframe"), dict) else {}
-    integration = (
-        db.query(Integration)
-        .filter(Integration.workspace_id == dataset.workspace_id, Integration.provider == SHOPIFY_PROVIDER)
-        .order_by(Integration.id.asc())
-        .first()
-    )
-    if integration is None:
-        integration = _get_or_create_shopify_integration_for_workspace(db, dataset.workspace_id)
-    connection = _shopify_connection_for_workspace(db, workspace_id=dataset.workspace_id)
     block_specs = _build_shopify_report_blocks(dataset_data, title=title, branding=report_branding)
-    report = Report(
-        workspace_id=dataset.workspace_id,
-        dataset_id=dataset.id,
+    return ReportDraft(
         name=title,
-        description=json.dumps(
-            {
+        metadata={
                 "source": "shopify_v1",
                 "locale": locale,
                 "timeframe": timeframe,
@@ -22977,89 +22852,15 @@ def _create_shopify_report(
                 "generation_mode": "shopify",
                 "plan_capabilities": slide_limits["capabilities"],
                 **ai_agent_metadata,
-            }
-        ),
-    )
-    db.add(report)
-    db.commit()
-    db.refresh(report)
-    record_first_report_conversion(db, user_id=current_user.id)
-    db.commit()
-
-    report_source = ReportSource(
-        report_id=report.id,
-        workspace_id=report.workspace_id,
-        provider=SHOPIFY_PROVIDER,
-        source_type=SHOPIFY_PROVIDER,
-        integration_id=integration.id,
-        integration_account_id=None,
-        dataset_id=dataset.id,
-        position=0,
-        label=str(dataset_data.get("shop_name") or dataset_data.get("shop_domain") or "Shopify"),
-        config_json={
-            "shop_domain": dataset_data.get("shop_domain"),
-            "shop_name": dataset_data.get("shop_name"),
-            "channel": "shopify",
-            "account_name": dataset_data.get("shop_name") or dataset_data.get("shop_domain"),
-            "source_type": "shopify",
-        },
-    )
-    db.add(report_source)
-    db.commit()
-
-    report_version = ReportVersion(report_id=report.id, version=1)
-    db.add(report_version)
-    db.commit()
-    db.refresh(report_version)
-
-    blocks = [
-        ReportBlock(
-            report_version_id=report_version.id,
-            type=str(block_spec["type"]),
-            order=int(block_spec["order"]),
-            data_json=str(block_spec["data_json"]),
-            editable_fields_json=str(block_spec["editable_fields_json"]),
-        )
-        for block_spec in block_specs
-    ]
-    for block in blocks:
-        db.add(block)
-    db.commit()
-    try:
-        _generate_and_store_report_thumbnail(
-            db=db,
-            report=report,
-            report_version=report_version,
-            user_id=current_user.id,
-            sync_branding_from_user=False,
-        )
-    except HTTPException:
-        logger.exception("Shopify thumbnail generation failed", extra={"report_id": report.id})
-    except Exception:
-        logger.exception("Unexpected Shopify thumbnail generation failure", extra={"report_id": report.id})
-
-    _track_meta_event(
-        event_name="ReportCreated",
-        user=current_user,
-        request=request,
-        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
-        custom_data={
-            "report_id": report.id,
-            "workspace_id": dataset.workspace_id,
-            "dataset_id": dataset.id,
-            "generation_mode": "shopify",
-        },
-    )
-    integration_metadata = derive_report_integration_metadata(db, report, dataset=dataset)
-    return MetaPagesReportCreateOut(
-        report_id=report.id,
-        version_id=report_version.id,
-        version=report_version.version,
-        dataset_id=dataset.id,
-        title=title,
-        locale=locale,
-        status="ready",
-        selected_integration_metadata=integration_metadata,
+            },
+        block_specs=tuple(block_specs), sources=(SourceIdentity(
+            dataset_id=dataset.id, provider=SHOPIFY_PROVIDER, source_type=SHOPIFY_PROVIDER,
+            integration_id=payload.integration_id, integration_account_id=payload.integration_account_id,
+            label=str(dataset_data.get("shop_name") or dataset_data.get("shop_domain") or "Shopify"),
+            config_json={"shop_domain": dataset_data.get("shop_domain"), "shop_name": dataset_data.get("shop_name"),
+                         "channel": "shopify", "account_name": dataset_data.get("shop_name") or dataset_data.get("shop_domain"),
+                         "source_type": "shopify"},
+        ),),
     )
 
 
@@ -23544,12 +23345,13 @@ def create_shopify_report(
     if dataset is None:
         raise http_error(404, "dataset_not_found", "Dataset not found.")
     _require_workspace_access(db, current_user.id, dataset.workspace_id)
-    return _create_shopify_report(
+    return _generate_manual_report(
         dataset=dataset,
         payload=payload,
         current_user=current_user,
         request=request,
         db=db,
+        builder="shopify",
     )
 
 
@@ -23625,6 +23427,40 @@ def create_multi_source_report(
     db: Session = Depends(get_db),
 ) -> ReportOut:
     if not (1 <= len(payload.sources) <= 2):
+        raise http_error(400, "invalid_sources_count", "sources length must be between 1 and 2.")
+    if payload.sources[0].dataset_id is None:
+        raise http_error(400, "first_source_dataset_required", "The first source must include dataset_id for backwards-compatible report creation.")
+    dataset = db.get(Dataset, payload.sources[0].dataset_id)
+    if dataset is None:
+        raise http_error(404, "dataset_not_found", "Dataset not found.")
+    _require_workspace_access(db, current_user.id, dataset.workspace_id)
+    sources = []
+    for source in payload.sources:
+        integration = db.get(Integration, source.integration_id)
+        if integration is None:
+            raise http_error(404, "integration_not_found", "Integration not found.")
+        _require_workspace_access(db, current_user.id, integration.workspace_id)
+        account = _resolve_report_source_integration_account(
+            db, integration=integration, source_workspace_id=dataset.workspace_id,
+            raw_integration_account_id=source.integration_account_id, config_json=source.config_json,
+        )
+        sources.append(SourceIdentity(
+            dataset_id=source.dataset_id, provider=source.provider, source_type=source.source_type,
+            integration_id=integration.id, integration_account_id=account.id if account else None,
+            external_account_id=account.external_account_id if account else None,
+            position=source.position, label=source.label, config_json=source.config_json,
+        ))
+    return _generate_manual_report(
+        dataset=dataset, payload=payload, current_user=current_user, request=request, db=db,
+        builder="multi_source", sources=tuple(sources), full_response=True,
+    )
+
+
+def _create_multi_source_report(
+    payload: BuilderParameters,
+    prepared: PreparedGeneration,
+) -> ReportDraft:
+    if not (1 <= len(payload.sources) <= 2):
         raise http_error(
             400,
             "invalid_sources_count",
@@ -23663,18 +23499,16 @@ def create_multi_source_report(
             raise http_error(400, "duplicate_source_position", "Each source position must be unique.")
         seen_positions.add(int(source.position))
 
-        integration = db.get(Integration, int(source.integration_id))
+        integration = prepared.integrations.get(source.integration_id)
         if not integration:
             raise http_error(404, "integration_not_found", "Integration not found.")
-        _require_workspace_access(db, current_user.id, integration.workspace_id)
 
         source_workspace_id = integration.workspace_id
         dataset: Dataset | None = None
         if source.dataset_id is not None:
-            dataset = db.get(Dataset, int(source.dataset_id))
+            dataset = prepared.datasets.get(source.dataset_id)
             if not dataset:
                 raise http_error(404, "dataset_not_found", "Dataset not found.")
-            _require_workspace_access(db, current_user.id, dataset.workspace_id)
             if dataset.workspace_id != integration.workspace_id:
                 raise http_error(
                     400,
@@ -23683,13 +23517,7 @@ def create_multi_source_report(
                 )
             source_workspace_id = dataset.workspace_id
 
-        integration_account = _resolve_report_source_integration_account(
-            db,
-            integration=integration,
-            source_workspace_id=source_workspace_id,
-            raw_integration_account_id=source.integration_account_id,
-            config_json=source.config_json,
-        )
+        integration_account = prepared.accounts.get(source.integration_account_id)
         if dataset is None and integration_account is None:
             raise http_error(404, "integration_account_not_found", "Integration account not found.")
 
@@ -23741,15 +23569,12 @@ def create_multi_source_report(
             "first_source_dataset_required",
             "The first source must include dataset_id for backwards-compatible report creation.",
         )
-    if len(resolved_sources) >= 2 and not can_use_multi_platform_report(db, first_dataset.workspace_id):
+    if len(resolved_sources) >= 2 and not prepared.multi_platform_allowed:
         raise http_error(
             403,
             "plan_restricted",
             "Current plan does not allow multi-platform reports.",
         )
-    report_limit_response = _enforce_report_creation_limit_or_response(db, first_dataset.workspace_id)
-    if report_limit_response is not None:
-        return report_limit_response
 
     locale = normalize_report_locale(payload.locale)
     ai_mode = normalize_ai_mode(payload.ai_mode)
@@ -23759,10 +23584,7 @@ def create_multi_source_report(
         start_date=payload.start_date,
         end_date=payload.end_date,
     )
-    branding = resolve_report_branding_for_workspace(
-        db,
-        first_dataset.workspace_id,
-    )
+    branding = prepared.branding
     generate_multi_source_blocks = (
         len(resolved_sources) == 2
         and requested_slides == 10
@@ -23792,134 +23614,31 @@ def create_multi_source_report(
         and _is_facebook_instagram_multi_source_report_sources(resolved_sources)
     ):
         metadata["integration_metadata"] = _facebook_instagram_multi_source_metadata_payload()
-    try:
-        report = Report(
-            workspace_id=first_dataset.workspace_id,
-            dataset_id=first_dataset.id,
-            name=report_title,
-            description=json.dumps(metadata),
+    block_specs = []
+    if generate_multi_source_blocks and len(multi_source_normalized_sources) == 2:
+        block_context = _multi_source_build_context(
+            title=report_title,
+            locale=locale,
+            timeframe=timeframe,
+            branding=branding,
+            normalized_sources=multi_source_normalized_sources,
         )
-        db.add(report)
-        db.commit()
-        db.refresh(report)
-        logger.info(
-            "[ReportBranding][resolved]",
-            extra={
-                "workspace_id": first_dataset.workspace_id,
-                "report_id": report.id,
-                "plan": get_workspace_plan(db, first_dataset.workspace_id),
-                "brand_name_original": str(current_user.full_name).strip() if current_user.full_name else None,
-                "brand_logo_url_original": (
-                    str(current_user.logo_url).strip()
-                    if user_logo_column_available() and current_user.logo_url
-                    else None
-                ),
-                "resolved_brand_name": branding.get("resolved_brand_name"),
-                "resolved_logo_url": branding.get("resolved_logo_url"),
-                "has_custom_branding": branding.get("has_custom_branding"),
-            },
+        block_specs = (
+            build_facebook_instagram_10_multi_source_blocks(block_context)
+            if should_use_facebook_instagram_10_recipe(
+                resolved_sources,
+                requested_slides=requested_slides,
+            )
+            else _multi_source_build_10_blocks(block_context)
         )
-        record_first_report_conversion(db, user_id=current_user.id)
-        db.commit()
-
-        report_sources = [
-            ReportSource(
-                report_id=report.id,
-                workspace_id=report.workspace_id,
-                provider=source["provider"],
-                source_type=source["source_type"],
-                integration_id=source["integration_id"],
-                integration_account_id=source["integration_account_id"],
-                dataset_id=source["dataset_id"],
-                position=source["position"],
-                label=source["label"],
-                config_json=source["config_json"],
-            )
-            for source in resolved_sources
-        ]
-        db.add_all(report_sources)
-        db.commit()
-
-        report_version = ReportVersion(report_id=report.id, version=1)
-        db.add(report_version)
-        db.commit()
-        db.refresh(report_version)
-
-        if generate_multi_source_blocks and len(multi_source_normalized_sources) == 2:
-            block_context = _multi_source_build_context(
-                title=report_title,
-                locale=locale,
-                timeframe=timeframe,
-                branding=branding,
-                normalized_sources=multi_source_normalized_sources,
-            )
-            block_specs = (
-                build_facebook_instagram_10_multi_source_blocks(block_context)
-                if should_use_facebook_instagram_10_recipe(
-                    resolved_sources,
-                    requested_slides=requested_slides,
-                )
-                else _multi_source_build_10_blocks(block_context)
-            )
-            blocks = [
-                ReportBlock(
-                    report_version_id=report_version.id,
-                    type=str(block_spec["type"]),
-                    order=int(block_spec["order"]),
-                    data_json=str(block_spec["data_json"]),
-                    editable_fields_json=str(block_spec["editable_fields_json"]),
-                )
-                for block_spec in block_specs
-            ]
-            for block in blocks:
-                db.add(block)
-            db.commit()
-    except Exception:
-        db.rollback()
-        logger.exception(
-            "multi_source_report_create_failed",
-            extra={
-                "workspace_id": first_dataset.workspace_id if first_dataset else None,
-                "integration_ids": [source["integration_id"] for source in resolved_sources],
-                "dataset_ids": [source["dataset_id"] for source in resolved_sources],
-                "sources_count": len(resolved_sources),
-            },
-        )
-        raise
-
-    _track_meta_event(
-        event_name="ReportCreated",
-        user=current_user,
-        request=request,
-        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
-        custom_data={
-            "report_id": report.id,
-            "workspace_id": report.workspace_id,
-            "dataset_id": report.dataset_id,
-            "generation_mode": "multi_source",
-            "sources_count": len(resolved_sources),
-        },
-    )
-    integration_metadata = derive_report_integration_metadata(db, report, dataset=first_dataset)
-    return ReportOut(
-        id=report.id,
-        workspace_id=report.workspace_id,
-        dataset_id=report.dataset_id,
-        title=report.name,
-        status="sources_configured",
-        folder_id=report.folder_id,
-        folder_name=report.folder_name,
-        description=_report_metadata(report),
-        timeframe=_report_timeframe(report),
-        report_sources=_report_sources_out(db, report_id=report.id),
-        integration_metadata=integration_metadata,
-        version_id=report_version.id,
-        version=report_version.version,
-        locale=_report_locale(report),
-        branding=_report_branding(db, report),
-        thumbnail_url=_report_thumbnail_url(report),
-        created_at=report.created_at,
-        updated_at=report.updated_at,
+    return ReportDraft(
+        name=report_title, metadata=metadata, block_specs=tuple(block_specs),
+        sources=tuple(SourceIdentity(
+            dataset_id=source["dataset_id"], provider=source["provider"], source_type=source["source_type"],
+            integration_id=source["integration_id"], integration_account_id=source["integration_account_id"],
+            position=source["position"], label=source["label"], config_json=source["config_json"],
+        ) for source in resolved_sources),
+        outcome="completed" if generate_multi_source_blocks else "configured",
     )
 
 
@@ -23982,8 +23701,8 @@ def _resolve_single_source_integration(
             return integration
 
     if source_type == "instagram_business":
-        return _get_or_create_instagram_business_login_integration_for_workspace(db, workspace_id)
-    return _get_or_create_meta_integration_for_workspace(db, workspace_id)
+        return _get_or_create_instagram_business_login_integration_for_workspace(db, workspace_id, commit=False)
+    return _get_or_create_meta_integration_for_workspace(db, workspace_id, commit=False)
 
 
 def _single_source_external_account_candidates(
@@ -24134,7 +23853,7 @@ def _persist_single_source_report_source(
     if report_source is None:
         return None
     db.add(report_source)
-    db.commit()
+    db.flush()
     db.refresh(report_source)
     return report_source
 
@@ -24164,7 +23883,7 @@ def _set_report_generation_status(
             "code": error_code,
             "message": "Report generation failed.",
         }
-    return _update_report_metadata(db, report, updates)
+    return _update_report_metadata(db, report, updates, commit=False)
 
 
 def _mark_report_generation_failed(
@@ -24178,21 +23897,6 @@ def _mark_report_generation_failed(
     error_code: str,
     exc: Exception,
 ) -> None:
-    try:
-        db.rollback()
-        _set_report_generation_status(
-            db,
-            report,
-            status="failed",
-            selected_sources=selected_sources,
-            resolved_report_type=resolved_report_type,
-            resolved_report_definition=resolved_report_definition,
-            slide_keys=slide_keys,
-            error_code=error_code,
-        )
-    except Exception:
-        db.rollback()
-        logger.exception("report_generation_failed_status_update_failed", extra={"report_id": report.id})
     logger.exception(
         "report_generation_failed",
         extra={
@@ -24238,27 +23942,22 @@ def _persist_report_block_specs(
     ]
     for block in blocks:
         db.add(block)
-    db.commit()
+    db.flush()
     return blocks
 
 
 def _create_meta_dataset_report(
     *,
     dataset: Dataset,
-    payload: MetaPagesReportCreateIn | InstagramBusinessReportCreateIn | MetaAdsReportCreateIn,
-    current_user: User,
-    request: Request | None,
-    db: Session,
+    payload: BuilderParameters,
+    prepared: PreparedGeneration,
     report_source: str,
     generation_mode: str,
-) -> MetaPagesReportCreateOut:
+) -> ReportDraft:
     locale = normalize_report_locale(payload.locale)
-    dataset_file = _get_latest_dataset_file(db, dataset.id)
+    dataset_file = prepared.dataset_files[dataset.id]
     if not dataset_file:
         raise http_error(404, "dataset_file_not_found", "Dataset file not found.")
-    report_limit_response = _enforce_report_creation_limit_or_response(db, dataset.workspace_id)
-    if report_limit_response is not None:
-        return report_limit_response
     requested_slides = (
         payload.requested_slides
         if payload.requested_slides is not None
@@ -24270,12 +23969,7 @@ def _create_meta_dataset_report(
     )
     if is_instagram_business_report:
         requested_slides = 5
-    slide_limits = resolve_report_slide_limits(
-        db,
-        dataset.workspace_id,
-        requested_slides=requested_slides,
-        default_slides=5 if is_instagram_business_report else 11,
-    )
+    slide_limits = prepared.slide_limits
     logger.info(
         "[PlanLimits][report.create]",
         extra={
@@ -24356,9 +24050,7 @@ def _create_meta_dataset_report(
         return _create_meta_ads_dataset_report(
             dataset=dataset,
             payload=payload,
-            current_user=current_user,
-            request=request,
-            db=db,
+            prepared=prepared,
             report_source=report_source,
             generation_mode=generation_mode,
             locale=locale,
@@ -24423,10 +24115,7 @@ def _create_meta_dataset_report(
     ai_source = {"data": report_row}
     claude_payload = build_meta_pages_ai_payload(ai_source)
     ai_summary = generate_meta_pages_ai_summary(claude_payload, locale)
-    report_branding = resolve_report_branding_for_workspace(
-        db,
-        dataset.workspace_id,
-    )
+    report_branding = prepared.branding
     ai_plan_context = build_ai_agent_plan_context(
         plan=slide_limits["plan"],
         effective_slide_limit=slide_limits["effective_slide_limit"],
@@ -24694,19 +24383,20 @@ def _create_meta_dataset_report(
             "reach_source_metric": reach_chart_data.get("source_metric"),
         },
     )
+    if use_facebook_pages_5_recipe_path:
+        block_specs = _ensure_facebook_pages_five_slide_structure(block_specs)
+        block_specs = _enforce_facebook_pages_5_recipe(block_specs)
 
-    report = Report(
-        workspace_id=dataset.workspace_id,
-        dataset_id=dataset.id,
+    return ReportDraft(
         name=title,
-        description=json.dumps(
-            {
+        metadata={
                 "source": report_source,
                 "sources": selected_sources,
                 "report_type": resolved_report_type,
                 "resolved_report_definition": resolved_report_definition,
-                "report_status": "processing",
-                "generation_status": "processing",
+                "report_status": "completed",
+                "generation_status": "completed",
+                "slide_keys": final_slide_keys,
                 "locale": locale,
                 "timeframe": report_timeframe,
                 "claude_payload": claude_payload,
@@ -24717,416 +24407,8 @@ def _create_meta_dataset_report(
                 "generation_mode": generation_mode,
                 "plan_capabilities": slide_limits["capabilities"],
                 **ai_agent_metadata,
-            }
-        ),
-    )
-    db.add(report)
-    db.commit()
-    db.refresh(report)
-    try:
-        _persist_single_source_report_source(
-            db,
-            report=report,
-            dataset=dataset,
-            payload=payload,
-            selected_sources=selected_sources,
-            report_inputs=report_inputs,
-        )
-    except Exception as exc:
-        _mark_report_generation_failed(
-            db,
-            report,
-            selected_sources=selected_sources,
-            resolved_report_type=resolved_report_type,
-            resolved_report_definition=resolved_report_definition,
-            slide_keys=final_slide_keys,
-            error_code="report_source_persistence_failed",
-            exc=exc,
-        )
-        raise _generation_failure_http_error(exc)
-    logger.info(
-        "[ReportBranding][resolved]",
-        extra={
-            "workspace_id": dataset.workspace_id,
-            "report_id": report.id,
-            "plan": slide_limits["plan"],
-            "brand_name_original": str(current_user.full_name).strip() if current_user.full_name else None,
-            "brand_logo_url_original": (
-                str(current_user.logo_url).strip()
-                if user_logo_column_available() and current_user.logo_url
-                else None
-            ),
-            "resolved_brand_name": report_branding.get("resolved_brand_name"),
-            "resolved_logo_url": report_branding.get("resolved_logo_url"),
-            "has_custom_branding": report_branding.get("has_custom_branding"),
-        },
-    )
-    record_first_report_conversion(db, user_id=current_user.id)
-    db.commit()
-    logger.info(
-        "[MetaTimeframeBackend][report.created]",
-        extra={
-            "report_id": report.id,
-            "report_description_timeframe": _report_metadata(report).get("timeframe"),
-        },
-    )
-    logger.info(
-        "[AIAgents][pipeline.final]",
-        extra={
-            "report_id": report.id,
-            "dataset_id": dataset.id,
-            "plan": ai_plan_context["plan"],
-            "ai_mode": ai_mode,
-            "allow_ai_agents": ai_plan_context["allow_ai_agents"],
-            "effective_slide_limit": ai_plan_context["effective_slide_limit"],
-            "fallback_used": ai_agent_metadata["ai_agent_fallback_used"],
-            "number_of_blocks_final": len(block_specs),
-        },
-    )
-    if use_facebook_pages_5_recipe_path:
-        block_specs = _ensure_facebook_pages_five_slide_structure(block_specs)
-        block_specs = _enforce_facebook_pages_5_recipe(block_specs)
-        slide_types_order = _facebook_pages_report_slide_types(block_specs)
-        _log_json_event(
-            "FACEBOOK_PAGES_REPORT_STRUCTURE_CREATED",
-            {
-                "report_id": report.id,
-                "slide_count": len(block_specs),
-                "slide_types_order": slide_types_order,
-                "provider": FACEBOOK_PAGES_PROVIDER,
-                "source_metrics_used": _facebook_pages_report_source_metrics(block_specs),
             },
-        )
-    period_comparison_range = _meta_timeframe_range(block_build_context)
-    logger.info(
-        "[PERIOD_COMPARISON][range]",
-        extra={
-            "report_id": report.id,
-            "dataset_id": dataset.id,
-            "timeframe_key": period_comparison_range.get("timeframe_key"),
-            "selected_timeframe": period_comparison_range.get("selected_timeframe"),
-            "requested_since": period_comparison_range.get("requested_since"),
-            "requested_until": period_comparison_range.get("requested_until"),
-            "current_since": period_comparison_range.get("current_since"),
-            "current_until": period_comparison_range.get("current_until"),
-            "previous_since": period_comparison_range.get("previous_since"),
-            "previous_until": period_comparison_range.get("previous_until"),
-            "duration_days": period_comparison_range.get("duration_days"),
-        },
-    )
-    logger.info(
-        "[MetaTimeframeBackend][render.cover]",
-        extra={
-            "report_id": report.id,
-            "timeframe_source": timeframe_source,
-            "since": report_timeframe.get("since"),
-            "until": report_timeframe.get("until"),
-            "label": report_timeframe.get("label"),
-        },
-    )
-    logger.info(
-        "[MetaTimeframeBackend][render.reach]",
-        extra={
-            "report_id": report.id,
-            "timeframe_source": timeframe_source,
-            "label": reach_chart_data.get("label"),
-            "points_count": len(reach_chart_data.get("points", [])),
-            "first_date": reach_chart_first_date,
-            "last_date": reach_chart_last_date,
-        },
-    )
-    logger.info(
-        "[MetaTimeframeBackend][render.impressions]",
-        extra={
-            "report_id": report.id,
-            "timeframe_source": timeframe_source,
-            "label": impressions_slide_payload.get("label"),
-            "points_count": impressions_slide_payload.get("impressions_daily_count"),
-            "first_date": impressions_first_date,
-            "last_date": impressions_last_date,
-        },
-    )
-
-    try:
-        report_version = ReportVersion(report_id=report.id, version=1)
-        db.add(report_version)
-        db.commit()
-        db.refresh(report_version)
-    except Exception as exc:
-        _mark_report_generation_failed(
-            db,
-            report,
-            selected_sources=selected_sources,
-            resolved_report_type=resolved_report_type,
-            resolved_report_definition=resolved_report_definition,
-            slide_keys=final_slide_keys,
-            error_code="report_version_persistence_failed",
-            exc=exc,
-        )
-        raise _generation_failure_http_error(exc)
-
-    for block_spec in block_specs:
-        raw_data = block_spec.get("data_json")
-        if isinstance(raw_data, str):
-            try:
-                block_data = json.loads(raw_data)
-            except json.JSONDecodeError:
-                block_data = {}
-        elif isinstance(raw_data, dict):
-            block_data = raw_data
-        else:
-            block_data = {}
-        chart = block_data.get("chart") if isinstance(block_data.get("chart"), dict) else {}
-        chart_points = chart.get("points") if isinstance(chart.get("points"), list) else []
-        logger.info(
-            "[BACKEND_BLOCK_PAYLOAD_AUDIT]",
-            extra={
-                "report_id": report.id,
-                "dataset_id": dataset.id,
-                "order": block_spec.get("order"),
-                "type": block_spec.get("type"),
-                "semantic_name": block_data.get("semantic_name") or block_data.get("semanticName"),
-                "title": block_data.get("title"),
-                "data_json_keys": sorted(block_data.keys()) if isinstance(block_data, dict) else [],
-                "data_json_value": block_data.get("value"),
-                "data_json_total": block_data.get("total"),
-                "data_json_current_value": block_data.get("current_value"),
-                "data_json_previous_value": block_data.get("previous_value"),
-                "data_json_change_percentage": block_data.get("change_percentage"),
-                "data_json_trend": block_data.get("trend"),
-                "data_json_metrics": block_data.get("metrics"),
-                "data_json_stats": block_data.get("stats"),
-                "data_json_kpis": block_data.get("kpis"),
-                "chart_points_length": len(chart_points),
-            },
-        )
-        semantic_name = block_data.get("semantic_name") or block_data.get("semanticName")
-        if semantic_name == "overview":
-            logger.info(
-                "[BACKEND_OVERVIEW_FINAL_PAYLOAD_AUDIT]",
-                extra={
-                    "report_id": report.id,
-                    "dataset_id": dataset.id,
-                    "semantic_name": semantic_name,
-                    "data_json_insight": str(block_data.get("insight") or "")[:160],
-                    "data_json_text": str(block_data.get("text") or "")[:160],
-                    "data_json_summary": str(block_data.get("summary") or "")[:160],
-                    "content": str(block_data.get("content") or "")[:160],
-                },
-            )
-        metric_from_semantic = {
-            "organic_impressions_overview": "organic_impressions",
-            "reach": "reach",
-            "reach_overview": "reach",
-            "impressions": "impressions",
-            "impressions_overview": "impressions",
-            "impressions_trend": "impressions",
-            "followers": "followers",
-            "audience_growth": "followers",
-            "engagement": "engagement",
-            "engagement_overview": "engagement",
-            "page_visits": "page_views",
-            "page_views": "page_views",
-            "page_views_overview": "page_views",
-            "content_activity": "posts",
-            "key_metrics_overview": "reach",
-        }.get(str(semantic_name or "").strip())
-        if semantic_name == "overview" and isinstance(block_data.get("metrics"), list):
-            for metric_item in block_data.get("metrics") or []:
-                if not isinstance(metric_item, dict):
-                    continue
-                metric_key = str(metric_item.get("key") or "").strip() or "unknown"
-                comparison = _meta_metric_comparison(
-                    block_build_context,
-                    metric=metric_key,
-                    current_value=metric_item.get("current_value", metric_item.get("value")),
-                    current_points=_meta_metric_series(block_build_context, metric_key),
-                )
-                logger.info(
-                    "[PERIOD_COMPARISON][metric]",
-                    extra={
-                        "report_id": report.id,
-                        "dataset_id": dataset.id,
-                        "semantic_name": semantic_name,
-                        "metric_key": metric_key,
-                        "current_points": comparison.get("current_points"),
-                        "previous_points": comparison.get("previous_points"),
-                        "current_value": comparison.get("current_value"),
-                        "previous_value": comparison.get("previous_value"),
-                        "change_percentage": comparison.get("change_percentage"),
-                        "trend": comparison.get("trend"),
-                        "source_current": comparison.get("source_current"),
-                        "source_previous": comparison.get("source_previous"),
-                        "reason_if_null": comparison.get("reason_if_null"),
-                    },
-                )
-                logger.info(
-                    "[BACKEND_OVERVIEW_COMPARISON_AUDIT]",
-                    extra={
-                        "report_id": report.id,
-                        "dataset_id": dataset.id,
-                        "semantic_name": semantic_name,
-                        "metric_key": metric_key,
-                        "current_value": comparison.get("current_value"),
-                        "previous_value": comparison.get("previous_value"),
-                        "change_percentage": comparison.get("change_percentage"),
-                        "trend": comparison.get("trend"),
-                        "source_current": comparison.get("source_current"),
-                        "source_previous": comparison.get("source_previous"),
-                        "reason_if_null": comparison.get("reason_if_null"),
-                    },
-                )
-        elif metric_from_semantic:
-            comparison = _meta_metric_comparison(
-                block_build_context,
-                metric=metric_from_semantic,
-                current_value=block_data.get("current_value", block_data.get("value")),
-                current_points=_meta_metric_series(block_build_context, metric_from_semantic),
-            )
-            logger.info(
-                "[PERIOD_COMPARISON][metric]",
-                extra={
-                    "report_id": report.id,
-                    "dataset_id": dataset.id,
-                    "semantic_name": semantic_name,
-                    "metric_key": metric_from_semantic,
-                    "current_points": comparison.get("current_points"),
-                    "previous_points": comparison.get("previous_points"),
-                    "current_value": comparison.get("current_value"),
-                    "previous_value": comparison.get("previous_value"),
-                    "change_percentage": comparison.get("change_percentage"),
-                    "trend": comparison.get("trend"),
-                    "source_current": comparison.get("source_current"),
-                    "source_previous": comparison.get("source_previous"),
-                    "reason_if_null": comparison.get("reason_if_null"),
-                },
-            )
-        if semantic_name in {"organic_impressions_overview", "engagement_overview", "page_views_overview"}:
-            chart = block_data.get("chart") if isinstance(block_data.get("chart"), dict) else {}
-            chart_points = chart.get("points") if isinstance(chart.get("points"), list) else []
-            first_chart_point = chart_points[0] if chart_points else None
-            last_chart_point = chart_points[-1] if chart_points else None
-            logger.info(
-                "[BACKEND_METRIC_SLIDE_AUDIT]",
-                extra={
-                    "report_id": report.id,
-                    "dataset_id": dataset.id,
-                    "slide_block_index": block_spec.get("order"),
-                    "block_title": block_data.get("title"),
-                    "semantic_name": semantic_name,
-                    "metric_value": block_data.get("current_value", block_data.get("value")),
-                    "chart_points_count": len(chart_points),
-                    "first_chart_point": first_chart_point,
-                    "last_chart_point": last_chart_point,
-                },
-            )
-            logger.info(
-                "[BACKEND_OVERVIEW_COMPARISON_AUDIT]",
-                extra={
-                    "report_id": report.id,
-                    "dataset_id": dataset.id,
-                    "semantic_name": semantic_name,
-                    "metric_key": metric_from_semantic,
-                    "current_value": comparison.get("current_value"),
-                    "previous_value": comparison.get("previous_value"),
-                    "change_percentage": comparison.get("change_percentage"),
-                    "trend": comparison.get("trend"),
-                    "source_current": comparison.get("source_current"),
-                    "source_previous": comparison.get("source_previous"),
-                    "reason_if_null": comparison.get("reason_if_null"),
-                },
-            )
-        if semantic_name in {"organic_impressions_overview", "engagement_overview", "page_views_overview"}:
-            logger.info(
-                "[MetricSlidePayload][resolved]",
-                extra={
-                    "report_id": report.id,
-                    "integration": report_inputs.get("integration_type"),
-                    "metric_key": block_data.get("metric_key"),
-                    "total": block_data.get("total"),
-                    "daily_series_length": len(block_data.get("daily_series") or []),
-                    "highest_day": block_data.get("highest_day"),
-                    "lowest_day": block_data.get("lowest_day"),
-                    "insight_length": len(str(block_data.get("insight_short") or block_data.get("insight") or "")),
-                },
-            )
-
-    try:
-        _persist_report_block_specs(
-            db,
-            report_version=report_version,
-            block_specs=block_specs,
-        )
-        report = _set_report_generation_status(
-            db,
-            report,
-            status="completed",
-            selected_sources=selected_sources,
-            resolved_report_type=resolved_report_type,
-            resolved_report_definition=resolved_report_definition,
-            slide_keys=final_slide_keys,
-        )
-    except Exception as exc:
-        _mark_report_generation_failed(
-            db,
-            report,
-            selected_sources=selected_sources,
-            resolved_report_type=resolved_report_type,
-            resolved_report_definition=resolved_report_definition,
-            slide_keys=final_slide_keys,
-            error_code="report_blocks_persistence_failed",
-            exc=exc,
-        )
-        raise _generation_failure_http_error(exc)
-    logger.info(
-        "report_generation_completed",
-        extra={
-            "report_id": report.id,
-            "workspace_id": report.workspace_id,
-            "dataset_id": dataset.id,
-            "selected_sources": selected_sources,
-            "resolved_report_type": resolved_report_type,
-            "resolved_report_definition": resolved_report_definition,
-            "slide_keys": final_slide_keys,
-            "generation_status": "completed",
-        },
-    )
-    try:
-        _generate_and_store_report_thumbnail(
-            db=db,
-            report=report,
-            report_version=report_version,
-            user_id=current_user.id,
-            sync_branding_from_user=False,
-        )
-    except HTTPException:
-        logger.exception("Meta Pages thumbnail generation failed", extra={"report_id": report.id})
-    except Exception:
-        logger.exception("Unexpected Meta Pages thumbnail generation failure", extra={"report_id": report.id})
-
-    _track_meta_event(
-        event_name="ReportCreated",
-        user=current_user,
-        request=request,
-        event_source_url=_tracking_event_source_url(request, f"/reports/{report.id}"),
-        custom_data={
-            "report_id": report.id,
-            "workspace_id": dataset.workspace_id,
-            "dataset_id": dataset.id,
-            "generation_mode": generation_mode,
-            "report_source": report_source,
-        },
-    )
-    integration_metadata = derive_report_integration_metadata(db, report, dataset=dataset)
-    return MetaPagesReportCreateOut(
-        report_id=report.id,
-        version_id=report_version.id,
-        version=report_version.version,
-        dataset_id=dataset.id,
-        title=title,
-        locale=locale,
-        status="ready",
-        selected_integration_metadata=integration_metadata,
+        block_specs=tuple(block_specs), sources=payload.sources,
     )
 
 
@@ -25151,14 +24433,13 @@ def create_meta_pages_report(
     if not dataset:
         raise http_error(404, "dataset_not_found", "Dataset not found.")
     _require_workspace_access(db, current_user.id, dataset.workspace_id)
-    return _create_meta_dataset_report(
+    return _generate_manual_report(
         dataset=dataset,
         payload=payload,
         current_user=current_user,
         request=request,
         db=db,
-        report_source="meta_pages_v2",
-        generation_mode="meta_pages",
+        builder="meta_pages",
     )
 
 
@@ -25227,15 +24508,16 @@ def create_instagram_business_report(
                 else [],
             },
         )
-        response = _create_meta_dataset_report(
+        response = _generate_manual_report(
             dataset=dataset,
             payload=payload,
             current_user=current_user,
             request=request,
             db=db,
-            report_source="instagram_business_v1",
-            generation_mode="instagram_business",
+            builder="instagram_business",
         )
+        if isinstance(response, JSONResponse):
+            return response
         logger.warning(
             "instagram_report_created",
             extra={
@@ -25294,14 +24576,13 @@ def create_meta_ads_report(
             "timeframe": dataset_data.get("timeframe") if isinstance(dataset_data.get("timeframe"), dict) else None,
         },
     )
-    return _create_meta_dataset_report(
+    return _generate_manual_report(
         dataset=dataset,
         payload=payload,
         current_user=current_user,
         request=request,
         db=db,
-        report_source="meta_ads",
-        generation_mode="meta_ads",
+        builder="meta_ads",
     )
 
 
@@ -28659,7 +27940,7 @@ def _resolve_shopify_workspace_id(
     )
 
 
-def _get_or_create_shopify_integration_for_workspace(db: Session, workspace_id: int) -> Integration:
+def _get_or_create_shopify_integration_for_workspace(db: Session, workspace_id: int, *, commit: bool = True) -> Integration:
     integration = (
         db.query(Integration)
         .filter(Integration.workspace_id == workspace_id, Integration.provider == SHOPIFY_PROVIDER)
@@ -28675,7 +27956,10 @@ def _get_or_create_shopify_integration_for_workspace(db: Session, workspace_id: 
         status=SHOPIFY_STATUS_DISCONNECTED,
     )
     db.add(integration)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(integration)
     return integration
 

@@ -41,6 +41,7 @@ REPORT_DELETE_TABLES = [
     UserAttribution.__table__,
     ReferralConversion.__table__,
     Report.__table__,
+    Base.metadata.tables["report_generations"],
     ReportSource.__table__,
     ReportVersion.__table__,
     ReportBlock.__table__,
