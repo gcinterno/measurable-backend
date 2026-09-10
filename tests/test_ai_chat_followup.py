@@ -39,6 +39,7 @@ AI_TABLES = [
     Subscription.__table__,
     Dataset.__table__,
     Report.__table__,
+    Base.metadata.tables["report_generations"],
     Conversation.__table__,
     Message.__table__,
 ]

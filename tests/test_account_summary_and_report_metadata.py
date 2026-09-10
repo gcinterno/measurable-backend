@@ -42,6 +42,7 @@ ACCOUNT_TABLES = [
     MetaPage.__table__,
     Dataset.__table__,
     Report.__table__,
+    Base.metadata.tables["report_generations"],
     ReportSource.__table__,
     ReportVersion.__table__,
 ]

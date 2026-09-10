@@ -51,6 +51,7 @@ ADMIN_TABLES = [
     UserAttribution.__table__,
     ReferralConversion.__table__,
     Report.__table__,
+    Base.metadata.tables["report_generations"],
     AccountDeletionFeedback.__table__,
     UserSuggestion.__table__,
     WishlistLead.__table__,

@@ -51,6 +51,7 @@ BRANDING_TABLES = [
     UserAttribution.__table__,
     ReferralConversion.__table__,
     Report.__table__,
+    Base.metadata.tables["report_generations"],
     ReportVersion.__table__,
     ReportBlock.__table__,
     ReportSource.__table__,
@@ -68,7 +69,10 @@ def branding_schema():
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
+    monkeypatch.setattr("app.main._generate_and_store_report_thumbnail", lambda **kwargs: None)
+    monkeypatch.setattr("app.main.generate_meta_pages_ai_summary", lambda *args, **kwargs: "Report summary")
+
     def override_get_db():
         db = SessionLocal()
         try:
@@ -114,7 +118,7 @@ def _seed_branding_fixture(*, plan: str) -> dict[str, int]:
             workspace_id=workspace.id,
             name="Dataset",
             description="Branding test dataset",
-            data={},
+            data={"page_name": "Example", "reach": 100},
         )
         db.add(dataset)
         db.commit()

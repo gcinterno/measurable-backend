@@ -64,6 +64,7 @@ INSTAGRAM_LOGIN_TABLES = [
     Report.__table__,
     ReportVersion.__table__,
     ReportSource.__table__,
+    Base.metadata.tables["report_generations"],
 ]
 
 
@@ -1128,7 +1129,7 @@ def test_instagram_business_report_accepts_dataset_from_instagram_business_login
             status="ready",
         )
 
-    monkeypatch.setattr(main_module, "_create_meta_dataset_report", fake_create_meta_dataset_report)
+    monkeypatch.setattr(main_module, "_generate_manual_report", fake_create_meta_dataset_report)
 
     response = client.post(
         "/reports/instagram-business",

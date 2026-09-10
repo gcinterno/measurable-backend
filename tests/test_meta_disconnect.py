@@ -61,6 +61,7 @@ META_DISCONNECT_TABLES = [
     MetaPage.__table__,
     Dataset.__table__,
     Report.__table__,
+    Base.metadata.tables["report_generations"],
     ReportVersion.__table__,
 ]
 
