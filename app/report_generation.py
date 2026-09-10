@@ -44,6 +44,8 @@ class ExecutableReportConfiguration:
     requested_slides: int | None = None
     template: str | None = None
     report_spec: Mapping[str, Any] | None = None
+    branding: Mapping[str, Any] | None = None
+    builder_contract: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,22 +111,36 @@ class GenerationError(Exception):
         self.details = details or {}
 
 
-def _validate_command(db: Session, command: GenerateReportCommand) -> None:
-    if command.configuration.builder not in {"dataset", "meta_pages", "instagram_business", "meta_ads", "shopify", "multi_source"}:
+def validate_executable_configuration(configuration: ExecutableReportConfiguration) -> None:
+    """Validate canonical configuration without reserving quota or loading datasource values."""
+    if configuration.builder not in {"dataset", "meta_pages", "instagram_business", "meta_ads", "shopify", "multi_source"}:
         raise GenerationError("unsupported_report_builder", "Unsupported report builder.")
-    if command.configuration.template is not None and command.configuration.builder != "meta_ads":
+    if configuration.template is not None and configuration.builder != "meta_ads":
         raise GenerationError("template_not_executable", "This builder does not support a template override.")
-    if command.configuration.requested_slides is not None and command.configuration.requested_slides < 1:
+    if configuration.requested_slides is not None and configuration.requested_slides < 1:
         raise GenerationError("invalid_slide_count", "A report must contain at least one slide.")
-    if command.options.ai_mode not in {"standard", "agents"}:
-        raise GenerationError("invalid_ai_mode", "Unsupported AI generation mode.")
-    if command.configuration.report_spec is not None:
+    if configuration.report_spec is not None:
         try:
-            assert_valid_report_spec(command.configuration.report_spec)
+            assert_valid_report_spec(configuration.report_spec)
         except InvalidReportSpecError as exc:
             raise GenerationError("invalid_report_spec", str(exc)) from exc
         # Validation/storage do not imply execution support. Never discard supplied slides/bindings.
         raise GenerationError("report_spec_not_executable", "This ReportSpec does not have a supported generation executor.")
+    if configuration.builder_contract is not None:
+        from .report_generation_builders import current_builder_contract
+
+        if configuration.builder_contract != current_builder_contract(configuration.builder):
+            raise GenerationError("builder_contract_changed", "The pinned builder contract is no longer supported.", status_code=409)
+    if configuration.branding is not None:
+        from .report_generation_builders import validate_pinned_branding
+
+        validate_pinned_branding(configuration.branding)
+
+
+def _validate_command(db: Session, command: GenerateReportCommand) -> None:
+    validate_executable_configuration(command.configuration)
+    if command.options.ai_mode not in {"standard", "agents"}:
+        raise GenerationError("invalid_ai_mode", "Unsupported AI generation mode.")
     if not command.sources or command.sources[0].dataset_id is None:
         raise GenerationError("dataset_required", "Generation requires an explicit primary dataset.")
     if command.configuration.builder != "multi_source" and len(command.sources) != 1:
@@ -186,6 +202,10 @@ def _validate_command(db: Session, command: GenerateReportCommand) -> None:
 def _command_hash(command: GenerateReportCommand) -> str:
     payload = asdict(command)
     payload.pop("idempotency_key")
+    # Preserve identities already persisted before optional snapshot pinning existed.
+    for key in ("branding", "builder_contract"):
+        if payload["configuration"][key] is None:
+            payload["configuration"].pop(key)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 

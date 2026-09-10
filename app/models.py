@@ -997,3 +997,7 @@ class AuditLog(Base):
 
     workspace: Mapped[Workspace] = relationship(back_populates="audit_logs")
     user: Mapped[Optional[User]] = relationship(back_populates="audit_logs")
+
+
+# Separate from legacy Schedule/Job; new revisions and history must never inherit legacy deletion semantics.
+from .scheduled_report_models import ScheduledReport, ScheduledReportRevision, ScheduledReportRun, ScheduledReportSource

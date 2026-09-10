@@ -1,13 +1,63 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import asdict, dataclass
+import hashlib
+import json
+from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
 from .models import Dataset, DatasetFile, Integration, IntegrationAccount
 from .report_generation import ReportDraft, GenerateReportCommand, GenerationError, SourceIdentity
+
+
+# Bump when builtin layouts/bindings change. Stored snapshots fail closed across incompatible releases.
+BUILDER_CONTRACT_VERSION = 1
+PINNED_BRANDING_KEYS = frozenset({
+    "name", "display_name", "brand_name", "logo_url", "brand_logo_url", "fallback_logo_url",
+    "resolved_logo_url", "resolved_brand_name", "source", "watermark_enabled", "watermark_label",
+    "watermark_logo_light_url", "watermark_logo_dark_url", "has_custom_branding", "font_family",
+    "font_stack", "pptx_font_face", "typography",
+})
+
+
+def current_builder_contract(builder: str) -> str:
+    from . import main as providers
+    from .report_recipes import get_report_recipe
+
+    recipe_id = {"meta_pages": "facebook_pages_5", "instagram_business": "instagram_business_5",
+                 "multi_source": "facebook_instagram_10"}.get(builder)
+    recipe = get_report_recipe(recipe_id) if recipe_id else None
+    mode = (providers._facebook_pages_5_recipe_builder_mode() if builder == "meta_pages" else
+            providers._facebook_instagram_10_recipe_builder_mode() if builder == "multi_source" else "builtin")
+    payload = {"version": BUILDER_CONTRACT_VERSION, "builder": builder, "mode": mode,
+               "recipe": asdict(recipe) if recipe else None}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def validate_pinned_branding(branding: Mapping[str, Any]) -> None:
+    if set(branding) != PINNED_BRANDING_KEYS:
+        raise GenerationError("invalid_branding_snapshot", "A complete supported branding snapshot is required.")
+    for key, value in branding.items():
+        if key == "typography":
+            from .services import REPORT_EXPORT_TYPOGRAPHY
+
+            if value != REPORT_EXPORT_TYPOGRAPHY:
+                raise GenerationError("unsupported_typography", "Custom typography is not executable.")
+        elif key in {"watermark_enabled", "has_custom_branding"}:
+            if not isinstance(value, bool):
+                raise GenerationError("invalid_branding_snapshot", "Invalid branding flag.")
+        elif value is not None and (not isinstance(value, str) or len(value) > 2048):
+            raise GenerationError("invalid_branding_snapshot", "Invalid branding value.")
+        if key.endswith("url") and value:
+            try:
+                parsed = urlsplit(value)
+            except ValueError as exc:
+                raise GenerationError("invalid_branding_url", "Branding URLs must be valid public URLs.") from exc
+            if parsed.query or parsed.fragment or parsed.username or parsed.password or parsed.scheme not in {"", "http", "https"}:
+                raise GenerationError("private_branding_url", "Branding must use public URLs without credentials or signed query strings.")
 
 
 def copy_generation_row(row: Any) -> Any:
@@ -42,8 +92,18 @@ def prepare_report_inputs(db: Session, command: GenerateReportCommand) -> Prepar
     requested = 5 if builder in {"instagram_business", "shopify"} else command.configuration.requested_slides
     default = providers.DEFAULT_GENERATED_REPORT_SLIDE_COUNT if builder == "dataset" else 5 if builder in {"instagram_business", "shopify"} else 11
     limits = resolve_report_slide_limits(db, command.workspace_id, requested_slides=requested, default_slides=default) if builder != "multi_source" else {}
+    if command.configuration.builder_contract is not None and limits and limits["effective_slide_limit"] != requested:
+        raise GenerationError("pinned_configuration_plan_restricted", "Current plan cannot execute the pinned slide count.", status_code=403)
+    branding = command.configuration.branding
+    if branding is not None:
+        from .services import can_use_brand_personalization
+
+        if not can_use_brand_personalization(db, command.workspace_id):
+            raise GenerationError("pinned_branding_plan_restricted", "Current plan cannot execute pinned branding.", status_code=403)
+    else:
+        branding = resolve_report_branding_for_workspace(db, command.workspace_id)
     return PreparedGeneration(datasets, files, integrations, accounts, limits,
-                              deepcopy(resolve_report_branding_for_workspace(db, command.workspace_id)),
+                              deepcopy(dict(branding)),
                               can_use_multi_platform_report(db, command.workspace_id))
 
 

@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import MetaData, create_engine, event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
@@ -77,7 +77,12 @@ def postgres_factory():
         connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
     engine = create_engine(url, connect_args={"options": f"-csearch_path={schema}"})
     try:
-        Base.metadata.create_all(engine)
+        # PostgreSQL's cyclic-FK DDL annotates constraint objects. Keep that state out
+        # of the shared model metadata subsequently used by SQLite tests.
+        metadata = MetaData()
+        for table in Base.metadata.tables.values():
+            table.to_metadata(metadata)
+        metadata.create_all(engine)
         yield sessionmaker(bind=engine, autoflush=False)
     finally:
         engine.dispose()
@@ -805,3 +810,47 @@ def test_postgres_migration_backfill_100000_reports(postgres_factory, record_pro
     with postgres_factory() as db:
         assert db.query(Report).count() == db.query(ReportGeneration).count() == 100000
         assert get_workspace_report_quota_status(db, command.workspace_id)["reports_used"] == 100000
+
+
+def test_optional_snapshot_fields_preserve_phase_one_idempotency_hash(factory):
+    from dataclasses import asdict
+    import hashlib
+
+    command = seed(factory)
+    original_payload = asdict(command)
+    original_payload.pop("idempotency_key")
+    original_payload["configuration"].pop("branding")
+    original_payload["configuration"].pop("builder_contract")
+    original_hash = hashlib.sha256(json.dumps(original_payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+    assert generation_module._command_hash(command) == original_hash
+
+
+def test_pinned_branding_reaches_same_builder_without_mutable_workspace_lookup(factory, monkeypatch):
+    from app.services import resolve_report_branding_for_workspace
+
+    command = seed(factory, provider="facebook_pages")
+    with factory() as db:
+        branding = resolve_report_branding_for_workspace(db, command.workspace_id, preferred_branding={"brand_name": "Frozen agency"})
+        db.get(Workspace, command.workspace_id).name = "Changed after snapshot"
+        db.commit()
+    command = replace(command, configuration=replace(command.configuration, branding=branding,
+                                                       builder_contract=builders.current_builder_contract("meta_pages")))
+    seen = []
+    def build(command, prepared):
+        seen.append(prepared.branding)
+        return persist_stub(command, prepared)
+    monkeypatch.setattr(builders, "build_report", build)
+    with factory() as db:
+        first = generate_report(db, command)
+        retry = generate_report(db, command)
+    assert seen == [branding]
+    assert retry.replayed and first.report_id == retry.report_id
+
+
+def test_incompatible_pinned_builder_rejected_before_capacity_reservation(factory, stub_builder):
+    command = seed(factory, provider="facebook_pages")
+    command = replace(command, configuration=replace(command.configuration, builder_contract="obsolete"))
+    with factory() as db:
+        with pytest.raises(GenerationError, match="pinned builder"):
+            generate_report(db, command)
+        assert db.query(ReportGeneration).count() == db.query(Report).count() == 0
