@@ -43,6 +43,7 @@ ACCOUNT_TABLES = [
     Dataset.__table__,
     Report.__table__,
     Base.metadata.tables["report_generations"],
+    Base.metadata.tables["exports"],
     ReportSource.__table__,
     ReportVersion.__table__,
 ]

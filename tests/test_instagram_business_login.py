@@ -58,6 +58,7 @@ INSTAGRAM_LOGIN_TABLES = [
     Dataset.__table__,
     DatasetFile.__table__,
     Base.metadata.tables["report_generations"],
+    Base.metadata.tables["exports"],
 ]
 
 

@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -987,6 +988,8 @@ class Export(Base):
     __table_args__ = (
         Index("ix_exports_workspace_id", "workspace_id"),
         Index("ix_exports_report_id", "report_id"),
+        Index("uq_exports_pdf_version", "report_version_id", unique=True,
+              postgresql_where=text("artifact_type = 'PDF'"), sqlite_where=text("artifact_type = 'PDF'")),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -995,6 +998,19 @@ class Export(Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     output_s3_key: Mapped[Optional[str]] = mapped_column(String(1024))
     download_key: Mapped[Optional[str]] = mapped_column(String(1024))
+    artifact_type: Mapped[str] = mapped_column(String(10), nullable=False, default="PPTX", server_default="PPTX")
+    report_version_id: Mapped[Optional[int]] = mapped_column(ForeignKey("report_versions.id", ondelete="SET NULL", name="fk_exports_report_version"))
+    render_snapshot_json: Mapped[Optional[dict]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    snapshot_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    renderer_version: Mapped[Optional[str]] = mapped_column(String(100))
+    storage_bucket: Mapped[Optional[str]] = mapped_column(String(255))
+    content_type: Mapped[Optional[str]] = mapped_column(String(100))
+    size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    checksum_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[Optional[str]] = mapped_column(String(100))
+    lease_token: Mapped[Optional[str]] = mapped_column(String(36))
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -1086,3 +1102,4 @@ class AuditLog(Base):
 
 # Separate from legacy Schedule/Job; new revisions and history must never inherit legacy deletion semantics.
 from .scheduled_report_models import ScheduledReport, ScheduledReportRevision, ScheduledReportRun, ScheduledReportSource
+from .report_delivery_models import ScheduledReportDelivery

@@ -197,7 +197,7 @@ def validate_snapshot(db, revision):
 
 
 def _validate_snapshot(db, revision):
-    from .scheduled_reports import configuration_hash, _validate_source_configuration, SourceInput, OptionsInput
+    from .scheduled_reports import configuration_hash, _validate_source_configuration, SourceInput, OptionsInput, DeliveryInput
     snapshot = revision.snapshot_json
     if revision.schema_version != 1 or snapshot.get("schema_version") != 1 or configuration_hash(snapshot) != revision.configuration_hash:
         raise GenerationError("configuration_not_supported", "Schedule configuration is invalid.")
@@ -209,6 +209,7 @@ def _validate_snapshot(db, revision):
     if options.pop("allow_configuration_only", False) is not False:
         raise GenerationError("configuration_not_supported", "Scheduled reports must generate complete reports.")
     OptionsInput.model_validate(options)
+    DeliveryInput.model_validate(snapshot.get("delivery", {}))
     for source in snapshot["sources"]:
         SourceInput.model_validate(source)
     _validate_source_configuration(snapshot["configuration"], snapshot["sources"])
@@ -220,13 +221,17 @@ def quota_state(db, workspace_id):
 
 
 def run_output(row):
+    from sqlalchemy.orm import object_session
+    from .scheduled_report_delivery import delivery_output
+    db = object_session(row)
     fields = ("id", "schedule_id", "workspace_id", "trigger_type", "timezone", "configuration_revision", "configuration_hash",
               "idempotency_key", "status", "stage", "attempt_count", "report_id", "report_version_id", "error_code", "failure_class",
               "reporting_start_date", "reporting_end_date")
     dates = ("scheduled_for", "reporting_period_start", "reporting_period_end", "retry_after", "started_at", "completed_at", "created_at")
     return {**{key: getattr(row, key) for key in fields},
             **{key: _utc(getattr(row, key)) if getattr(row, key) else None for key in dates},
-            "quota": row.quota_json, "upgrade_required": row.status == "QUOTA_BLOCKED" or row.error_code == "SCHEDULE_ENTITLEMENT_REQUIRED"}
+            "quota": row.quota_json, "upgrade_required": row.status == "QUOTA_BLOCKED" or row.error_code == "SCHEDULE_ENTITLEMENT_REQUIRED",
+            "delivery": delivery_output(db, row) if db is not None else None}
 
 
 def _event(row, result):
@@ -249,6 +254,9 @@ def finish_run(factory, claim, *, status, code=None, failure_class=None, retryab
             row.retry_after = now + timedelta(seconds=RETRY_DELAYS[row.attempt_count - 1])
         else:
             row.status, row.completed_at = status, now
+        if row.status == "SUCCEEDED":
+            from .scheduled_report_delivery import prepare_delivery
+            prepare_delivery(db, row)
         row.error_code, row.failure_class = code, failure_class
         row.error_detail = "Execution requires attention; see error_code." if code else None
         row.lease_token = row.lease_expires_at = row.worker_id = None

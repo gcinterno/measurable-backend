@@ -1225,7 +1225,7 @@ def build_auth_email_text(
     )
 
 
-def _ses_client() -> Any:
+def _ses_client(*, single_attempt: bool = False) -> Any:
     client_kwargs: dict[str, Any] = {"region_name": settings.aws_region}
     if settings.aws_access_key_id:
         client_kwargs["aws_access_key_id"] = settings.aws_access_key_id
@@ -1233,7 +1233,33 @@ def _ses_client() -> Any:
         client_kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
     if settings.aws_session_token:
         client_kwargs["aws_session_token"] = settings.aws_session_token
+    if single_attempt:
+        from botocore.config import Config
+        client_kwargs["config"] = Config(connect_timeout=10, read_timeout=30, retries={"total_max_attempts": 1})
     return boto3.client("ses", **client_kwargs)
+
+
+def send_email_message(*, recipients: list[str], subject: str, html_body: str,
+                       text_body: str, purpose: str, single_attempt: bool = False) -> str | None:
+    """Shared SES transport; callers own domain errors and persisted retry semantics."""
+    from_email = str(settings.ses_from_email or "").strip()
+    if not from_email:
+        raise http_error(503, "email_service_unavailable", "Email service is not configured.")
+    ses = _ses_client(single_attempt=True) if single_attempt else _ses_client()
+    kwargs = {
+        "Source": from_email,
+        # Delivery recipients do not need to see one another's addresses.
+        "Destination": {"BccAddresses" if purpose == "scheduled_report" else "ToAddresses": recipients},
+        "ReplyToAddresses": ["hello@measurableapp.com"],
+        "Tags": [{"Name": "purpose", "Value": purpose}, {"Name": "environment", "Value": "production"}],
+        "Message": {"Subject": {"Data": subject, "Charset": "UTF-8"},
+                    "Body": {"Text": {"Data": text_body, "Charset": "UTF-8"},
+                             "Html": {"Data": html_body, "Charset": "UTF-8"}}},
+    }
+    configuration_set = str(settings.ses_configuration_set_name or "").strip()
+    if configuration_set:
+        kwargs["ConfigurationSetName"] = configuration_set
+    return str(ses.send_email(**kwargs).get("MessageId") or "").strip() or None
 
 
 def _safe_email_delivery_reason(exc: Exception) -> str:
@@ -1283,29 +1309,8 @@ def send_auth_email(
     )
 
     try:
-        ses = _ses_client()
-        send_kwargs: dict[str, Any] = {
-            "Source": from_email,
-            "Destination": {"ToAddresses": [recipient_email]},
-            "ReplyToAddresses": ["hello@measurableapp.com"],
-            "Tags": [
-                {"Name": "purpose", "Value": purpose},
-                {"Name": "environment", "Value": "production"},
-            ],
-            "Message": {
-                "Subject": {"Data": subject, "Charset": "UTF-8"},
-                "Body": {
-                    "Text": {"Data": text_body, "Charset": "UTF-8"},
-                    "Html": {"Data": html_body, "Charset": "UTF-8"},
-                },
-            },
-        }
-        if configuration_set_name:
-            send_kwargs["ConfigurationSetName"] = configuration_set_name
-        response = ses.send_email(
-            **send_kwargs,
-        )
-        message_id = str(response.get("MessageId") or "").strip() or None
+        message_id = send_email_message(recipients=[recipient_email], subject=subject,
+            html_body=html_body, text_body=text_body, purpose=purpose)
         logger.info(
             "SES_EMAIL_SENT",
             extra={
@@ -4692,6 +4697,7 @@ def generate_pdf_from_export_page(
     export_url: str,
     report_id: int,
     auth_token: str | None = None,
+    pinned_request: Any = None,
 ) -> tuple[bytes, dict[str, Any]]:
     try:
         from playwright.sync_api import Error as PlaywrightError
@@ -4766,6 +4772,7 @@ def generate_pdf_from_export_page(
             context = browser.new_context(
                 viewport={"width": viewport_width, "height": viewport_height},
                 device_scale_factor=device_scale_factor,
+                service_workers="block",
                 extra_http_headers=(
                     {
                         "Authorization": f"Bearer {auth_token}",
@@ -4775,6 +4782,8 @@ def generate_pdf_from_export_page(
                     else None
                 ),
             )
+            if pinned_request is not None:
+                pinned_request.install(context)
             page = context.new_page()
             page.emulate_media(media="screen")
 
@@ -4858,10 +4867,13 @@ def generate_pdf_from_export_page(
                     },
                 )
 
-            page.on("response", _handle_response)
-            page.on("console", _handle_console)
-            page.on("pageerror", _handle_page_error)
-            page.on("requestfailed", _handle_request_failed)
+            if pinned_request is None:
+                # Playwright callbacks may use separate greenlet contexts. Do not
+                # rely on context-local log filters to redact frozen-export IO.
+                page.on("response", _handle_response)
+                page.on("console", _handle_console)
+                page.on("pageerror", _handle_page_error)
+                page.on("requestfailed", _handle_request_failed)
 
             main_response = page.goto(export_url, wait_until="domcontentloaded", timeout=timeout_ms)
             main_response_status = main_response.status if main_response is not None else None

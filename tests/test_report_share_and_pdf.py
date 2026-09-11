@@ -40,6 +40,7 @@ REPORT_SHARE_TABLES = [
     Dataset.__table__,
     Report.__table__,
     Base.metadata.tables["report_generations"],
+    Base.metadata.tables["exports"],
     ReportVersion.__table__,
     ReportBlock.__table__,
     ReportShare.__table__,

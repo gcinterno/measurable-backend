@@ -405,6 +405,9 @@ def _finalize_generation(db: Session, command: GenerateReportCommand, reservatio
         if db.get_transaction() is not transaction:
             raise GenerationError("generation_transaction_violation", "Generation lost its finalization transaction.", status_code=500)
         _validate_generated_state(db, command, built)
+        if built.outcome == "completed":
+            from .report_artifacts import freeze_generated_version
+            freeze_generated_version(db, built.report_id, built.version_id)
         if reports_created != {built.report_id} or versions_created != {built.version_id}:
             raise GenerationError("invalid_generation_cardinality", "One generation must create exactly one report and version.", status_code=500)
         generation.state = "consumed"

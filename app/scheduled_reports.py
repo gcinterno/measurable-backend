@@ -11,9 +11,9 @@ from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, ValidationError, field_validator, model_validator, model_serializer
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from .deps import get_current_user, get_db
 from .errors import http_error
@@ -47,6 +47,39 @@ router = APIRouter(prefix="/scheduled-reports", tags=["scheduled-reports"], rout
 RECURRENCE_FIELDS = ("frequency", "day_of_week", "day_of_month", "local_time", "timezone", "period_policy")
 
 
+@router.get("/{schedule_id}/runs/{run_id}/pdf")
+def download_scheduled_pdf(schedule_id: int, run_id: int, workspace_id: int = Query(gt=0),
+                           current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from .models import Export
+    from .report_artifacts import ArtifactError, download_url, ensure_pdf
+    from .scheduled_report_refresh import private_provider_io
+    require_workspace_access(db, current_user, workspace_id)
+    _schedule(db, schedule_id, workspace_id)
+    run = db.query(ScheduledReportRun).filter_by(id=run_id, schedule_id=schedule_id, workspace_id=workspace_id).first()
+    if run is None:
+        raise http_error(404, "scheduled_run_not_found", "Scheduled run not found.")
+    if run.status != "SUCCEEDED" or not run.report_version_id:
+        raise http_error(409, "scheduled_pdf_unavailable", "This run has no completed report version.")
+    artifact = db.query(Export).filter_by(workspace_id=workspace_id, report_id=run.report_id,
+        report_version_id=run.report_version_id, artifact_type="PDF").first()
+    if artifact is None:
+        raise http_error(409, "render_snapshot_unavailable", "No immutable render snapshot exists for this historical version.")
+    export_id = artifact.id
+    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+    db.rollback()  # Renderer/S3 work must not retain the request's read transaction.
+    try:
+        with private_provider_io():
+            result = ensure_pdf(factory, export_id)
+            signed_url = download_url(result)
+        return JSONResponse({"artifact_id": result.id, "report_id": result.report_id,
+            "report_version_id": result.version_id, "download_url": signed_url, "expires_in": 900},
+            headers={"Cache-Control": "private, no-store"})
+    except ArtifactError as exc:
+        raise http_error(409 if exc.code == "artifact_in_progress" else 503, exc.code, "PDF export is unavailable.") from exc
+    except Exception as exc:
+        raise http_error(503, "pdf_artifact_unavailable", "PDF export is temporarily unavailable.") from exc
+
+
 class StrictInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -76,6 +109,21 @@ class OptionsInput(StrictInput):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     locale: Literal["en", "es"] = "en"
     ai_mode: Literal["standard"] = "standard"
+
+
+class DeliveryInput(StrictInput):
+    mode: Literal["GENERATE_ONLY", "EMAIL_PDF"] = "GENERATE_ONLY"
+    recipients: list[EmailStr] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_recipients(self):
+        if any(not str(email).isascii() for email in self.recipients):
+            raise ValueError("V1 email delivery requires ASCII email addresses.")
+        if (self.mode == "EMAIL_PDF") != bool(self.recipients):
+            raise ValueError("EMAIL_PDF requires recipients; GENERATE_ONLY must not include recipients.")
+        if len({str(email).lower() for email in self.recipients}) != len(self.recipients):
+            raise ValueError("Recipients must be distinct.")
+        return self
 
 
 class SourceInput(StrictInput):
@@ -110,6 +158,7 @@ class ScheduleCreateInput(RecurrenceInput):
     configuration: ConfigurationInput
     generation_options: OptionsInput = Field(default_factory=OptionsInput)
     sources: list[SourceInput] = Field(min_length=1, max_length=2)
+    delivery: DeliveryInput = Field(default_factory=DeliveryInput)
 
 
 class ScheduleUpdateInput(StrictInput):
@@ -124,8 +173,9 @@ class ScheduleUpdateInput(StrictInput):
     generation_options: OptionsInput | None = None
     sources: list[SourceInput] | None = Field(default=None, min_length=1, max_length=2)
     expected_revision: int | None = Field(default=None, gt=0, strict=True)
+    delivery: DeliveryInput | None = None
 
-    @field_validator("name", "frequency", "local_time", "timezone", "period_policy", "configuration", "generation_options", "sources", "expected_revision")
+    @field_validator("name", "frequency", "local_time", "timezone", "period_policy", "configuration", "generation_options", "sources", "expected_revision", "delivery")
     @classmethod
     def reject_explicit_null(cls, value: Any) -> Any:
         if value is None:
@@ -148,6 +198,14 @@ class SnapshotOutput(BaseModel):
     configuration: ExecutableReportConfiguration
     generation_options: GenerationOptions
     sources: list[SourceInput]
+    delivery: DeliveryInput = Field(default_factory=DeliveryInput)
+
+    @model_serializer(mode="wrap")
+    def preserve_historical_hash(self, handler):
+        result = handler(self)
+        if "delivery" not in self.model_fields_set:
+            result.pop("delivery", None)
+        return result
 
 
 class ScheduleOutput(BaseModel):
@@ -166,6 +224,7 @@ class ScheduleOutput(BaseModel):
     configuration_revision: int
     configuration_hash: str
     configuration_snapshot: SnapshotOutput
+    delivery: DeliveryInput
     sources: list[SourceInput]
     availability: AvailabilityOutput
     next_run_at: datetime | None
@@ -304,12 +363,16 @@ def _recurrence(snapshot: dict) -> Recurrence:
     return RecurrenceInput.model_validate(snapshot["recurrence"]).domain()
 
 
-def _snapshot(recurrence: Recurrence, configuration: dict, options: dict, sources: list[dict]) -> dict:
+def _snapshot(recurrence: Recurrence, configuration: dict, options: dict, sources: list[dict], delivery: dict | None = None) -> dict:
     _validate_source_configuration(configuration, sources)
     recurrence_json = asdict(recurrence)
     recurrence_json["local_time"] = recurrence.local_time.isoformat(timespec="minutes")
-    return {"schema_version": 1, "recurrence": recurrence_json, "configuration": configuration,
+    snapshot = {"schema_version": 1, "recurrence": recurrence_json, "configuration": configuration,
             "generation_options": options, "sources": sources}
+    # Absence retains the original Phase 2 hash and means generate-only.
+    if delivery and delivery.get("mode") != "GENERATE_ONLY":
+        snapshot["delivery"] = DeliveryInput.model_validate(delivery).model_dump(mode="json")
+    return snapshot
 
 
 def configuration_hash(snapshot: dict) -> str:
@@ -369,6 +432,7 @@ def _out(db: Session, schedule: ScheduledReport) -> dict[str, Any]:
         **{key: getattr(schedule, key).isoformat(timespec="minutes") if key == "local_time" else getattr(schedule, key) for key in RECURRENCE_FIELDS},
         "configuration_revision": schedule.configuration_revision, "configuration_hash": revision.configuration_hash,
         "configuration_snapshot": revision.snapshot_json, "sources": revision.snapshot_json["sources"],
+        "delivery": DeliveryInput.model_validate(revision.snapshot_json.get("delivery", {})),
         "availability": {**availability, "execution_available": schedule.status == "ACTIVE" and reason is None,
                          "execution_unavailable_reason": reason or (schedule.status.lower() if schedule.status != "ACTIVE" else None)},
         **{key: _utc(getattr(schedule, key)) for key in ("next_run_at", "last_run_at", "created_at", "updated_at", "archived_at")},
@@ -412,7 +476,7 @@ def create_scheduled_report(payload: ScheduleCreateInput, current_user: User = D
     try:
         sources = _sources(db, payload.workspace_id, payload.sources)
         snapshot = _snapshot(recurrence, _configuration(db, payload.workspace_id, payload.configuration),
-                             asdict(GenerationOptions(**payload.generation_options.model_dump())), sources)
+                             asdict(GenerationOptions(**payload.generation_options.model_dump())), sources, payload.delivery.model_dump(mode="json"))
         problem = _source_problem(db, sources, payload.workspace_id)
         schedule = ScheduledReport(workspace_id=payload.workspace_id, created_by_user_id=current_user.id,
                                    name=payload.name, status="BLOCKED" if problem else "ACTIVE", status_reason=problem, configuration_revision=1)
@@ -448,7 +512,8 @@ def update_scheduled_report(schedule_id: int, payload: ScheduleUpdateInput, work
         configuration = _configuration(db, workspace_id, payload.configuration) if payload.configuration is not None else old["configuration"]
         sources = _sources(db, workspace_id, payload.sources) if payload.sources is not None else old["sources"]
         options = asdict(GenerationOptions(**payload.generation_options.model_dump())) if payload.generation_options is not None else old["generation_options"]
-        snapshot = _snapshot(recurrence, configuration, options, sources)
+        delivery = payload.delivery.model_dump(mode="json") if payload.delivery is not None else old.get("delivery")
+        snapshot = _snapshot(recurrence, configuration, options, sources, delivery)
         if configuration_hash(snapshot) != old_revision.configuration_hash:
             schedule.configuration_revision += 1
             _append_revision(db, schedule, snapshot, current_user.id)
