@@ -242,6 +242,19 @@ class ScheduleListOutput(BaseModel):
     availability: AvailabilityOutput
 
 
+class SourceCatalogItemOutput(BaseModel):
+    binding: SourceInput
+    display_label: str
+    connected: bool
+    available: bool
+    unavailable_reason: str | None
+
+
+class SourceCatalogOutput(BaseModel):
+    items: list[SourceCatalogItemOutput]
+    availability: AvailabilityOutput
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -459,6 +472,16 @@ def list_scheduled_reports(workspace_id: int = Query(gt=0), include_archived: bo
     rows = query.order_by(ScheduledReport.id.desc()).offset(offset).limit(limit).all()
     return {"items": [_out(db, row) for row in rows], "total": total, "limit": limit, "offset": offset,
             "availability": schedule_availability(db, workspace_id)}
+
+
+@router.get("/source-catalog", response_model=SourceCatalogOutput)
+def scheduled_report_source_catalog(response: Response, workspace_id: int = Query(gt=0),
+                                    builder: Literal["meta_pages", "instagram_business", "meta_ads", "shopify", "multi_source"] = Query(),
+                                    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    from .scheduled_report_catalog import source_catalog
+    require_workspace_access(db, current_user, workspace_id)
+    response.headers["Cache-Control"] = "private, no-store"
+    return {"items": source_catalog(db, workspace_id, builder), "availability": schedule_availability(db, workspace_id)}
 
 
 @router.get("/{schedule_id}", response_model=ScheduleOutput)
