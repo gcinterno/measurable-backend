@@ -34,6 +34,12 @@ def migrate_execution(connection, direction):
         migration[direction]()
 
 
+def migrate_delivery(connection, direction):
+    migration = runpy.run_path(str(MIGRATION.with_name("20260910_000033_report_pdf_delivery.py")))
+    with Operations.context(MigrationContext.configure(connection)):
+        migration[direction]()
+
+
 @pytest.mark.parametrize("fixture", ["factory", "postgres_factory"])
 def test_migration_upgrade_downgrade_reupgrade_preserves_historical_reports(request, fixture):
     factory = request.getfixturevalue(fixture)
@@ -48,6 +54,7 @@ def test_migration_upgrade_downgrade_reupgrade_preserves_historical_reports(requ
         db.commit()
     engine = factory.kw["bind"]
     with engine.begin() as connection:
+        migrate_delivery(connection, "downgrade")
         migrate_execution(connection, "downgrade")
         before = {table: {index["name"] for index in inspect(connection).get_indexes(table)} for table in TABLES}
         migrate(connection, "downgrade")
@@ -62,6 +69,7 @@ def test_migration_upgrade_downgrade_reupgrade_preserves_historical_reports(requ
         due = next(index for index in inspect(connection).get_indexes("scheduled_reports") if index["name"] == "ix_scheduled_reports_due")
         assert due["column_names"] == ["next_run_at", "id"]
         migrate_execution(connection, "upgrade")
+        migrate_delivery(connection, "upgrade")
     with factory() as db:
         output = schedules.create_scheduled_report(schedules.ScheduleCreateInput.model_validate(body(command)), db.get(User, command.actor_user_id), db)
         add_history(db, output)

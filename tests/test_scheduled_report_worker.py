@@ -5,6 +5,11 @@ import pytest
 import app.scheduled_report_worker as worker
 
 
+@pytest.fixture(autouse=True)
+def no_pending_delivery(monkeypatch):
+    monkeypatch.setattr(worker, "claim_delivery", lambda factory: None)
+
+
 def test_once_dispatches_and_executes_claims(monkeypatch):
     calls = []
     claims = iter(["one", "two", None])

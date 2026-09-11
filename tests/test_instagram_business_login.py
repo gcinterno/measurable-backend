@@ -65,6 +65,7 @@ INSTAGRAM_LOGIN_TABLES = [
     ReportVersion.__table__,
     ReportSource.__table__,
     Base.metadata.tables["report_generations"],
+    Base.metadata.tables["exports"],
 ]
 
 

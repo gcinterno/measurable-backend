@@ -10,13 +10,15 @@ from uuid import uuid4
 
 from .db import SessionLocal
 from .scheduled_report_execution import claim_run, dispatch_due, execute_run
+from .scheduled_report_delivery import claim_delivery, execute_delivery
 
 logger = logging.getLogger(__name__)
 
 
 class WorkerLogFormatter(logging.Formatter):
     def format(self, record):
-        fields = ("workspace_id", "schedule_id", "scheduled_report_run_id", "trigger_type", "attempt_number", "stage", "result", "report_type")
+        fields = ("workspace_id", "schedule_id", "scheduled_report_run_id", "trigger_type", "attempt_number", "stage", "result", "report_type",
+                  "report_id", "report_version_id", "artifact_id", "delivery_id", "ses_message_id")
         return json.dumps({"event": record.getMessage(), "level": record.levelname,
                            **{field: getattr(record, field) for field in fields if hasattr(record, field)}})
 
@@ -36,6 +38,13 @@ def run_worker(factory=SessionLocal, *, worker_id=None, poll_interval=5, batch_s
                 # SIGTERM stops new claims; the current run drains with heartbeats.
                 # A forced process kill is recovered by the durable lease/fence.
                 execute_run(factory, claim)
+            for _ in range(batch_size):
+                if stop.is_set():
+                    break
+                delivery = claim_delivery(factory)
+                if delivery is None:
+                    break
+                execute_delivery(factory, delivery)
         except Exception:
             logger.error("scheduled_worker_iteration_failed")
             if once:

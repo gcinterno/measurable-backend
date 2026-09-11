@@ -48,6 +48,7 @@ MULTI_SOURCE_TABLES = [
     ReferralConversion.__table__,
     Report.__table__,
     Base.metadata.tables["report_generations"],
+    Base.metadata.tables["exports"],
     ReportBlock.__table__,
     ReportSource.__table__,
     ReportVersion.__table__,

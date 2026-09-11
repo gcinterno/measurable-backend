@@ -53,6 +53,7 @@ REFERRAL_TABLES = [
     Base.metadata.tables["dataset_files"],
     Report.__table__,
     Base.metadata.tables["report_generations"],
+    Base.metadata.tables["exports"],
     Base.metadata.tables["report_versions"],
     Base.metadata.tables["report_blocks"],
     ReportSource.__table__,
