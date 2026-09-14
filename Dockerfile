@@ -14,6 +14,8 @@ COPY pyproject.toml poetry.lock ./
 RUN poetry install --no-root --only main
 
 COPY app ./app
+COPY alembic.ini ./
+COPY alembic ./alembic
 
 RUN python -m playwright install --with-deps chromium
 
