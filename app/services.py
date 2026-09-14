@@ -1309,8 +1309,29 @@ def send_auth_email(
     )
 
     try:
-        message_id = send_email_message(recipients=[recipient_email], subject=subject,
-            html_body=html_body, text_body=text_body, purpose=purpose)
+        ses = _ses_client()
+        send_kwargs: dict[str, Any] = {
+            "Source": from_email,
+            "Destination": {"ToAddresses": [recipient_email]},
+            "ReplyToAddresses": ["hello@measurableapp.com"],
+            "Tags": [
+                {"Name": "purpose", "Value": purpose},
+                {"Name": "environment", "Value": "production"},
+            ],
+            "Message": {
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": {
+                    "Text": {"Data": text_body, "Charset": "UTF-8"},
+                    "Html": {"Data": html_body, "Charset": "UTF-8"},
+                },
+            },
+        }
+        if configuration_set_name:
+            send_kwargs["ConfigurationSetName"] = configuration_set_name
+        response = ses.send_email(
+            **send_kwargs,
+        )
+        message_id = str(response.get("MessageId") or "").strip() or None
         logger.info(
             "SES_EMAIL_SENT",
             extra={
