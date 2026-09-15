@@ -769,6 +769,66 @@ def test_meta_business_suite_callback_continues_when_client_ad_account_discovery
         main_module._table_names.cache_clear()
 
 
+def test_meta_business_suite_discovery_materializes_facebook_page_account(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    monkeypatch.setattr(
+        main_module,
+        "_collect_meta_instagram_diagnostics",
+        lambda *_args, **_kwargs: (
+            [
+                {
+                    "record_type": META_RECORD_TYPE_FACEBOOK_PAGE,
+                    "page_id": "fb-suite-1",
+                    "name": "Suite Page",
+                    "page_access_token": "page-token",
+                }
+            ],
+            [{"page_id": "fb-suite-1", "page_name": "Suite Page"}],
+        ),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_discover_meta_ads_accounts_for_suite",
+        lambda *_args, **_kwargs: ([], [], None, False),
+    )
+
+    db = SessionLocal()
+    try:
+        result = main_module._run_meta_business_suite_asset_discovery(
+            db,
+            workspace_id=refs["workspace_id"],
+            user_id=refs["user_id"],
+            access_token="suite-token",
+            received_scopes=meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE.split(","),
+            context="meta_business_suite_oauth_callback_background",
+            include_instagram=False,
+        )
+        account = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == refs["facebook_integration_id"],
+                IntegrationAccount.external_account_id
+                == main_module._meta_page_account_external_id("fb-suite-1"),
+            )
+            .one()
+        )
+        page = (
+            db.query(MetaPage)
+            .filter(
+                MetaPage.integration_id == refs["facebook_integration_id"],
+                MetaPage.record_type == META_RECORD_TYPE_FACEBOOK_PAGE,
+                MetaPage.page_id == "fb-suite-1",
+            )
+            .one()
+        )
+        assert result["status"] == "completed"
+        assert result["facebook_pages_count"] == 1
+        assert account.workspace_id == refs["workspace_id"]
+        assert account.display_name == page.name == "Suite Page"
+    finally:
+        db.close()
+
+
 def test_linked_instagram_discovery_does_not_mark_instagram_business_connected(client):
     refs = _seed_workspace_with_legacy_meta()
 

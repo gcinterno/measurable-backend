@@ -7,6 +7,7 @@ from test_report_generation import factory, seed
 from test_scheduled_reports import body, client, headers
 import app.main as providers
 from app.models import Integration, IntegrationAccount, IntegrationToken, MetaAdAccount, MetaPage, ShopifyConnection, Subscription
+from app.scheduled_reports import SourceInput, _sources, _validate_source_configuration
 
 
 def add_sources(factory, command):
@@ -76,6 +77,54 @@ def test_catalog_binding_round_trips_through_create_and_edit(factory, client, ke
                           headers=headers(command), json={"sources": [binding]})
     assert edited.status_code == 200 and edited.json()["sources"] == [binding]
     assert edited.json()["configuration_revision"] == 1
+
+
+def test_discovered_facebook_pages_materialize_catalog_bindings_accepted_by_validator(factory, client):
+    command = seed(factory)
+    with factory() as db:
+        integration = Integration(
+            workspace_id=command.workspace_id,
+            provider="meta",
+            name="Meta Pages",
+            status="connected",
+        )
+        db.add(integration)
+        db.flush()
+        providers._cache_meta_pages(
+            db,
+            integration,
+            command.actor_user_id,
+            [
+                {"record_type": "facebook_page", "page_id": f"fb-{index}", "name": f"Page {index}"}
+                for index in range(14)
+            ],
+        )
+        integration_id = integration.id
+
+    response = catalog(client, command, "meta_pages")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["availability"]["scheduling_enabled"] is True
+    items = [item for item in payload["items"] if item["binding"]["integration_id"] == integration_id]
+    assert len(items) == 14
+    assert all(item["connected"] and item["available"] and item["unavailable_reason"] is None for item in items)
+    assert {item["binding"]["external_account_id"] for item in items} == {
+        providers._meta_page_account_external_id(f"fb-{index}") for index in range(14)
+    }
+
+    with factory() as db:
+        account_ids = set()
+        for item in items:
+            binding = SourceInput.model_validate(item["binding"])
+            _validate_source_configuration({"builder": "meta_pages"}, [binding.model_dump()])
+            assert _sources(db, command.workspace_id, [binding]) == [binding.model_dump()]
+            account = db.get(IntegrationAccount, binding.integration_account_id)
+            assert account is not None
+            assert account.workspace_id == command.workspace_id
+            assert account.integration_id == integration_id
+            assert account.external_account_id == binding.external_account_id
+            account_ids.add(account.id)
+        assert len(account_ids) == 14
 
 
 @pytest.mark.parametrize("instagram_key", ["instagram_meta", "instagram_business", "instagram_business_login"])

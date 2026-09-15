@@ -30,7 +30,7 @@ from app.main import (
     META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
     app,
 )
-from app.models import Integration, MetaPage, Subscription, User, Workspace, WorkspaceMember
+from app.models import Integration, IntegrationAccount, MetaPage, Subscription, User, Workspace, WorkspaceMember
 from app.security import create_access_token, hash_password
 
 
@@ -45,6 +45,7 @@ META_LOADING_TABLES = [
     WorkspaceMember.__table__,
     Subscription.__table__,
     Integration.__table__,
+    IntegrationAccount.__table__,
     MetaPage.__table__,
 ]
 
@@ -386,6 +387,116 @@ def test_refresh_pages_saves_all_pages_returned_from_graph(client, monkeypatch):
         assert {page.page_id for page in facebook_pages} == {f"fb-{index}" for index in range(5)}
         saved_log = next(item for item in diagnostics if item.get("_facebook_pages_discovery_summary") is True)
         assert saved_log["total_pages_count"] == 5
+    finally:
+        db.close()
+
+
+def test_refresh_materializes_stable_canonical_accounts_for_all_facebook_pages(client, monkeypatch):
+    refs = _seed_meta_fixture()
+    graph_pages = [
+        {"id": f"fb-{index}", "name": f"Page {index}", "access_token": f"page-token-{index}"}
+        for index in range(14)
+    ]
+    monkeypatch.setattr(main_module, "list_pages", lambda *_args, **_kwargs: list(graph_pages))
+    monkeypatch.setattr(
+        main_module,
+        "debug_token",
+        lambda _token: {"data": {"is_valid": True, "scopes": ["public_profile", "pages_show_list"]}},
+    )
+    monkeypatch.setattr(main_module, "_fetch_instagram_business_account_for_page", lambda **_kwargs: None)
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, refs["integration_id"])
+        assert integration is not None
+        main_module._refresh_meta_pages_from_live_graph(
+            db,
+            integration,
+            access_token="meta-token",
+            user_id=refs["user_id"],
+            selected_integration_type="facebook_pages",
+            context="test_canonical_accounts_first_refresh",
+        )
+        first_accounts = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id.like(f"{main_module.META_PAGE_ACCOUNT_PREFIX}%"),
+            )
+            .order_by(IntegrationAccount.external_account_id)
+            .all()
+        )
+        assert len(first_accounts) == 14
+        assert {account.workspace_id for account in first_accounts} == {refs["workspace_id"]}
+        first_ids = {account.external_account_id: account.id for account in first_accounts}
+
+        graph_pages[0]["name"] = "Renamed Page"
+        main_module._refresh_meta_pages_from_live_graph(
+            db,
+            integration,
+            access_token="meta-token",
+            user_id=refs["user_id"],
+            selected_integration_type="facebook_pages",
+            context="test_canonical_accounts_reconnect",
+        )
+        second_accounts = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id.like(f"{main_module.META_PAGE_ACCOUNT_PREFIX}%"),
+            )
+            .order_by(IntegrationAccount.external_account_id)
+            .all()
+        )
+        assert len(second_accounts) == 14
+        assert {account.external_account_id: account.id for account in second_accounts} == first_ids
+        renamed = next(
+            account
+            for account in second_accounts
+            if account.external_account_id == main_module._meta_page_account_external_id("fb-0")
+        )
+        assert renamed.display_name == "Renamed Page"
+
+        selected = main_module._save_selected_meta_page(db, integration, "fb-1", "Page 1")
+        assert selected.external_account_id == main_module._meta_page_account_external_id("fb-1")
+        assert (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id.like(f"{main_module.META_PAGE_ACCOUNT_PREFIX}%"),
+            )
+            .count()
+            == 14
+        )
+
+        other_workspace = Workspace(name="Other Workspace")
+        db.add(other_workspace)
+        db.flush()
+        other_integration = Integration(
+            workspace_id=other_workspace.id,
+            provider="meta",
+            name="Other Meta",
+            status="connected",
+        )
+        db.add(other_integration)
+        db.flush()
+        main_module._cache_meta_pages(
+            db,
+            other_integration,
+            refs["user_id"],
+            [{"record_type": "facebook_page", "page_id": "fb-0", "name": "Other Workspace Page"}],
+        )
+        other_account = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == other_integration.id,
+                IntegrationAccount.external_account_id
+                == main_module._meta_page_account_external_id("fb-0"),
+            )
+            .one()
+        )
+        assert other_account.workspace_id == other_workspace.id
+        assert other_account.id != first_ids[main_module._meta_page_account_external_id("fb-0")]
     finally:
         db.close()
 

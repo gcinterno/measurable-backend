@@ -14848,6 +14848,60 @@ def _meta_business_suite_instagram_account_out(meta_page: MetaPage, *, cache_sta
     return payload
 
 
+def _reconcile_meta_page_accounts(
+    db: Session,
+    integration: Integration,
+    pages: list[dict[str, Any]],
+) -> None:
+    """Keep canonical Facebook Page accounts aligned with the authorized page cache."""
+    if integration.provider != "meta":
+        return
+
+    canonical_pages = {
+        str(page.get("page_id") or "").strip(): str(
+            page.get("name") or page.get("page_id") or ""
+        ).strip()
+        for page in pages
+        if str(page.get("record_type") or META_RECORD_TYPE_FACEBOOK_PAGE)
+        == META_RECORD_TYPE_FACEBOOK_PAGE
+        and str(page.get("page_id") or "").strip()
+    }
+    existing_accounts = (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration.id,
+            IntegrationAccount.external_account_id.like(f"{META_PAGE_ACCOUNT_PREFIX}%"),
+        )
+        .all()
+    )
+    existing_by_external_id = {
+        account.external_account_id: account for account in existing_accounts
+    }
+    incoming_external_ids = {
+        _meta_page_account_external_id(page_id) for page_id in canonical_pages
+    }
+
+    for account in existing_accounts:
+        if account.external_account_id not in incoming_external_ids:
+            db.delete(account)
+
+    for page_id, display_name in canonical_pages.items():
+        external_account_id = _meta_page_account_external_id(page_id)
+        account = existing_by_external_id.get(external_account_id)
+        if account is None:
+            account = IntegrationAccount(
+                integration_id=integration.id,
+                workspace_id=integration.workspace_id,
+                external_account_id=external_account_id,
+                display_name=display_name or page_id,
+            )
+            db.add(account)
+            continue
+        account.workspace_id = integration.workspace_id
+        account.display_name = display_name or page_id
+        db.add(account)
+
+
 def _cache_meta_pages(
     db: Session,
     integration: Integration,
@@ -14855,6 +14909,7 @@ def _cache_meta_pages(
     pages: list[dict[str, Any]],
 ) -> list[MetaPage]:
     def _apply_cache_changes() -> None:
+        _reconcile_meta_page_accounts(db, integration, pages)
         existing_pages = (
             db.query(MetaPage)
             .filter(MetaPage.integration_id == integration.id)
@@ -15216,19 +15271,7 @@ def _save_selected_meta_page(
     page_id: str,
     display_name: str | None = None,
 ) -> IntegrationAccount:
-    existing_pages = (
-        db.query(IntegrationAccount)
-        .filter(
-            IntegrationAccount.integration_id == integration.id,
-            IntegrationAccount.external_account_id.like(f"{META_PAGE_ACCOUNT_PREFIX}%"),
-        )
-        .all()
-    )
     target_external_id = _meta_page_account_external_id(page_id)
-    for existing_page in existing_pages:
-        if existing_page.external_account_id != target_external_id:
-            db.delete(existing_page)
-
     selected_page = (
         db.query(IntegrationAccount)
         .filter(
@@ -15246,7 +15289,10 @@ def _save_selected_meta_page(
         )
         db.add(selected_page)
     else:
+        selected_page.workspace_id = integration.workspace_id
         selected_page.display_name = display_name
+        selected_page.updated_at = datetime.now(timezone.utc)
+        db.add(selected_page)
 
     db.commit()
     db.refresh(selected_page)
