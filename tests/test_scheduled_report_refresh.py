@@ -88,26 +88,14 @@ def test_adapter_explicit_source_exact_dataset_and_no_io_transaction(request, fi
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("provider", PROVIDERS + ["multi_source"])
+@pytest.mark.parametrize(
+    "provider",
+    ["facebook_pages", "instagram_business", "instagram_meta", "instagram_business_login", "meta_ads"],
+)
 def test_scheduled_execution_uses_real_canonical_provider_builders(factory, provider, monkeypatch):
-    command = seed_provider(factory, "facebook_pages" if provider == "multi_source" else provider)
+    command = seed_provider(factory, provider)
     payload = body(command)
     with factory() as db:
-        if provider == "multi_source":
-            source = command.sources[0]
-            integration = Integration(workspace_id=command.workspace_id, provider="instagram_business", status="connected")
-            db.add(integration)
-            db.flush()
-            account = IntegrationAccount(integration_id=integration.id, workspace_id=command.workspace_id, external_account_id="ig_456")
-            data = deepcopy(db.get(Dataset, source.dataset_id).data)
-            data.update(integration_type="instagram_business", integration_id=integration.id, account_id="ig_456", page_id="ig_456")
-            dataset = Dataset(workspace_id=command.workspace_id, name="Instagram", data=data)
-            db.add_all([account, dataset])
-            db.flush()
-            payload["sources"].append(dict(integration_id=integration.id, integration_account_id=account.id,
-                dataset_id=dataset.id, external_account_id="ig_456", provider="instagram_business", source_type="instagram_business", position=1))
-            payload["configuration"] = {"builder": "multi_source", "requested_slides": 10}
-            db.commit()
         output = schedules.create_scheduled_report(schedules.ScheduleCreateInput.model_validate(payload), db.get(User, command.actor_user_id), db)
         db.get(ScheduledReport, output["id"]).next_run_at = datetime.now(timezone.utc) - timedelta(days=1)
         db.commit()
@@ -123,7 +111,7 @@ def test_scheduled_execution_uses_real_canonical_provider_builders(factory, prov
         assert run.status == "SUCCEEDED", (run.error_code, run.stage)
         report = db.get(Report, run.report_id)
         assert json.loads(report.description)["generation_status"] == "completed"
-        assert db.query(ReportBlock).filter_by(report_version_id=run.report_version_id).count() == (10 if provider == "multi_source" else 5)
+        assert db.query(ReportBlock).filter_by(report_version_id=run.report_version_id).count() == 5
         sources = db.query(ReportSource).filter_by(report_id=report.id).order_by(ReportSource.position).all()
         assert [s.dataset_id for s in sources] == [s["dataset_id"] for s in run.execution_sources_json]
         assert [s.integration_account_id for s in sources] == [s.integration_account_id for s in seen]

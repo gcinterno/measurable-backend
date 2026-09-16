@@ -366,19 +366,14 @@ def test_atomic_revision_failure_never_leaves_partial_schedule(factory, client, 
         assert db.query(ScheduledReport).count() == db.query(ScheduledReportRevision).count() == db.query(ScheduledReportSource).count() == 0
 
 
-@pytest.mark.parametrize("provider", ["facebook_pages", "instagram_business", "meta_ads", "shopify"])
+@pytest.mark.parametrize("provider", ["facebook_pages", "instagram_business", "meta_ads"])
 def test_supported_provider_configuration_snapshots(factory, client, provider):
     command = seed(factory, provider=provider)
-    if provider == "shopify":
-        with factory() as db:
-            db.add(ShopifyConnection(workspace_id=command.workspace_id, user_id=command.actor_user_id,
-                                     integration_id=command.sources[0].integration_id, shop_domain="account_123", status="connected"))
-            db.commit()
     result = create(client, command)
     assert result["configuration_snapshot"]["configuration"]["builder"] == command.configuration.builder
 
 
-def test_multi_source_snapshot_requires_real_executable_recipe(factory, client):
+def test_multi_source_schedule_creation_is_paused(factory, client):
     command = seed(factory, provider="facebook_pages")
     payload = body(command)
     with factory() as db:
@@ -392,7 +387,9 @@ def test_multi_source_snapshot_requires_real_executable_recipe(factory, client):
                                    "provider": "instagram_business_login", "source_type": "instagram_business", "external_account_id": "ig-account", "position": 1})
         db.commit()
     payload["configuration"] = {"builder": "multi_source", "requested_slides": 10}
-    assert len(create(client, command, payload)["sources"]) == 2
+    response = client.post("/scheduled-reports", json=payload, headers=headers(command))
+    assert response.status_code == 422
+    assert "schedule_builder_not_supported" in response.text
 
 
 def test_pinned_builder_contract_change_prevents_resume(factory, client, monkeypatch):

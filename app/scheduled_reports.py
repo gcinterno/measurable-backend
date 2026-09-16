@@ -45,6 +45,7 @@ class ScheduleRoute(APIRoute):
 
 router = APIRouter(prefix="/scheduled-reports", tags=["scheduled-reports"], route_class=ScheduleRoute)
 RECURRENCE_FIELDS = ("frequency", "day_of_week", "day_of_month", "local_time", "timezone", "period_policy")
+OPERATIONAL_BUILDERS = frozenset({"meta_pages", "instagram_business", "meta_ads"})
 
 
 @router.get("/{schedule_id}/runs/{run_id}/pdf")
@@ -302,6 +303,12 @@ def _revision(db: Session, schedule: ScheduledReport) -> ScheduledReportRevision
 
 
 def _configuration(db: Session, workspace_id: int, payload: ConfigurationInput) -> dict[str, Any]:
+    if payload.builder not in OPERATIONAL_BUILDERS:
+        raise GenerationError(
+            "schedule_builder_not_supported",
+            "This report builder is not currently enabled for scheduling.",
+            status_code=422,
+        )
     configuration = ExecutableReportConfiguration(
         builder=payload.builder, requested_slides=payload.requested_slides,
         template=payload.template, report_spec=payload.report_spec,
@@ -480,6 +487,8 @@ def scheduled_report_source_catalog(response: Response, workspace_id: int = Quer
                                     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     from .scheduled_report_catalog import source_catalog
     require_workspace_access(db, current_user, workspace_id)
+    if builder not in OPERATIONAL_BUILDERS:
+        raise http_error(422, "schedule_builder_not_supported", "This report builder is not currently enabled for scheduling.")
     response.headers["Cache-Control"] = "private, no-store"
     return {"items": source_catalog(db, workspace_id, builder), "availability": schedule_availability(db, workspace_id)}
 

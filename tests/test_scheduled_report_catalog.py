@@ -55,7 +55,7 @@ def catalog(client, command, builder):
 @pytest.mark.parametrize("key,builder", [
     ("facebook_pages", "meta_pages"), ("instagram_meta", "instagram_business"),
     ("instagram_business", "instagram_business"), ("instagram_business_login", "instagram_business"),
-    ("meta_ads", "meta_ads"), ("shopify", "shopify"),
+    ("meta_ads", "meta_ads"),
 ])
 def test_catalog_binding_round_trips_through_create_and_edit(factory, client, key, builder):
     command = seed(factory)
@@ -127,22 +127,25 @@ def test_discovered_facebook_pages_materialize_catalog_bindings_accepted_by_vali
         assert len(account_ids) == 14
 
 
-@pytest.mark.parametrize("instagram_key", ["instagram_meta", "instagram_business", "instagram_business_login"])
-def test_multisource_slots_are_submit_ready_without_identity_or_position_inference(factory, client, instagram_key):
+@pytest.mark.parametrize("builder", ["multi_source", "shopify"])
+def test_unaccepted_builder_catalog_and_creation_are_paused(factory, client, builder):
     command = seed(factory)
     identities = add_sources(factory, command)
-    items = catalog(client, command, "multi_source").json()["items"]
-    assert {item["binding"]["source_type"] for item in items} == {"facebook_pages", "instagram_business"}
-    bindings = [next(item["binding"] for item in items if item["binding"]["integration_id"] == identities[key][0])
-                for key in ("facebook_pages", instagram_key)]
-    assert [binding["position"] for binding in bindings] == [0, 1]
-    response = client.post("/scheduled-reports", headers=headers(command), json={**body(command),
-        "configuration": {"builder": "multi_source", "requested_slides": 10}, "sources": bindings})
-    assert response.status_code == 201, response.text
-    assert response.json()["sources"] == bindings
+    response = catalog(client, command, builder)
+    assert response.status_code == 422
+    assert "schedule_builder_not_supported" in response.text
+    key = "shopify" if builder == "shopify" else "facebook_pages"
+    payload = {**body(command),
+        "configuration": {"builder": builder, "requested_slides": 10 if builder == "multi_source" else 5},
+        "sources": [{"integration_id": identities[key][0], "integration_account_id": identities[key][1],
+                     "provider": "shopify" if builder == "shopify" else "meta", "source_type": key,
+                     "external_account_id": identities[key][2], "position": 0}]}
+    created = client.post("/scheduled-reports", headers=headers(command), json=payload)
+    assert created.status_code == 422
+    assert "schedule_builder_not_supported" in created.text
 
 
-@pytest.mark.parametrize("builder", ["meta_pages", "instagram_business", "meta_ads", "shopify", "multi_source"])
+@pytest.mark.parametrize("builder", ["meta_pages", "instagram_business", "meta_ads"])
 def test_workspace_isolation_including_inconsistent_child_ownership(factory, client, builder):
     command, other = seed(factory), seed(factory)
     ours, theirs = add_sources(factory, command), add_sources(factory, other)
@@ -171,7 +174,7 @@ def test_catalog_requires_authentication_and_valid_workspace_and_builder(factory
 
 
 @pytest.mark.parametrize("key,builder", [("facebook_pages", "meta_pages"), ("instagram_business_login", "instagram_business"),
-                                       ("meta_ads", "meta_ads"), ("shopify", "shopify")])
+                                       ("meta_ads", "meta_ads")])
 def test_disconnected_identities_are_preserved_and_marked_unavailable(factory, client, key, builder):
     command = seed(factory)
     identities = add_sources(factory, command)
@@ -187,21 +190,18 @@ def test_disconnected_identities_are_preserved_and_marked_unavailable(factory, c
     assert item["binding"]["integration_account_id"] == identities[key][1]
 
 
-def test_shopify_without_account_uses_existing_nullable_account_contract(factory, client):
+def test_shopify_schedule_catalog_is_paused_without_changing_manual_connection(factory, client):
     command = seed(factory)
     identities = add_sources(factory, command)
     with factory() as db:
         db.delete(db.get(IntegrationAccount, identities["shopify"][1]))
         db.commit()
-    item = catalog(client, command, "shopify").json()["items"][0]
-    assert item["binding"]["integration_account_id"] is None
-    response = client.post("/scheduled-reports", headers=headers(command), json={**body(command),
-        "configuration": {"builder": "shopify", "requested_slides": 5}, "sources": [item["binding"]]})
-    assert response.status_code == 201, response.text
+    response = catalog(client, command, "shopify")
+    assert response.status_code == 422
+    assert "schedule_builder_not_supported" in response.text
     with factory() as db:
-        db.query(ShopifyConnection).filter_by(integration_id=identities["shopify"][0]).update({"status": "disconnected"})
-        db.commit()
-    assert catalog(client, command, "shopify").json()["items"][0]["unavailable_reason"] == "source_disconnected"
+        connection = db.query(ShopifyConnection).filter_by(integration_id=identities["shopify"][0]).one()
+        assert connection.status == "connected"
 
 
 def test_missing_or_ambiguous_provider_mapping_is_not_advertised_as_available(factory, client):
@@ -240,7 +240,7 @@ def test_no_fake_accounts_token_stores_unsupported_providers_or_parent_aliases(f
             db.add(IntegrationAccount(integration_id=integration.id, workspace_id=command.workspace_id,
                                       external_account_id="unsupported-provider-account"))
         db.commit()
-    for builder in ("meta_pages", "instagram_business", "meta_ads", "shopify", "multi_source"):
+    for builder in ("meta_pages", "instagram_business", "meta_ads"):
         response = catalog(client, command, builder)
         assert response.status_code == 200
         for forbidden in ("token_", "__meta_token__", "private-parent", "no-canonical-row", "unsupported-provider-account"):
@@ -261,7 +261,7 @@ def test_catalog_is_read_only_secret_free_and_available_for_free_workspace_inspe
     engine = factory.kw["bind"]
     event.listen(engine, "before_cursor_execute", capture)
     try:
-        for builder in ("meta_pages", "instagram_business", "meta_ads", "shopify", "multi_source"):
+        for builder in ("meta_pages", "instagram_business", "meta_ads"):
             response = catalog(client, command, builder)
             assert response.status_code == 200
             assert not response.json()["availability"]["scheduling_enabled"]
@@ -269,6 +269,10 @@ def test_catalog_is_read_only_secret_free_and_available_for_free_workspace_inspe
                 assert forbidden not in response.text
             assert all(set(item) == {"binding", "display_label", "connected", "available", "unavailable_reason"}
                        for item in response.json()["items"])
+        for builder in ("shopify", "multi_source"):
+            response = catalog(client, command, builder)
+            assert response.status_code == 422
+            assert "schedule_builder_not_supported" in response.text
         assert not set(statements) & {"INSERT", "UPDATE", "DELETE"}
     finally:
         event.remove(engine, "before_cursor_execute", capture)

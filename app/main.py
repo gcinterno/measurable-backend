@@ -6834,6 +6834,28 @@ def _upsert_meta_ads_account(
         record.is_selected = bool(is_selected)
     db.add(record)
     db.flush()
+
+    if integration.provider == "meta_ads":
+        canonical_account = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == integration.id,
+                IntegrationAccount.external_account_id == normalized_account_id,
+            )
+            .first()
+        )
+        if canonical_account is None:
+            canonical_account = IntegrationAccount(
+                integration_id=integration.id,
+                workspace_id=integration.workspace_id,
+                external_account_id=normalized_account_id,
+                display_name=record.account_name,
+            )
+            db.add(canonical_account)
+        else:
+            canonical_account.workspace_id = integration.workspace_id
+            canonical_account.display_name = record.account_name
+            db.add(canonical_account)
     return record
 
 
@@ -7059,6 +7081,15 @@ def _persist_meta_ads_accounts(
         _normalize_meta_ad_account_id(str(account.get("account_id") or account.get("id") or "").strip())
         for account in accounts
     }
+    if clear_missing and integration.provider == "meta_ads":
+        canonical_accounts = (
+            db.query(IntegrationAccount)
+            .filter(IntegrationAccount.integration_id == integration.id)
+            .all()
+        )
+        for account in canonical_accounts:
+            if _normalize_meta_ad_account_id(account.external_account_id) not in discovered_ids:
+                db.delete(account)
     for record in existing_accounts:
         if record.account_id not in discovered_ids:
             if clear_missing:
@@ -14902,6 +14933,67 @@ def _reconcile_meta_page_accounts(
         db.add(account)
 
 
+def _reconcile_meta_instagram_accounts(
+    db: Session,
+    integration: Integration,
+    pages: list[dict[str, Any]],
+) -> None:
+    """Keep Meta Suite Instagram identities aligned with the authorized cache."""
+    if integration.provider != "meta":
+        return
+
+    canonical_accounts = {
+        str(page.get("page_id") or "").strip(): str(
+            page.get("name") or page.get("instagram_username") or page.get("page_id") or ""
+        ).strip()
+        for page in pages
+        if str(page.get("record_type") or META_RECORD_TYPE_FACEBOOK_PAGE)
+        == META_RECORD_TYPE_INSTAGRAM_ACCOUNT
+        and str(page.get("page_id") or "").strip()
+    }
+    previously_cached_ids = {
+        str(page_id).strip()
+        for (page_id,) in db.query(MetaPage.page_id).filter(
+            MetaPage.integration_id == integration.id,
+            MetaPage.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+        )
+        if str(page_id or "").strip()
+    }
+    managed_ids = previously_cached_ids | set(canonical_accounts)
+    existing_accounts = (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration.id,
+            IntegrationAccount.external_account_id.in_(managed_ids),
+        )
+        .all()
+        if managed_ids
+        else []
+    )
+    existing_by_external_id = {
+        account.external_account_id: account for account in existing_accounts
+    }
+
+    for account in existing_accounts:
+        if account.external_account_id not in canonical_accounts:
+            db.delete(account)
+
+    for external_account_id, display_name in canonical_accounts.items():
+        account = existing_by_external_id.get(external_account_id)
+        if account is None:
+            account = IntegrationAccount(
+                integration_id=integration.id,
+                workspace_id=integration.workspace_id,
+                external_account_id=external_account_id,
+                display_name=display_name or external_account_id,
+            )
+            db.add(account)
+            continue
+        account.workspace_id = integration.workspace_id
+        account.display_name = display_name or external_account_id
+        db.add(account)
+
+
 def _cache_meta_pages(
     db: Session,
     integration: Integration,
@@ -14910,6 +15002,7 @@ def _cache_meta_pages(
 ) -> list[MetaPage]:
     def _apply_cache_changes() -> None:
         _reconcile_meta_page_accounts(db, integration, pages)
+        _reconcile_meta_instagram_accounts(db, integration, pages)
         existing_pages = (
             db.query(MetaPage)
             .filter(MetaPage.integration_id == integration.id)
