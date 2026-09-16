@@ -11,6 +11,7 @@ import pytest
 
 from app import services
 from app import report_artifacts as artifacts
+from app.scheduled_report_email import MEASURABLE_LOGO_PNG
 from test_report_generation import factory, postgres_factory
 from test_scheduled_report_delivery import completed, io, stub_generation, MemoryS3
 
@@ -137,7 +138,7 @@ def test_ses_transport_sends_cid_preview_as_private_raw_mime(monkeypatch):
     result = services.send_email_message(
         recipients=["one@example.com", "two@example.com"],
         subject="Your report is ready",
-        html_body='<img src="cid:measurable-report-preview"><a href="https://private.test">View report</a>',
+        html_body='<img src="cid:measurable-logo"><img src="cid:measurable-report-preview"><a href="https://private.test">View report</a>',
         text_body="View report: https://private.test",
         purpose="scheduled_report",
         single_attempt=True,
@@ -146,7 +147,12 @@ def test_ses_transport_sends_cid_preview_as_private_raw_mime(monkeypatch):
             content=b"\xff\xd8\xff preview",
             content_type="image/jpeg",
             filename="report-preview.jpg",
-        ),),
+        ), services.InlineEmailImage(
+            content_id="measurable-logo",
+            content=MEASURABLE_LOGO_PNG,
+            content_type="image/png",
+            filename="measurable-logo.png",
+        )),
     )
     assert result == "accepted-inline"
     kwargs = ses.send_raw_email.call_args.kwargs
@@ -158,6 +164,10 @@ def test_ses_transport_sends_cid_preview_as_private_raw_mime(monkeypatch):
     assert preview.get_content_type() == "image/jpeg"
     assert preview.get_filename() == "report-preview.jpg"
     assert preview.get_payload(decode=True) == b"\xff\xd8\xff preview"
+    logo = next(part for part in parts if part.get("Content-ID") == "<measurable-logo>")
+    assert logo.get_content_type() == "image/png"
+    assert logo.get_filename() == "measurable-logo.png"
+    assert logo.get_payload(decode=True) == MEASURABLE_LOGO_PNG
 
 
 def test_scheduled_ses_disables_sdk_retries(monkeypatch):

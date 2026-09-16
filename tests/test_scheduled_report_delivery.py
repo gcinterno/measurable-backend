@@ -20,7 +20,7 @@ import app.scheduled_report_delivery as delivery
 import app.scheduled_report_execution as execution
 import app.scheduled_report_worker as worker
 import app.scheduled_reports as schedules
-from app.scheduled_report_email import ScheduledReportEmailContext, render_scheduled_report_email
+from app.scheduled_report_email import MEASURABLE_LOGO_PNG, ScheduledReportEmailContext, render_scheduled_report_email
 
 
 class MemoryS3:
@@ -139,11 +139,34 @@ def test_premium_email_html_and_text_are_localized(locale, headline, view, downl
     for value in (headline, view, download, footer, "ATRIA Marketing"):
         assert value in rendered.html and value in rendered.text
     assert "cid:measurable-report-preview" in rendered.html
+    assert "cid:measurable-logo" in rendered.html
     assert "Measurable Growth &lt;Q3&gt;" in rendered.html
     assert "Measurable Growth <Q3>" in rendered.text
     assert "https://private.test/view?signature=signed" in rendered.text
     assert "https://private.test/download?signature=signed" in rendered.text
     assert "workspace_id" not in rendered.html and "integration_id" not in rendered.html
+
+
+def test_email_visual_shell_is_white_and_preview_is_centered_with_official_logo():
+    rendered = render_scheduled_report_email(ScheduledReportEmailContext(
+        title="Weekly performance",
+        reporting_start=date(2026, 9, 1),
+        reporting_end=date(2026, 9, 7),
+        source_label="Internal source",
+        generated_at=datetime(2026, 9, 8, 14, 30, tzinfo=timezone.utc),
+        locale="en",
+        view_url="https://private.test/view",
+        download_url="https://private.test/download",
+    ))
+    assert 'bgcolor="#ffffff"' in rendered.html
+    assert "background:#f5f7fa" not in rendered.html
+    assert '<img src="cid:measurable-logo" width="76" alt="Measurable" align="center"' in rendered.html
+    assert '<table role="presentation" width="486"' in rendered.html
+    assert '<img src="cid:measurable-report-preview" width="468"' in rendered.html
+    assert 'align="center" style="display:block;width:100%;max-width:468px;height:auto;margin:0 auto;' in rendered.html
+    assert "aspect-ratio" not in rendered.html and "object-fit" not in rendered.html
+    assert MEASURABLE_LOGO_PNG.startswith(b"\x89PNG\r\n\x1a\n")
+    assert b"Canva" not in MEASURABLE_LOGO_PNG and b"ATRIA" not in MEASURABLE_LOGO_PNG
 
 
 def test_delivery_email_uses_frozen_report_data_and_inline_preview(factory, io):
@@ -155,8 +178,13 @@ def test_delivery_email_uses_frozen_report_data_and_inline_preview(factory, io):
     assert "Facebook Pages" in message["html_body"]
     assert "Reporting period" in message["html_body"] and "Reporting period" in message["text_body"]
     assert "cid:measurable-report-preview" in message["html_body"]
+    assert "cid:measurable-logo" in message["html_body"]
+    assert len(message["inline_images"]) == 2
     assert message["inline_images"][0].content == b"\xff\xd8\xff email preview"
     assert message["inline_images"][0].filename == "report-preview.jpg"
+    assert message["inline_images"][1].content == MEASURABLE_LOGO_PNG
+    assert message["inline_images"][1].content_type == "image/png"
+    assert message["inline_images"][1].filename == "measurable-logo.png"
     with factory() as db:
         assert db.query(Report).count() == db.query(ReportVersion).count() == db.query(ScheduledReportRun).count() == 1
         assert db.get(ScheduledReportRun, run_id).status == "SUCCEEDED"

@@ -17,7 +17,7 @@ from sqlalchemy import and_, or_
 from .models import Export, ScheduledReportDelivery
 from .report_artifacts import ArtifactError, email_download_url, ensure_pdf, ensure_preview, identity, renew_artifact, report_view_url
 from .report_generation import _database_now, _utc
-from .scheduled_report_email import ScheduledReportEmailContext, render_scheduled_report_email
+from .scheduled_report_email import MEASURABLE_LOGO_PNG, ScheduledReportEmailContext, render_scheduled_report_email
 from .scheduled_report_execution import _write, LeaseLost
 from .scheduled_report_models import ScheduledReportRevision, ScheduledReportRun
 from .scheduled_report_refresh import private_provider_io
@@ -259,7 +259,12 @@ def execute_delivery(factory, claim, *, artifact_builder=ensure_pdf, preview_bui
                         content=preview.content,
                         content_type=preview.content_type,
                         filename="report-preview.jpg",
-                    ),),
+                    ), InlineEmailImage(
+                        content_id="measurable-logo",
+                        content=MEASURABLE_LOGO_PNG,
+                        content_type="image/png",
+                        filename="measurable-logo.png",
+                    )),
                 )
             if not message_id:
                 raise RuntimeError("Missing SES acceptance identity")
