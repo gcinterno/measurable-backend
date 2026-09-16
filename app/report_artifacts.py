@@ -16,8 +16,10 @@ from .models import Export, Report, ReportVersion
 from .report_generation import _database_now, _utc
 
 RENDERER_VERSION = "share-slide-screenshots-frozen-v1"
+PREVIEW_RENDERER_VERSION = "share-cover-screenshot-frozen-v1"
 ARTIFACT_LEASE = timedelta(minutes=3)
 MAX_PDF_BYTES = 40 * 1024 * 1024
+MAX_PREVIEW_BYTES = 5 * 1024 * 1024
 
 
 class ArtifactError(Exception):
@@ -92,6 +94,27 @@ def render_pdf(payload):
     return data
 
 
+def render_preview(payload):
+    from .main import _pdf_render_base_url
+    from .services import generate_thumbnail_from_export_page
+    from .scheduled_report_refresh import private_provider_io
+    token = "frozen-preview-" + uuid4().hex
+    pinned = PinnedRenderRequest(payload, token)
+    url = f"{_pdf_render_base_url()}/share/reports/{token}?export=pdf"
+    with private_provider_io():
+        data, _ = generate_thumbnail_from_export_page(
+            export_url=url,
+            report_id=payload["report"]["id"],
+            pinned_request=pinned,
+            image_type="jpeg",
+        )
+    if not pinned.consumed:
+        raise ArtifactError("preview_pinned_payload_not_consumed", retryable=False)
+    if not data.startswith(b"\xff\xd8\xff") or not 0 < len(data) <= MAX_PREVIEW_BYTES:
+        raise ArtifactError("invalid_preview_artifact", retryable=False)
+    return data
+
+
 def s3_client():
     return boto3.client("s3", region_name=settings.aws_region,
         config=Config(connect_timeout=10, read_timeout=60, retries={"total_max_attempts": 2}))
@@ -108,6 +131,14 @@ class ArtifactIdentity:
 
 def identity(row):
     return ArtifactIdentity(row.id, row.storage_bucket, row.output_s3_key, row.report_id, row.report_version_id)
+
+
+@dataclass(frozen=True)
+class PreviewArtifact:
+    id: int
+    content: bytes
+    content_type: str
+    checksum_sha256: str
 
 
 def _owned(db, export_id, token):
@@ -194,10 +225,156 @@ def ensure_pdf(factory, export_id, *, renderer=render_pdf, storage=None, on_clai
         raise
 
 
+def _preview_head(s3, artifact, fingerprint, pdf_checksum):
+    try:
+        head = s3.head_object(Bucket=artifact.bucket, Key=artifact.key)
+    except ClientError as exc:
+        if str(exc.response.get("Error", {}).get("Code")) in {"404", "NoSuchKey", "NotFound"}:
+            return None
+        raise
+    metadata = head.get("Metadata", {})
+    if (metadata.get("snapshot") != fingerprint or metadata.get("pdf-sha256") != pdf_checksum
+            or not metadata.get("sha256") or head.get("ContentType") != "image/jpeg"
+            or not 0 < head.get("ContentLength", 0) <= MAX_PREVIEW_BYTES):
+        raise ArtifactError("preview_storage_identity_mismatch", retryable=False)
+    return head
+
+
+def _preview_bytes(s3, artifact):
+    response = s3.get_object(Bucket=artifact.bucket, Key=artifact.key)
+    body = response["Body"]
+    data = body.read() if hasattr(body, "read") else body
+    if not isinstance(data, bytes) or not data.startswith(b"\xff\xd8\xff") or not 0 < len(data) <= MAX_PREVIEW_BYTES:
+        raise ArtifactError("invalid_preview_artifact", retryable=False)
+    return data
+
+
+def ensure_preview(factory, pdf_export_id, *, renderer=render_preview, storage=None):
+    """Create/reuse the private cover image for one immutable PDF version.
+
+    PREVIEW uses the existing Export lifecycle rather than adding a second report,
+    version, quota event, or schema. Its deterministic row/key is private and is
+    exposed to recipients only as an inline CID attachment.
+    """
+    from .scheduled_report_execution import _write
+    with factory() as db:
+        _write(db)
+        pdf = db.query(Export).filter(Export.id == pdf_export_id, Export.artifact_type == "PDF").with_for_update().one()
+        if pdf.status != "READY" or not pdf.report_id or not pdf.report_version_id or not pdf.checksum_sha256:
+            raise ArtifactError("preview_pdf_unavailable")
+        previews = db.query(Export).filter_by(
+            workspace_id=pdf.workspace_id,
+            report_id=pdf.report_id,
+            report_version_id=pdf.report_version_id,
+            artifact_type="PREVIEW",
+        ).with_for_update().all()
+        if len(previews) > 1:
+            raise ArtifactError("preview_identity_duplicated", retryable=False)
+        if previews:
+            row = previews[0]
+        else:
+            row = Export(
+                workspace_id=pdf.workspace_id,
+                report_id=pdf.report_id,
+                report_version_id=pdf.report_version_id,
+                artifact_type="PREVIEW",
+                status="NOT_REQUESTED",
+                render_snapshot_json=deepcopy(pdf.render_snapshot_json),
+                snapshot_hash=pdf.snapshot_hash,
+                renderer_version=PREVIEW_RENDERER_VERSION,
+                content_type="image/jpeg",
+            )
+            db.add(row)
+            db.flush()
+        if (row.snapshot_hash != pdf.snapshot_hash or row.render_snapshot_json != pdf.render_snapshot_json
+                or row.renderer_version != PREVIEW_RENDERER_VERSION):
+            raise ArtifactError("preview_snapshot_invalid", retryable=False)
+        if row.status == "RENDERING" and _utc(row.lease_expires_at) > _database_now(db):
+            raise ArtifactError("artifact_in_progress")
+        token = str(uuid4())
+        row.status, row.lease_token = "RENDERING", token
+        row.lease_expires_at = _database_now(db) + ARTIFACT_LEASE
+        row.storage_bucket = row.storage_bucket or pdf.storage_bucket or settings.s3_outputs_bucket
+        row.output_s3_key = row.output_s3_key or (
+            f"workspaces/{row.workspace_id}/reports/{row.report_id}/versions/"
+            f"{row.report_version_id}/previews/{row.id}.jpg"
+        )
+        preview_id, payload, fingerprint, pdf_checksum = row.id, deepcopy(row.render_snapshot_json), row.snapshot_hash, pdf.checksum_sha256
+        artifact = identity(row)
+        db.commit()
+    try:
+        s3 = storage or s3_client()
+        head = _preview_head(s3, artifact, fingerprint, pdf_checksum)
+        if head is None:
+            content = renderer(payload)
+            if not content.startswith(b"\xff\xd8\xff") or len(content) > MAX_PREVIEW_BYTES:
+                raise ArtifactError("invalid_preview_artifact", retryable=False)
+            checksum = hashlib.sha256(content).hexdigest()
+            try:
+                s3.put_object(
+                    Bucket=artifact.bucket,
+                    Key=artifact.key,
+                    Body=content,
+                    ContentType="image/jpeg",
+                    CacheControl="private, no-store",
+                    IfNoneMatch="*",
+                    Metadata={
+                        "snapshot": fingerprint,
+                        "pdf-sha256": pdf_checksum,
+                        "sha256": checksum,
+                        "renderer": PREVIEW_RENDERER_VERSION,
+                    },
+                )
+            except ClientError as exc:
+                if str(exc.response.get("Error", {}).get("Code")) not in {"PreconditionFailed", "412"}:
+                    raise
+            head = _preview_head(s3, artifact, fingerprint, pdf_checksum)
+        if head is None:
+            raise ArtifactError("preview_upload_not_visible")
+        content = _preview_bytes(s3, artifact)
+        if hashlib.sha256(content).hexdigest() != head["Metadata"]["sha256"]:
+            raise ArtifactError("preview_storage_identity_mismatch", retryable=False)
+        with factory() as db:
+            row = _owned(db, preview_id, token)
+            row.status, row.completed_at, row.error_code = "READY", _database_now(db), None
+            row.size_bytes, row.checksum_sha256 = head["ContentLength"], head["Metadata"]["sha256"]
+            row.lease_token = row.lease_expires_at = None
+            db.commit()
+        return PreviewArtifact(preview_id, content, "image/jpeg", head["Metadata"]["sha256"])
+    except Exception as exc:
+        with factory() as db:
+            db.query(Export).filter(Export.id == preview_id, Export.lease_token == token).update({
+                "status": "FAILED",
+                "error_code": exc.code if isinstance(exc, ArtifactError) else "preview_storage_or_render_failed",
+                "lease_token": None,
+                "lease_expires_at": None,
+            }, synchronize_session=False)
+            db.commit()
+        raise
+
+
 def download_url(artifact, *, expires=900, storage=None):
     if not 1 <= expires <= 86400:
         raise ValueError("Download expiry must be between one second and one day.")
     return (storage or s3_client()).generate_presigned_url("get_object",
         Params={"Bucket": artifact.bucket, "Key": artifact.key,
                 "ResponseContentType": "application/pdf", "ResponseContentDisposition": f'attachment; filename="report-{artifact.report_id}-version-{artifact.version_id}.pdf"'},
+        ExpiresIn=expires)
+
+
+def report_view_url(artifact, *, expires=900, storage=None):
+    if not 1 <= expires <= 86400:
+        raise ValueError("View expiry must be between one second and one day.")
+    return (storage or s3_client()).generate_presigned_url("get_object",
+        Params={"Bucket": artifact.bucket, "Key": artifact.key,
+                "ResponseContentType": "application/pdf", "ResponseContentDisposition": 'inline; filename="measurable-report.pdf"'},
+        ExpiresIn=expires)
+
+
+def email_download_url(artifact, *, expires=900, storage=None):
+    if not 1 <= expires <= 86400:
+        raise ValueError("Download expiry must be between one second and one day.")
+    return (storage or s3_client()).generate_presigned_url("get_object",
+        Params={"Bucket": artifact.bucket, "Key": artifact.key,
+                "ResponseContentType": "application/pdf", "ResponseContentDisposition": 'attachment; filename="measurable-report.pdf"'},
         ExpiresIn=expires)

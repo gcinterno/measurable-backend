@@ -1,4 +1,8 @@
 import base64
+from dataclasses import dataclass
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 import hashlib
 import json
 import logging
@@ -1239,26 +1243,58 @@ def _ses_client(*, single_attempt: bool = False) -> Any:
     return boto3.client("ses", **client_kwargs)
 
 
+@dataclass(frozen=True)
+class InlineEmailImage:
+    content_id: str
+    content: bytes
+    content_type: str
+    filename: str
+
+
 def send_email_message(*, recipients: list[str], subject: str, html_body: str,
-                       text_body: str, purpose: str, single_attempt: bool = False) -> str | None:
+                       text_body: str, purpose: str, single_attempt: bool = False,
+                       inline_images: tuple[InlineEmailImage, ...] = ()) -> str | None:
     """Shared SES transport; callers own domain errors and persisted retry semantics."""
     from_email = str(settings.ses_from_email or "").strip()
     if not from_email:
         raise http_error(503, "email_service_unavailable", "Email service is not configured.")
     ses = _ses_client(single_attempt=True) if single_attempt else _ses_client()
-    kwargs = {
+    common = {
         "Source": from_email,
+        "Tags": [{"Name": "purpose", "Value": purpose}, {"Name": "environment", "Value": "production"}],
+    }
+    configuration_set = str(settings.ses_configuration_set_name or "").strip()
+    if configuration_set:
+        common["ConfigurationSetName"] = configuration_set
+    if inline_images:
+        message = MIMEMultipart("related")
+        message["Subject"] = subject
+        message["From"] = from_email
+        message["Reply-To"] = "hello@measurableapp.com"
+        message["To"] = "undisclosed-recipients:;" if purpose == "scheduled_report" else ", ".join(recipients)
+        alternative = MIMEMultipart("alternative")
+        alternative.attach(MIMEText(text_body, "plain", "utf-8"))
+        alternative.attach(MIMEText(html_body, "html", "utf-8"))
+        message.attach(alternative)
+        for image in inline_images:
+            if image.content_type not in {"image/jpeg", "image/png"}:
+                raise ValueError("Unsupported inline email image type.")
+            subtype = image.content_type.split("/", 1)[1]
+            part = MIMEImage(image.content, _subtype=subtype)
+            part.add_header("Content-ID", f"<{image.content_id}>")
+            part.add_header("Content-Disposition", "inline", filename=image.filename)
+            message.attach(part)
+        raw_kwargs = {**common, "Destinations": recipients, "RawMessage": {"Data": message.as_bytes()}}
+        return str(ses.send_raw_email(**raw_kwargs).get("MessageId") or "").strip() or None
+    kwargs = {
+        **common,
         # Delivery recipients do not need to see one another's addresses.
         "Destination": {"BccAddresses" if purpose == "scheduled_report" else "ToAddresses": recipients},
         "ReplyToAddresses": ["hello@measurableapp.com"],
-        "Tags": [{"Name": "purpose", "Value": purpose}, {"Name": "environment", "Value": "production"}],
         "Message": {"Subject": {"Data": subject, "Charset": "UTF-8"},
                     "Body": {"Text": {"Data": text_body, "Charset": "UTF-8"},
                              "Html": {"Data": html_body, "Charset": "UTF-8"}}},
     }
-    configuration_set = str(settings.ses_configuration_set_name or "").strip()
-    if configuration_set:
-        kwargs["ConfigurationSetName"] = configuration_set
     return str(ses.send_email(**kwargs).get("MessageId") or "").strip() or None
 
 
@@ -3734,7 +3770,9 @@ def generate_thumbnail_from_export_page(
     *,
     export_url: str,
     report_id: int,
-    auth_token: str,
+    auth_token: str | None = None,
+    pinned_request: Any = None,
+    image_type: str = "png",
 ) -> tuple[bytes, dict[str, Any]]:
     try:
         from playwright.sync_api import Error as PlaywrightError
@@ -3752,7 +3790,9 @@ def generate_thumbnail_from_export_page(
     viewport_width = 1600
     viewport_height = 900
     device_scale_factor = float(settings.pdf_export_device_scale_factor)
-    auth_strategy = "authorization_header_report_export_token"
+    if image_type not in {"png", "jpeg"}:
+        raise ValueError("Thumbnail image_type must be png or jpeg.")
+    auth_strategy = "authorization_header_report_export_token" if auth_token else "pinned_report_snapshot"
     report_fetch_events: list[dict[str, Any]] = []
     slide_selector_used: str | None = None
     ready_selector_timed_out = False
@@ -3786,11 +3826,17 @@ def generate_thumbnail_from_export_page(
             context = browser.new_context(
                 viewport={"width": viewport_width, "height": viewport_height},
                 device_scale_factor=device_scale_factor,
-                extra_http_headers={
-                    "Authorization": f"Bearer {auth_token}",
-                    "X-Measurable-Export-Auth": "report_export_token",
-                },
+                extra_http_headers=(
+                    {
+                        "Authorization": f"Bearer {auth_token}",
+                        "X-Measurable-Export-Auth": "report_export_token",
+                    }
+                    if auth_token
+                    else None
+                ),
             )
+            if pinned_request is not None:
+                pinned_request.install(context)
             page = context.new_page()
             page.emulate_media(media="screen")
 
@@ -3837,22 +3883,18 @@ def generate_thumbnail_from_export_page(
                     )
 
             screenshot_bytes: bytes | None = None
+            screenshot_options = {"type": image_type, "animations": "disabled"}
+            if image_type == "jpeg":
+                screenshot_options["quality"] = 84
             for selector in slide_selectors:
                 locator = page.locator(selector).first
                 if locator.count() > 0:
                     slide_selector_used = selector
-                    screenshot_bytes = locator.screenshot(
-                        type="png",
-                        animations="disabled",
-                    )
+                    screenshot_bytes = locator.screenshot(**screenshot_options)
                     break
 
             if screenshot_bytes is None:
-                screenshot_bytes = page.screenshot(
-                    type="png",
-                    full_page=False,
-                    animations="disabled",
-                )
+                screenshot_bytes = page.screenshot(full_page=False, **screenshot_options)
             context.close()
             browser.close()
     except PlaywrightTimeoutError as exc:

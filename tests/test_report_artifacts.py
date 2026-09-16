@@ -1,4 +1,6 @@
 import json
+from email import policy
+from email.parser import BytesParser
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Event
@@ -42,9 +44,27 @@ def test_cors_preflight_does_not_count_as_rendered_payload():
 
 
 def test_pdf_rejects_renderer_that_never_consumes_snapshot(monkeypatch):
+    monkeypatch.setattr(artifacts.settings, "report_export_base_url", "https://frontend.test")
     monkeypatch.setattr(services, "generate_pdf_from_export_page", lambda **kw: (b"%PDF-test", {}))
     with pytest.raises(artifacts.ArtifactError, match="pdf_pinned_payload_not_consumed"):
         artifacts.render_pdf({"report": {"id": 3}})
+
+
+def test_preview_renderer_uses_exact_frozen_payload(monkeypatch):
+    monkeypatch.setattr(artifacts.settings, "report_export_base_url", "https://frontend.test")
+    payload = {"report": {"id": 3, "title": "Frozen title"}, "version": {"id": 9}, "blocks": [{"id": 1}]}
+    captured = []
+
+    def render(**kwargs):
+        pinned = kwargs["pinned_request"]
+        captured.append(pinned.payload)
+        pinned.consumed = True
+        assert kwargs["image_type"] == "jpeg"
+        return b"\xff\xd8\xff exact cover", {}
+
+    monkeypatch.setattr(services, "generate_thumbnail_from_export_page", render)
+    assert artifacts.render_preview(payload) == b"\xff\xd8\xff exact cover"
+    assert captured == [payload]
 
 
 @pytest.mark.parametrize("data", [b"", b"<html>not PDF</html>"])
@@ -80,6 +100,19 @@ def test_invalid_download_expiry_rejected(expires):
         artifacts.download_url(None, expires=expires)
 
 
+def test_email_pdf_links_keep_existing_private_signing_with_safe_filenames(io):
+    artifact = artifacts.ArtifactIdentity(8, "private-bucket", "private/key.pdf", 12, 34)
+    artifacts.report_view_url(artifact, expires=86400, storage=io.s3)
+    artifacts.email_download_url(artifact, expires=86400, storage=io.s3)
+    view = io.s3.urls[-2][1]
+    download = io.s3.urls[-1][1]
+    assert view["ExpiresIn"] == download["ExpiresIn"] == 86400
+    assert view["Params"]["ResponseContentDisposition"] == 'inline; filename="measurable-report.pdf"'
+    assert download["Params"]["ResponseContentDisposition"] == 'attachment; filename="measurable-report.pdf"'
+    assert "12" not in view["Params"]["ResponseContentDisposition"]
+    assert "34" not in download["Params"]["ResponseContentDisposition"]
+
+
 def test_s3_client_supports_conditional_put_without_public_acl():
     client = artifacts.s3_client()
     assert "IfNoneMatch" in client.meta.service_model.operation_model("PutObject").input_shape.members
@@ -95,6 +128,36 @@ def test_ses_transport_preserves_auth_and_hides_delivery_recipients(monkeypatch)
         assert kwargs["Destination"] == {destination: ["one@example.com", "two@example.com"]}
         assert kwargs["ReplyToAddresses"] == ["hello@measurableapp.com"]
         assert kwargs["Message"]["Body"]["Text"]["Data"] == "Hello"
+
+
+def test_ses_transport_sends_cid_preview_as_private_raw_mime(monkeypatch):
+    ses = Mock()
+    ses.send_raw_email.return_value = {"MessageId": "accepted-inline"}
+    monkeypatch.setattr(services, "_ses_client", lambda **kw: ses)
+    result = services.send_email_message(
+        recipients=["one@example.com", "two@example.com"],
+        subject="Your report is ready",
+        html_body='<img src="cid:measurable-report-preview"><a href="https://private.test">View report</a>',
+        text_body="View report: https://private.test",
+        purpose="scheduled_report",
+        single_attempt=True,
+        inline_images=(services.InlineEmailImage(
+            content_id="measurable-report-preview",
+            content=b"\xff\xd8\xff preview",
+            content_type="image/jpeg",
+            filename="report-preview.jpg",
+        ),),
+    )
+    assert result == "accepted-inline"
+    kwargs = ses.send_raw_email.call_args.kwargs
+    assert kwargs["Destinations"] == ["one@example.com", "two@example.com"]
+    parsed = BytesParser(policy=policy.default).parsebytes(kwargs["RawMessage"]["Data"])
+    assert parsed["To"] == "undisclosed-recipients:;" and parsed["Bcc"] is None
+    parts = list(parsed.walk())
+    preview = next(part for part in parts if part.get("Content-ID") == "<measurable-report-preview>")
+    assert preview.get_content_type() == "image/jpeg"
+    assert preview.get_filename() == "report-preview.jpg"
+    assert preview.get_payload(decode=True) == b"\xff\xd8\xff preview"
 
 
 def test_scheduled_ses_disables_sdk_retries(monkeypatch):

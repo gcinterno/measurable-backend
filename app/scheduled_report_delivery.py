@@ -6,7 +6,6 @@ DELIVERED means accepted by SES, not a verified recipient inbox receipt.
 """
 from dataclasses import dataclass
 from datetime import timedelta
-from html import escape
 import logging
 from threading import Event, Lock, Thread
 from uuid import uuid4
@@ -16,12 +15,13 @@ from fastapi import HTTPException
 from sqlalchemy import and_, or_
 
 from .models import Export, ScheduledReportDelivery
-from .report_artifacts import ArtifactError, download_url, ensure_pdf, identity, renew_artifact
+from .report_artifacts import ArtifactError, email_download_url, ensure_pdf, ensure_preview, identity, renew_artifact, report_view_url
 from .report_generation import _database_now, _utc
+from .scheduled_report_email import ScheduledReportEmailContext, render_scheduled_report_email
 from .scheduled_report_execution import _write, LeaseLost
 from .scheduled_report_models import ScheduledReportRevision, ScheduledReportRun
 from .scheduled_report_refresh import private_provider_io
-from .services import send_email_message
+from .services import InlineEmailImage, send_email_message
 
 logger = logging.getLogger(__name__)
 DELIVERY_LEASE = timedelta(minutes=3)
@@ -186,7 +186,21 @@ def _failure(exc, sending):
     return ("UNKNOWN", "email_acceptance_unknown", False) if sending else ("FAILED", "pdf_storage_or_render_failed", True)
 
 
-def execute_delivery(factory, claim, *, artifact_builder=ensure_pdf, sender=send_email_message, signer=download_url, heartbeat_interval=20):
+def _source_label(snapshot):
+    source = next(iter(snapshot.get("sources") or ()), {})
+    label = str(source.get("label") or "").strip()
+    if label:
+        return label
+    return {
+        "facebook_pages": "Facebook Pages",
+        "instagram_business": "Instagram Business",
+        "meta_ads": "Meta Ads",
+    }.get(str(source.get("source_type") or ""), "Connected source")
+
+
+def execute_delivery(factory, claim, *, artifact_builder=ensure_pdf, preview_builder=ensure_preview,
+                     sender=send_email_message, signer=email_download_url, viewer=report_view_url,
+                     heartbeat_interval=20):
     sending = False
     try:
         with DeliveryHeartbeat(factory, claim, interval=heartbeat_interval) as heartbeat:
@@ -203,12 +217,27 @@ def execute_delivery(factory, claim, *, artifact_builder=ensure_pdf, sender=send
                 export_id = artifact.id
                 # The immutable report title is used instead of the mutable schedule name.
                 title = artifact.render_snapshot_json["report"]["title"]
-                period = f"{run.reporting_start_date.isoformat()} to {run.reporting_end_date.isoformat()}"
+                revision = db.get(ScheduledReportRevision, (run.schedule_id, run.workspace_id, run.configuration_revision))
+                snapshot = revision.snapshot_json
+                locale = str((snapshot.get("generation_options") or {}).get("locale") or "en")
+                source_label = _source_label(snapshot)
+                generated_at = run.completed_at or _database_now(db)
+                reporting_start, reporting_end = run.reporting_start_date, run.reporting_end_date
             with private_provider_io():
                 artifact = artifact_builder(factory, export_id, on_claim=heartbeat.attach)
-                url = signer(artifact, expires=86400)
-            html = f'<p>Your scheduled marketing report is ready: {escape(title)}.</p><p>Reporting period: {escape(period)}.</p><p><a href="{escape(url, quote=True)}">Download PDF</a></p><p>This private download link expires within 24 hours.</p>'
-            text = f"Your scheduled marketing report is ready: {title}.\nReporting period: {period}.\nDownload PDF: {url}\nThis private download link expires within 24 hours."
+                preview = preview_builder(factory, export_id)
+                download = signer(artifact, expires=86400)
+                view = viewer(artifact, expires=86400)
+            email = render_scheduled_report_email(ScheduledReportEmailContext(
+                title=title,
+                reporting_start=reporting_start,
+                reporting_end=reporting_end,
+                source_label=source_label,
+                generated_at=generated_at,
+                locale=locale,
+                view_url=view,
+                download_url=download,
+            ))
             with factory() as db:
                 row = owned_delivery(db, claim)
                 if heartbeat.lost.is_set():
@@ -218,8 +247,20 @@ def execute_delivery(factory, claim, *, artifact_builder=ensure_pdf, sender=send
             sending = True
             # Never allow SDK retries of an ambiguously accepted send.
             with private_provider_io():
-                message_id = sender(recipients=recipients, subject="Your scheduled marketing report is ready",
-                    html_body=html, text_body=text, purpose="scheduled_report", single_attempt=True)
+                message_id = sender(
+                    recipients=recipients,
+                    subject=email.subject,
+                    html_body=email.html,
+                    text_body=email.text,
+                    purpose="scheduled_report",
+                    single_attempt=True,
+                    inline_images=(InlineEmailImage(
+                        content_id="measurable-report-preview",
+                        content=preview.content,
+                        content_type=preview.content_type,
+                        filename="report-preview.jpg",
+                    ),),
+                )
             if not message_id:
                 raise RuntimeError("Missing SES acceptance identity")
             # Retry local finalization only. No more S3/PDF/SES calls after acceptance.

@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
 from functools import partial
 import json
 from types import SimpleNamespace
@@ -20,6 +20,7 @@ import app.scheduled_report_delivery as delivery
 import app.scheduled_report_execution as execution
 import app.scheduled_report_worker as worker
 import app.scheduled_reports as schedules
+from app.scheduled_report_email import ScheduledReportEmailContext, render_scheduled_report_email
 
 
 class MemoryS3:
@@ -45,6 +46,10 @@ class MemoryS3:
     def generate_presigned_url(self, method, **kwargs):
         self.urls.append((method, kwargs))
         return "https://private.test/pdf?signature=DO_NOT_LOG"
+
+    def get_object(self, *, Bucket, Key):
+        obj = self.objects[(Bucket, Key)]
+        return {"Body": obj["Body"]}
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +81,7 @@ def completed(factory, *, used=0, email=True):
 
 @pytest.fixture
 def io():
-    s3, renders, messages = MemoryS3(), [], []
+    s3, renders, messages, previews = MemoryS3(), [], [], []
     def render(payload):
         renders.append(deepcopy(payload))
         return b"%PDF-1.4 fixture"
@@ -85,13 +90,20 @@ def io():
         return "ses-message-1"
     builder = partial(artifacts.ensure_pdf, renderer=render, storage=s3)
     signer = partial(artifacts.download_url, storage=s3)
-    return SimpleNamespace(s3=s3, renders=renders, messages=messages, renderer=render, sender=send, builder=builder, signer=signer)
+    def preview_builder(factory, export_id):
+        previews.append(export_id)
+        return SimpleNamespace(content=b"\xff\xd8\xff email preview", content_type="image/jpeg")
+    return SimpleNamespace(s3=s3, renders=renders, messages=messages, previews=previews,
+                           renderer=render, sender=send, builder=builder,
+                           preview_builder=preview_builder, signer=signer)
 
 
 def deliver(factory, io, **kwargs):
     claim = delivery.claim_delivery(factory)
     assert claim is not None
-    delivery.execute_delivery(factory, claim, artifact_builder=io.builder, sender=kwargs.pop("sender", io.sender), signer=io.signer, **kwargs)
+    delivery.execute_delivery(factory, claim, artifact_builder=io.builder,
+        preview_builder=kwargs.pop("preview_builder", io.preview_builder),
+        sender=kwargs.pop("sender", io.sender), signer=io.signer, viewer=io.signer, **kwargs)
     return claim
 
 
@@ -105,6 +117,98 @@ def retry_due(factory):
 def assert_single_generation(factory, used=1):
     with factory() as db:
         assert db.query(Report).count() == used
+        assert db.query(ReportGeneration).filter_by(state="consumed").count() == 1
+
+
+@pytest.mark.parametrize("locale,headline,view,download,footer", [
+    ("en", "Your report is ready", "View report", "Download PDF", "AI Marketing Report Generator"),
+    ("es", "Tu reporte está listo", "Ver reporte", "Descargar PDF", "Generador de Reportes de Marketing con IA"),
+])
+def test_premium_email_html_and_text_are_localized(locale, headline, view, download, footer):
+    rendered = render_scheduled_report_email(ScheduledReportEmailContext(
+        title="Measurable Growth <Q3>",
+        reporting_start=date(2026, 9, 1),
+        reporting_end=date(2026, 9, 7),
+        source_label="ATRIA Marketing",
+        generated_at=datetime(2026, 9, 8, 14, 30, tzinfo=timezone.utc),
+        locale=locale,
+        view_url="https://private.test/view?signature=signed",
+        download_url="https://private.test/download?signature=signed",
+    ))
+    assert rendered.subject == headline
+    for value in (headline, view, download, footer, "ATRIA Marketing"):
+        assert value in rendered.html and value in rendered.text
+    assert "cid:measurable-report-preview" in rendered.html
+    assert "Measurable Growth &lt;Q3&gt;" in rendered.html
+    assert "Measurable Growth <Q3>" in rendered.text
+    assert "https://private.test/view?signature=signed" in rendered.text
+    assert "https://private.test/download?signature=signed" in rendered.text
+    assert "workspace_id" not in rendered.html and "integration_id" not in rendered.html
+
+
+def test_delivery_email_uses_frozen_report_data_and_inline_preview(factory, io):
+    _, _, run_id, _ = completed(factory)
+    deliver(factory, io)
+    message = io.messages[0]
+    assert message["subject"] == "Your report is ready"
+    assert "Client performance" in message["html_body"]
+    assert "Facebook Pages" in message["html_body"]
+    assert "Reporting period" in message["html_body"] and "Reporting period" in message["text_body"]
+    assert "cid:measurable-report-preview" in message["html_body"]
+    assert message["inline_images"][0].content == b"\xff\xd8\xff email preview"
+    assert message["inline_images"][0].filename == "report-preview.jpg"
+    with factory() as db:
+        assert db.query(Report).count() == db.query(ReportVersion).count() == db.query(ScheduledReportRun).count() == 1
+        assert db.get(ScheduledReportRun, run_id).status == "SUCCEEDED"
+        assert db.query(ReportGeneration).filter_by(state="consumed").count() == 1
+
+
+def test_delivery_uses_locale_from_the_immutable_schedule_revision(factory, io):
+    command, output = email_schedule(factory)
+    with factory() as db:
+        schedules.update_scheduled_report(
+            output["id"],
+            schedules.ScheduleUpdateInput(generation_options={
+                "title": "Rendimiento semanal",
+                "locale": "es",
+                "ai_mode": "standard",
+            }),
+            command.workspace_id,
+            db.get(User, command.actor_user_id),
+            db,
+        )
+        db.get(ScheduledReport, output["id"]).next_run_at = execution._database_now(db) - timedelta(days=8)
+        db.commit()
+    claim = dispatch_claim(factory, output)
+    execution.execute_run(factory, claim, refresher=refresh)
+    deliver(factory, io)
+    message = io.messages[0]
+    assert message["subject"] == "Tu reporte está listo"
+    assert "REPORTE PROGRAMADO" in message["html_body"]
+    assert "Ver reporte" in message["html_body"] and "Descargar PDF" in message["html_body"]
+    assert "Tu enlace privado del reporte vence en 24 horas." in message["text_body"]
+
+
+def test_preview_artifact_is_version_scoped_private_and_reused(factory, io):
+    _, _, _, export_id = completed(factory)
+    io.builder(factory, export_id)
+    rendered = []
+
+    def preview_renderer(payload):
+        rendered.append(deepcopy(payload))
+        return b"\xff\xd8\xff deterministic cover"
+
+    first = artifacts.ensure_preview(factory, export_id, renderer=preview_renderer, storage=io.s3)
+    second = artifacts.ensure_preview(factory, export_id, renderer=preview_renderer, storage=io.s3)
+    assert first.id == second.id and first.content == second.content
+    assert len(rendered) == 1
+    preview_put = next(item for item in io.s3.puts if item["ContentType"] == "image/jpeg")
+    assert preview_put["CacheControl"] == "private, no-store" and preview_put["IfNoneMatch"] == "*"
+    assert preview_put["Metadata"]["snapshot"] and preview_put["Metadata"]["pdf-sha256"]
+    with factory() as db:
+        previews = db.query(Export).filter_by(artifact_type="PREVIEW").all()
+        assert len(previews) == 1 and previews[0].report_version_id
+        assert db.query(Report).count() == db.query(ReportVersion).count() == db.query(ScheduledReportRun).count() == 1
         assert db.query(ReportGeneration).filter_by(state="consumed").count() == 1
 
 
@@ -416,7 +520,8 @@ def test_snapshot_and_delivery_uniqueness(factory):
 def test_worker_once_resumes_persisted_delivery(factory, io, monkeypatch):
     completed(factory)
     monkeypatch.setattr(worker, "execute_delivery", lambda factory, claim: delivery.execute_delivery(factory, claim,
-        artifact_builder=io.builder, sender=io.sender, signer=io.signer))
+        artifact_builder=io.builder, preview_builder=io.preview_builder,
+        sender=io.sender, signer=io.signer, viewer=io.signer))
     worker.run_worker(factory, once=True)
     assert len(io.messages) == 1
     assert_single_generation(factory)
