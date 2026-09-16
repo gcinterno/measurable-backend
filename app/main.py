@@ -14939,7 +14939,7 @@ def _reconcile_meta_instagram_accounts(
     pages: list[dict[str, Any]],
 ) -> None:
     """Keep Meta Suite Instagram identities aligned with the authorized cache."""
-    if integration.provider != "meta":
+    if integration.provider != "instagram_business":
         return
 
     canonical_accounts = {

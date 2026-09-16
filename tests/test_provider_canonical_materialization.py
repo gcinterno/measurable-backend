@@ -36,7 +36,6 @@ def _catalog(client, command, builder):
 def test_meta_suite_instagram_records_materialize_stable_workspace_accounts(factory, client):
     command = seed(factory)
     records = [
-        {"record_type": "facebook_page", "page_id": "fb-1", "name": "Internal Page"},
         {
             "record_type": "instagram_account",
             "page_id": "ig-1",
@@ -47,8 +46,8 @@ def test_meta_suite_instagram_records_materialize_stable_workspace_accounts(fact
     with factory() as db:
         integration = Integration(
             workspace_id=command.workspace_id,
-            provider="meta",
-            name="Meta Pages",
+            provider="instagram_business",
+            name="Instagram Business",
             status="connected",
         )
         db.add(integration)
@@ -62,7 +61,7 @@ def test_meta_suite_instagram_records_materialize_stable_workspace_accounts(fact
         assert first.workspace_id == command.workspace_id
         assert first.display_name == "Internal Instagram"
 
-        records[1]["name"] = "Renamed Internal Instagram"
+        records[0]["name"] = "Renamed Internal Instagram"
         providers._cache_meta_pages(db, integration, command.actor_user_id, records)
         second = db.query(IntegrationAccount).filter_by(
             integration_id=integration.id,
@@ -89,23 +88,28 @@ def test_meta_suite_instagram_records_materialize_stable_workspace_accounts(fact
 def test_meta_suite_instagram_reconciliation_removes_only_stale_instagram_identity(factory):
     command = seed(factory)
     with factory() as db:
-        integration = Integration(workspace_id=command.workspace_id, provider="meta", status="connected")
+        integration = Integration(workspace_id=command.workspace_id, provider="instagram_business", status="connected")
         db.add(integration)
         db.flush()
+        token_identity = providers._instagram_business_token_account_external_id(integration.id)
+        db.add(IntegrationAccount(
+            integration_id=integration.id,
+            workspace_id=command.workspace_id,
+            external_account_id=token_identity,
+            display_name="Token store",
+        ))
         providers._cache_meta_pages(db, integration, command.actor_user_id, [
-            {"record_type": "facebook_page", "page_id": "fb-1", "name": "Facebook"},
             {"record_type": "instagram_account", "page_id": "ig-1", "name": "Instagram One"},
             {"record_type": "instagram_account", "page_id": "ig-2", "name": "Instagram Two"},
         ])
         providers._cache_meta_pages(db, integration, command.actor_user_id, [
-            {"record_type": "facebook_page", "page_id": "fb-1", "name": "Facebook"},
             {"record_type": "instagram_account", "page_id": "ig-2", "name": "Instagram Two"},
         ])
         external_ids = {
             row.external_account_id
             for row in db.query(IntegrationAccount).filter_by(integration_id=integration.id)
         }
-        assert providers._meta_page_account_external_id("fb-1") in external_ids
+        assert token_identity in external_ids
         assert "ig-2" in external_ids
         assert "ig-1" not in external_ids
 
