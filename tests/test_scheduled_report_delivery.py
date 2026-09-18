@@ -3,6 +3,7 @@ from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from functools import partial
 import json
+import struct
 from types import SimpleNamespace
 
 from botocore.exceptions import ClientError, ReadTimeoutError
@@ -103,7 +104,8 @@ def deliver(factory, io, **kwargs):
     assert claim is not None
     delivery.execute_delivery(factory, claim, artifact_builder=io.builder,
         preview_builder=kwargs.pop("preview_builder", io.preview_builder),
-        sender=kwargs.pop("sender", io.sender), signer=io.signer, viewer=io.signer, **kwargs)
+        sender=kwargs.pop("sender", io.sender), signer=io.signer,
+        viewer=kwargs.pop("viewer", lambda report_id: f"https://app.test/reports/{report_id}"), **kwargs)
     return claim
 
 
@@ -120,11 +122,15 @@ def assert_single_generation(factory, used=1):
         assert db.query(ReportGeneration).filter_by(state="consumed").count() == 1
 
 
-@pytest.mark.parametrize("locale,headline,view,download,footer", [
-    ("en", "Your report is ready", "View report", "Download PDF", "AI Marketing Report Generator"),
-    ("es", "Tu reporte está listo", "Ver reporte", "Descargar PDF", "Generador de Reportes de Marketing con IA"),
+@pytest.mark.parametrize("locale,headline,view,chat,download,expiry,footer", [
+    ("en", "Your report is ready", "View report", "Chat with your data", "Download PDF",
+     "Your private PDF download link expires in 24 hours.", "AI Marketing Report Generator"),
+    ("es", "Tu reporte está listo", "Ver reporte", "Chatea con tus datos", "Descargar PDF",
+     "Tu enlace privado de descarga del PDF vence en 24 horas.", "Generador de Reportes de Marketing con IA"),
 ])
-def test_premium_email_html_and_text_are_localized(locale, headline, view, download, footer):
+def test_premium_email_html_and_text_are_localized(locale, headline, view, chat, download, expiry, footer):
+    report_url = "https://app.test/reports/97"
+    download_url = "https://private.test/download?signature=signed"
     rendered = render_scheduled_report_email(ScheduledReportEmailContext(
         title="Measurable Growth <Q3>",
         reporting_start=date(2026, 9, 1),
@@ -132,18 +138,20 @@ def test_premium_email_html_and_text_are_localized(locale, headline, view, downl
         source_label="ATRIA Marketing",
         generated_at=datetime(2026, 9, 8, 14, 30, tzinfo=timezone.utc),
         locale=locale,
-        view_url="https://private.test/view?signature=signed",
-        download_url="https://private.test/download?signature=signed",
+        view_url=report_url,
+        download_url=download_url,
     ))
     assert rendered.subject == headline
-    for value in (headline, view, download, footer, "ATRIA Marketing"):
+    for value in (headline, view, chat, download, expiry, footer, "ATRIA Marketing"):
         assert value in rendered.html and value in rendered.text
     assert "cid:measurable-report-preview" in rendered.html
     assert "cid:measurable-logo" in rendered.html
     assert "Measurable Growth &lt;Q3&gt;" in rendered.html
     assert "Measurable Growth <Q3>" in rendered.text
-    assert "https://private.test/view?signature=signed" in rendered.text
-    assert "https://private.test/download?signature=signed" in rendered.text
+    assert rendered.html.count(f'href="{report_url}"') == 2
+    assert rendered.text.count(report_url) == 2
+    assert f'href="https://private.test/download?signature=signed"' in rendered.html
+    assert download_url in rendered.text
     assert "workspace_id" not in rendered.html and "integration_id" not in rendered.html
 
 
@@ -155,18 +163,33 @@ def test_email_visual_shell_is_white_and_preview_is_centered_with_official_logo(
         source_label="Internal source",
         generated_at=datetime(2026, 9, 8, 14, 30, tzinfo=timezone.utc),
         locale="en",
-        view_url="https://private.test/view",
+        view_url="https://app.test/reports/97",
         download_url="https://private.test/download",
     ))
-    assert 'bgcolor="#ffffff"' in rendered.html
+    assert '<meta name="color-scheme" content="light">' in rendered.html
+    assert '<meta name="supported-color-schemes" content="light">' in rendered.html
+    assert ":root { color-scheme: light !important; supported-color-schemes: light !important; }" in rendered.html
+    assert rendered.html.count('bgcolor="#ffffff"') >= 7
+    assert rendered.html.count("background-color:#ffffff") >= 7
     assert "background:#f5f7fa" not in rendered.html
-    assert '<img src="cid:measurable-logo" width="76" alt="Measurable" align="center"' in rendered.html
-    assert '<table role="presentation" width="486"' in rendered.html
+    assert '<img class="email-logo" src="cid:measurable-logo" width="190" alt="Measurable" align="center"' in rendered.html
+    assert "height=\"" not in rendered.html.split('src="cid:measurable-logo"', 1)[1].split(">", 1)[0]
+    assert '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" align="center" bgcolor="#f8fafc"' in rendered.html
     assert '<img src="cid:measurable-report-preview" width="468"' in rendered.html
     assert 'align="center" style="display:block;width:100%;max-width:468px;height:auto;margin:0 auto;' in rendered.html
-    assert "aspect-ratio" not in rendered.html and "object-fit" not in rendered.html
+    assert "max-width:488px" in rendered.html
+    assert "negative" not in rendered.html and "translate" not in rendered.html and "position:absolute" not in rendered.html
     assert MEASURABLE_LOGO_PNG.startswith(b"\x89PNG\r\n\x1a\n")
-    assert b"Canva" not in MEASURABLE_LOGO_PNG and b"ATRIA" not in MEASURABLE_LOGO_PNG
+    width, height = struct.unpack(">II", MEASURABLE_LOGO_PNG[16:24])
+    assert (width, height) == (800, 300) and width / height == pytest.approx(8 / 3)
+    assert "@media only screen and (max-width:620px)" in rendered.html
+    assert ".email-card { padding:30px 20px 28px !important; }" in rendered.html
+
+
+def test_report_page_url_uses_configured_frontend_and_existing_report_route(monkeypatch):
+    monkeypatch.setattr(delivery.settings, "frontend_url", "https://app.measurable.test/")
+    monkeypatch.setattr(delivery.settings, "frontend_base_url", "https://fallback.invalid")
+    assert delivery.report_page_url(97) == "https://app.measurable.test/reports/97"
 
 
 def test_delivery_email_uses_frozen_report_data_and_inline_preview(factory, io):
@@ -179,6 +202,12 @@ def test_delivery_email_uses_frozen_report_data_and_inline_preview(factory, io):
     assert "Reporting period" in message["html_body"] and "Reporting period" in message["text_body"]
     assert "cid:measurable-report-preview" in message["html_body"]
     assert "cid:measurable-logo" in message["html_body"]
+    with factory() as db:
+        report_id = db.get(ScheduledReportRun, run_id).report_id
+    report_url = f"https://app.test/reports/{report_id}"
+    assert message["html_body"].count(f'href="{report_url}"') == 2
+    assert message["text_body"].count(report_url) == 2
+    assert message["html_body"].count('href="https://private.test/pdf?signature=DO_NOT_LOG"') == 1
     assert len(message["inline_images"]) == 2
     assert message["inline_images"][0].content == b"\xff\xd8\xff email preview"
     assert message["inline_images"][0].filename == "report-preview.jpg"
@@ -213,8 +242,9 @@ def test_delivery_uses_locale_from_the_immutable_schedule_revision(factory, io):
     message = io.messages[0]
     assert message["subject"] == "Tu reporte está listo"
     assert "REPORTE PROGRAMADO" in message["html_body"]
-    assert "Ver reporte" in message["html_body"] and "Descargar PDF" in message["html_body"]
-    assert "Tu enlace privado del reporte vence en 24 horas." in message["text_body"]
+    assert "Ver reporte" in message["html_body"] and "Chatea con tus datos" in message["html_body"]
+    assert "Descargar PDF" in message["html_body"]
+    assert "Tu enlace privado de descarga del PDF vence en 24 horas." in message["text_body"]
 
 
 def test_preview_artifact_is_version_scoped_private_and_reused(factory, io):
@@ -549,7 +579,8 @@ def test_worker_once_resumes_persisted_delivery(factory, io, monkeypatch):
     completed(factory)
     monkeypatch.setattr(worker, "execute_delivery", lambda factory, claim: delivery.execute_delivery(factory, claim,
         artifact_builder=io.builder, preview_builder=io.preview_builder,
-        sender=io.sender, signer=io.signer, viewer=io.signer))
+        sender=io.sender, signer=io.signer,
+        viewer=lambda report_id: f"https://app.test/reports/{report_id}"))
     worker.run_worker(factory, once=True)
     assert len(io.messages) == 1
     assert_single_generation(factory)

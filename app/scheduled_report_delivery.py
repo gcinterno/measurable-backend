@@ -14,8 +14,9 @@ from botocore.exceptions import ClientError, EndpointConnectionError, NoCredenti
 from fastapi import HTTPException
 from sqlalchemy import and_, or_
 
+from .config import settings
 from .models import Export, ScheduledReportDelivery
-from .report_artifacts import ArtifactError, email_download_url, ensure_pdf, ensure_preview, identity, renew_artifact, report_view_url
+from .report_artifacts import ArtifactError, email_download_url, ensure_pdf, ensure_preview, identity, renew_artifact
 from .report_generation import _database_now, _utc
 from .scheduled_report_email import MEASURABLE_LOGO_PNG, ScheduledReportEmailContext, render_scheduled_report_email
 from .scheduled_report_execution import _write, LeaseLost
@@ -198,8 +199,16 @@ def _source_label(snapshot):
     }.get(str(source.get("source_type") or ""), "Connected source")
 
 
+def report_page_url(report_id: int) -> str:
+    """Canonical authenticated Measurable report route used by both app CTAs."""
+    base_url = str(settings.frontend_url or settings.frontend_base_url or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=503, detail="frontend_url_not_configured")
+    return f"{base_url}/reports/{report_id}"
+
+
 def execute_delivery(factory, claim, *, artifact_builder=ensure_pdf, preview_builder=ensure_preview,
-                     sender=send_email_message, signer=email_download_url, viewer=report_view_url,
+                     sender=send_email_message, signer=email_download_url, viewer=report_page_url,
                      heartbeat_interval=20):
     sending = False
     try:
@@ -215,6 +224,7 @@ def execute_delivery(factory, claim, *, artifact_builder=ensure_pdf, preview_bui
                     raise ArtifactError("delivery_configuration_invalid", retryable=False)
                 recipients = [str(email) for email in config.recipients]
                 export_id = artifact.id
+                report_id = run.report_id
                 # The immutable report title is used instead of the mutable schedule name.
                 title = artifact.render_snapshot_json["report"]["title"]
                 revision = db.get(ScheduledReportRevision, (run.schedule_id, run.workspace_id, run.configuration_revision))
@@ -227,7 +237,7 @@ def execute_delivery(factory, claim, *, artifact_builder=ensure_pdf, preview_bui
                 artifact = artifact_builder(factory, export_id, on_claim=heartbeat.attach)
                 preview = preview_builder(factory, export_id)
                 download = signer(artifact, expires=86400)
-                view = viewer(artifact, expires=86400)
+            view = viewer(report_id)
             email = render_scheduled_report_email(ScheduledReportEmailContext(
                 title=title,
                 reporting_start=reporting_start,
