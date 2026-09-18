@@ -1041,6 +1041,7 @@ class InstagramBusinessLoginDisconnectOut(BaseModel):
     cleared_integration_accounts: int = 0
     cleared_tokens: int = 0
     token_cleared: bool = False
+    remote_revoke_status: Optional[str] = None
 
 
 class InstagramBusinessLoginAccountOut(BaseModel):
@@ -1056,6 +1057,54 @@ class InstagramBusinessLoginAccountsOut(BaseModel):
     provider: str = "instagram_business_login"
     integration_id: Optional[int] = None
     accounts: list[InstagramBusinessLoginAccountOut] = Field(default_factory=list)
+
+
+InstagramAuthMethod = Literal["meta_business_suite", "instagram_business_login"]
+InstagramUnifiedSourceStatus = Literal[
+    "connected",
+    "connected_no_assets",
+    "checking",
+    "needs_permission",
+    "no_token",
+    "disconnected",
+    "error",
+]
+InstagramUnifiedDiscoveryStatus = Literal["idle", "pending", "running", "complete", "failed"]
+
+
+class InstagramUnifiedAccountOut(BaseModel):
+    source_type: Literal["instagram_business"] = "instagram_business"
+    auth_method: InstagramAuthMethod
+    account_id: str
+    username: Optional[str] = None
+    display_name: str
+    credential_integration_id: int
+    asset_integration_id: int
+    parent_page_id: Optional[str] = None
+    parent_page_name: Optional[str] = None
+    connected: bool = False
+    sync_eligible: bool = False
+
+
+class InstagramUnifiedSourceStatusOut(BaseModel):
+    auth_method: InstagramAuthMethod
+    credential_integration_id: Optional[int] = None
+    asset_integration_id: Optional[int] = None
+    status: InstagramUnifiedSourceStatus = "disconnected"
+    connected: bool = False
+    discovery_status: InstagramUnifiedDiscoveryStatus = "idle"
+    reauthorization_required: bool = False
+    account_count: int = 0
+
+
+class InstagramUnifiedAccountsOut(BaseModel):
+    source_type: Literal["instagram_business"] = "instagram_business"
+    data: list[InstagramUnifiedAccountOut] = Field(default_factory=list)
+    count: int = 0
+    limit: int = 50
+    offset: int = 0
+    search: Optional[str] = None
+    sources: dict[InstagramAuthMethod, InstagramUnifiedSourceStatusOut]
 
 
 class MetaAdsSelectAccountIn(BaseModel):
@@ -1385,9 +1434,11 @@ class InstagramBusinessSyncIn(BaseModel):
 
 
 class InstagramBusinessLoginSyncIn(BaseModel):
+    credential_integration_id: Optional[int] = None
+    account_id: Optional[str] = None
     workspace_id: Optional[int] = None
     integration_id: Optional[int] = None
-    instagram_account_id: str
+    instagram_account_id: Optional[str] = None
     timeframe: str = "last_30d"
     start_date: Optional[str] = None
     end_date: Optional[str] = None

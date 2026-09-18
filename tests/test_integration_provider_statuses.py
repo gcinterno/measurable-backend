@@ -42,7 +42,8 @@ from app.main import (
     META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
     app,
 )
-from app.models import Dataset, DatasetFile, Integration, IntegrationAccount, IntegrationToken, MetaAdAccount, MetaPage, Subscription, User, Workspace, WorkspaceMember
+from app.models import Dataset, DatasetFile, Integration, IntegrationAccount, IntegrationToken, MetaAdAccount, MetaPage, Report, Subscription, User, Workspace, WorkspaceMember
+from app.schemas import InstagramBusinessReportCreateIn
 from app.security import create_access_token, hash_password
 
 
@@ -1064,6 +1065,222 @@ def _seed_suite_instagram_sync_account(refs: dict[str, int]) -> None:
         db.close()
 
 
+def _seed_direct_instagram_account(
+    refs: dict[str, int],
+    *,
+    account_id: str = "17841400000000001",
+) -> int:
+    db = SessionLocal()
+    try:
+        integration = Integration(
+            workspace_id=refs["workspace_id"],
+            provider="instagram_business_login",
+            name="Instagram Business Login",
+            status="connected",
+        )
+        db.add(integration)
+        db.flush()
+        token_account = IntegrationAccount(
+            integration_id=integration.id,
+            workspace_id=refs["workspace_id"],
+            external_account_id=f"instagram_business_login_token_{integration.id}",
+            display_name="Instagram Business Login token store",
+        )
+        identity_account = IntegrationAccount(
+            integration_id=integration.id,
+            workspace_id=refs["workspace_id"],
+            external_account_id=account_id,
+            display_name="Direct Instagram",
+        )
+        db.add_all([token_account, identity_account])
+        db.flush()
+        db.add(
+            IntegrationToken(
+                account_id=token_account.id,
+                workspace_id=refs["workspace_id"],
+                token_type="access_token",
+                access_token="direct-token",
+            )
+        )
+        db.add(
+            MetaPage(
+                integration_id=integration.id,
+                user_id=refs["user_id"],
+                record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+                page_id=account_id,
+                name="Direct Instagram",
+                instagram_username="directig",
+                category="BUSINESS",
+                perms=["instagram_business_basic", "instagram_business_manage_insights"],
+            )
+        )
+        db.commit()
+        return integration.id
+    finally:
+        db.close()
+
+
+def test_unified_instagram_inventory_returns_meta_accounts_before_direct_and_preserves_duplicates(client):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    db = SessionLocal()
+    try:
+        db.add(
+            MetaPage(
+                integration_id=refs["instagram_integration_id"],
+                user_id=refs["user_id"],
+                record_type=META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+                page_id="17841400000000002",
+                parent_page_id="fb-page-2",
+                name="Second Meta Instagram",
+                instagram_username="secondmeta",
+                business_name="Second Facebook Page",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+    direct_integration_id = _seed_direct_instagram_account(refs)
+
+    response = client.get(
+        "/integrations/instagram/accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source_type"] == "instagram_business"
+    assert payload["count"] == 3
+    assert [row["auth_method"] for row in payload["data"]] == [
+        "meta_business_suite",
+        "meta_business_suite",
+        "instagram_business_login",
+    ]
+    duplicate_rows = [row for row in payload["data"] if row["account_id"] == "17841400000000001"]
+    assert len(duplicate_rows) == 2
+    assert {row["auth_method"] for row in duplicate_rows} == {
+        "meta_business_suite",
+        "instagram_business_login",
+    }
+    meta_row = duplicate_rows[0]
+    assert meta_row["credential_integration_id"] == refs["suite_integration_id"]
+    assert meta_row["asset_integration_id"] == refs["instagram_integration_id"]
+    assert meta_row["parent_page_id"] == "fb-page-1"
+    assert meta_row["parent_page_name"] == "Atria Facebook Page"
+    direct_row = duplicate_rows[1]
+    assert direct_row["credential_integration_id"] == direct_integration_id
+    assert direct_row["asset_integration_id"] == direct_integration_id
+    assert direct_row["parent_page_id"] is None
+    assert direct_row["sync_eligible"] is True
+
+
+def test_unified_instagram_inventory_searches_then_paginates(client):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    _seed_direct_instagram_account(refs, account_id="17841400000000999")
+
+    response = client.get(
+        "/integrations/instagram/accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={
+            "workspace_id": refs["workspace_id"],
+            "search": "instagram",
+            "limit": 1,
+            "offset": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 2
+    assert len(payload["data"]) == 1
+    assert payload["data"][0]["auth_method"] == "instagram_business_login"
+
+
+def test_unified_instagram_inventory_partial_meta_failure_preserves_direct(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    _seed_direct_instagram_account(refs)
+
+    monkeypatch.setattr(
+        main_module,
+        "_resolve_meta_suite_provider_statuses",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("meta failed")),
+    )
+    response = client.get(
+        "/integrations/instagram/accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sources"]["meta_business_suite"]["status"] == "error"
+    assert payload["sources"]["meta_business_suite"]["discovery_status"] == "failed"
+    assert len(payload["data"]) == 1
+    assert payload["data"][0]["auth_method"] == "instagram_business_login"
+
+
+def test_unified_instagram_inventory_partial_direct_failure_preserves_meta(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    _seed_direct_instagram_account(refs)
+    monkeypatch.setattr(
+        main_module,
+        "_instagram_business_login_status_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("direct failed")),
+    )
+
+    response = client.get(
+        "/integrations/instagram/accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sources"]["instagram_business_login"]["status"] == "error"
+    assert len(payload["data"]) == 1
+    assert payload["data"][0]["auth_method"] == "meta_business_suite"
+
+
+def test_unified_instagram_inventory_refresh_reuses_suite_without_oauth(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    original_resolver = main_module._resolve_meta_suite_provider_statuses
+    captured: dict[str, bool] = {}
+
+    def capture_refresh(db, workspace_id, **kwargs):
+        captured["live_refresh"] = bool(kwargs.get("live_refresh"))
+        return original_resolver(
+            db,
+            workspace_id,
+            user_id=kwargs.get("user_id"),
+            context=kwargs.get("context", "test"),
+            live_refresh=False,
+            include_instagram=True,
+        )
+
+    monkeypatch.setattr(main_module, "_resolve_meta_suite_provider_statuses", capture_refresh)
+    monkeypatch.setattr(
+        main_module,
+        "_build_meta_business_suite_connect_payload",
+        lambda **_kwargs: pytest.fail("refresh must not start OAuth"),
+    )
+
+    response = client.get(
+        "/integrations/instagram/accounts",
+        headers=_auth_headers(refs["user_id"]),
+        params={"workspace_id": refs["workspace_id"], "refresh_meta": True},
+    )
+
+    assert response.status_code == 200
+    assert captured == {"live_refresh": True}
+    assert response.json()["sources"]["meta_business_suite"]["credential_integration_id"] == refs[
+        "suite_integration_id"
+    ]
+
+
 def _patch_instagram_business_sync(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -1145,6 +1362,139 @@ def test_meta_business_suite_instagram_sync_resolves_child_integration(client, m
     assert captured["timeframe_config"]["key"] == "custom"
     assert captured["timeframe_config"]["since"] == "2026-06-01"
     assert captured["timeframe_config"]["until"] == "2026-06-30"
+
+
+def test_meta_business_suite_instagram_sync_accepts_canonical_identity(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    captured = _patch_instagram_business_sync(monkeypatch)
+
+    response = client.post(
+        "/integrations/meta-business-suite/sync-instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "credential_integration_id": refs["suite_integration_id"],
+            "asset_integration_id": refs["instagram_integration_id"],
+            "account_id": "17841400000000001",
+            "timeframe": "last_28_days",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["account_id"] == "17841400000000001"
+    assert captured["integration_id"] == refs["instagram_integration_id"]
+    assert captured["selected_meta_record_id"] == "17841400000000001"
+
+
+@pytest.mark.parametrize(
+    ("payload_update", "expected_code"),
+    [
+        ({"credential_integration_id": None}, "missing_credential_integration_id"),
+        ({"asset_integration_id": None}, "missing_asset_integration_id"),
+        ({"account_id": None}, "missing_account_id"),
+        ({"account_id": "@atria"}, "instagram_account_not_resolved"),
+    ],
+)
+def test_meta_business_suite_instagram_sync_canonical_identity_is_required_and_exact(
+    client,
+    payload_update,
+    expected_code,
+):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    payload = {
+        "credential_integration_id": refs["suite_integration_id"],
+        "asset_integration_id": refs["instagram_integration_id"],
+        "account_id": "17841400000000001",
+    }
+    payload.update(payload_update)
+
+    response = client.post(
+        "/integrations/meta-business-suite/sync-instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json=payload,
+    )
+
+    assert response.status_code in {404, 422}
+    assert response.json()["detail"]["code"] == expected_code
+
+
+def test_meta_business_suite_instagram_sync_rejects_wrong_credential_asset_pair(client):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    db = SessionLocal()
+    try:
+        other_workspace = Workspace(name="Other Workspace")
+        db.add(other_workspace)
+        db.flush()
+        db.add(
+            WorkspaceMember(
+                workspace_id=other_workspace.id,
+                user_id=refs["user_id"],
+                role="owner",
+            )
+        )
+        other_asset = Integration(
+            workspace_id=other_workspace.id,
+            provider="instagram_business",
+            name="Other Instagram",
+            status="connected",
+        )
+        db.add(other_asset)
+        db.commit()
+        other_asset_id = other_asset.id
+    finally:
+        db.close()
+
+    response = client.post(
+        "/integrations/meta-business-suite/sync-instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "credential_integration_id": refs["suite_integration_id"],
+            "asset_integration_id": other_asset_id,
+            "account_id": "17841400000000001",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "credential_asset_workspace_mismatch"
+
+
+def test_meta_business_suite_instagram_sync_canonical_identity_rejects_wrong_workspace(client, monkeypatch):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    _patch_instagram_business_sync(monkeypatch)
+
+    response = client.post(
+        "/integrations/meta-business-suite/sync-instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "credential_integration_id": refs["suite_integration_id"],
+            "asset_integration_id": refs["instagram_integration_id"],
+            "account_id": "17841400000000001",
+            "workspace_id": refs["workspace_id"] + 1,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "workspace_mismatch"
+
+
+def test_meta_business_suite_instagram_sync_rejects_wrong_provider_ids(client):
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    response = client.post(
+        "/integrations/meta-business-suite/sync-instagram-business",
+        headers=_auth_headers(refs["user_id"]),
+        json={
+            "credential_integration_id": refs["instagram_integration_id"],
+            "asset_integration_id": refs["suite_integration_id"],
+            "account_id": "17841400000000001",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "invalid_credential_integration_provider"
 
 
 def test_meta_business_suite_instagram_sync_refreshes_once_when_assets_are_pending(client, monkeypatch):
@@ -1328,6 +1678,14 @@ def test_instagram_business_sync_skips_unsupported_metric_without_failing(monkey
         dataset = db.get(Dataset, result.dataset_id)
         assert dataset is not None
         assert result.status == "uploaded"
+        assert dataset.data["source_type"] == "instagram_business"
+        assert dataset.data["integration_type"] == "instagram_business"
+        assert dataset.data["provider"] == "meta_business_suite"
+        assert dataset.data["auth_method"] == "meta_business_suite"
+        assert dataset.data["credential_integration_id"] == refs["suite_integration_id"]
+        assert dataset.data["asset_integration_id"] == refs["instagram_integration_id"]
+        assert dataset.data["account_id"] == "17841400000000001"
+        assert dataset.data["parent_page_id"] == "fb-page-1"
         assert dataset.data["engagement"] == 9
         assert dataset.data["content_interactions"] is None
         assert "content_interactions" in dataset.data["unavailable_metrics"]
@@ -1339,6 +1697,54 @@ def test_instagram_business_sync_skips_unsupported_metric_without_failing(monkey
     assert "total_interactions" in metric_names
     assert "accounts_engaged" in metric_names
     assert "content_interactions" in metric_names
+
+
+def test_meta_instagram_frozen_dataset_builds_authoritative_report_source():
+    refs = _seed_workspace_with_suite_token()
+    _seed_suite_instagram_sync_account(refs)
+    db = SessionLocal()
+    try:
+        dataset = Dataset(
+            workspace_id=refs["workspace_id"],
+            name="meta-instagram.csv",
+            data={
+                "source_type": "instagram_business",
+                "integration_type": "instagram_business",
+                "provider": "meta_business_suite",
+                "auth_method": "meta_business_suite",
+                "credential_integration_id": refs["suite_integration_id"],
+                "asset_integration_id": refs["instagram_integration_id"],
+                "account_id": "17841400000000001",
+                "username": "atria",
+                "account_name": "Atria Instagram",
+                "parent_page_id": "fb-page-1",
+            },
+        )
+        db.add(dataset)
+        db.flush()
+        source = main_module._build_single_source_report_source(
+            db,
+            report=Report(workspace_id=refs["workspace_id"]),
+            dataset=dataset,
+            payload=InstagramBusinessReportCreateIn(dataset_id=dataset.id),
+            selected_sources=["instagram_business"],
+            report_inputs=dict(dataset.data),
+        )
+
+        assert source is not None
+        assert source.provider == "meta_business_suite"
+        assert source.source_type == "instagram_business"
+        assert source.integration_id == refs["instagram_integration_id"]
+        assert source.integration_account_id is None
+        assert source.config_json["instagram_account_id"] == "17841400000000001"
+        assert source.config_json["external_account_id"] == "17841400000000001"
+        assert source.config_json["auth_method"] == "meta_business_suite"
+        assert source.config_json["credential_integration_id"] == refs["suite_integration_id"]
+        assert source.config_json["asset_integration_id"] == refs["instagram_integration_id"]
+        assert source.config_json["parent_page_id"] == "fb-page-1"
+    finally:
+        db.rollback()
+        db.close()
 
 
 def test_meta_business_suite_instagram_sync_requires_suite_connection(client):

@@ -32,12 +32,15 @@ from app.models import (
     IntegrationAccount,
     IntegrationToken,
     MetaPage,
+    Report,
+    ReportSource,
+    ReportVersion,
     Subscription,
     User,
     Workspace,
     WorkspaceMember,
 )
-from app.schemas import MetaPagesReportCreateOut
+from app.schemas import InstagramBusinessReportCreateIn, MetaPagesReportCreateOut
 from app.security import create_access_token, hash_password
 
 
@@ -57,8 +60,11 @@ INSTAGRAM_LOGIN_TABLES = [
     MetaPage.__table__,
     Dataset.__table__,
     DatasetFile.__table__,
+    Report.__table__,
     Base.metadata.tables["report_generations"],
     Base.metadata.tables["exports"],
+    ReportSource.__table__,
+    ReportVersion.__table__,
 ]
 
 
@@ -84,6 +90,11 @@ def client(monkeypatch):
     monkeypatch.setattr(main_module.settings, "api_base_url", "https://api.example.test")
     monkeypatch.setattr(main_module.settings, "instagram_graph_api_version", "v19.0")
     monkeypatch.setattr(main_module.settings, "instagram_graph_api_base", "https://graph.instagram.com")
+    monkeypatch.setattr(
+        main_module,
+        "_revoke_instagram_business_login_access_token",
+        lambda access_token: "success" if access_token else "skipped",
+    )
 
     def override_get_db():
         db = SessionLocal()
@@ -329,9 +340,10 @@ def test_instagram_business_login_disconnect_clears_token_and_cached_account(cli
     assert payload["status"] == "disconnected"
     assert payload["integration_id"] == refs["integration_id"]
     assert payload["cleared_accounts"] == 1
-    assert payload["cleared_integration_accounts"] == 2
+    assert payload["cleared_integration_accounts"] == 0
     assert payload["cleared_tokens"] == 1
     assert payload["token_cleared"] is True
+    assert payload["remote_revoke_status"] == "success"
 
     status_response = client.get(
         "/integrations/instagram-business-login/status",
@@ -348,11 +360,36 @@ def test_instagram_business_login_disconnect_clears_token_and_cached_account(cli
         integration = db.get(Integration, int(refs["integration_id"]))
         assert integration is not None
         assert integration.status == "disconnected"
-        assert db.query(IntegrationAccount).filter(IntegrationAccount.integration_id == integration.id).count() == 0
+        assert db.query(IntegrationAccount).filter(IntegrationAccount.integration_id == integration.id).count() == 2
         assert db.query(IntegrationToken).count() == 0
         assert db.query(MetaPage).filter(MetaPage.integration_id == integration.id).count() == 0
     finally:
         db.close()
+
+    second_response = client.post(
+        "/integrations/instagram-business-login/disconnect",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={"workspace_id": refs["workspace_id"], "integration_id": refs["integration_id"]},
+    )
+
+    assert second_response.status_code == 200
+    second_payload = second_response.json()
+    assert second_payload["success"] is True
+    assert second_payload["status"] == "disconnected"
+    assert second_payload["cleared_accounts"] == 0
+    assert second_payload["cleared_integration_accounts"] == 0
+    assert second_payload["cleared_tokens"] == 0
+    assert second_payload["token_cleared"] is False
+    assert second_payload["remote_revoke_status"] == "skipped"
+
+    reconnect_response = client.get(
+        "/integrations/instagram-business-login/connect",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"], "reconnect": True},
+    )
+
+    assert reconnect_response.status_code == 200
+    assert reconnect_response.json()["integration_id"] == refs["integration_id"]
 
 
 def test_instagram_business_login_disconnect_is_idempotent_without_existing_integration(client):
@@ -372,6 +409,130 @@ def test_instagram_business_login_disconnect_is_idempotent_without_existing_inte
     assert payload["integration_id"] is None
     assert payload["cleared_accounts"] == 0
     assert payload["cleared_tokens"] == 0
+    assert payload["remote_revoke_status"] == "skipped"
+
+
+def test_instagram_business_login_disconnect_preserves_historical_reports_and_datasets(client):
+    refs = _seed_connected_instagram_login()
+    db = SessionLocal()
+    try:
+        account = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == int(refs["integration_id"]),
+                IntegrationAccount.external_account_id == refs["instagram_account_id"],
+            )
+            .one()
+        )
+        dataset = Dataset(
+            workspace_id=int(refs["workspace_id"]),
+            name="Historical Instagram dataset",
+            description="Historical report data",
+            data={
+                "provider": "instagram_business_login",
+                "integration_type": "instagram_business",
+                "account_name": "IG Login Account",
+                "reach": 123,
+            },
+        )
+        db.add(dataset)
+        db.flush()
+        report = Report(
+            workspace_id=int(refs["workspace_id"]),
+            dataset_id=dataset.id,
+            name="Historical Instagram report",
+            description=json.dumps({"report_status": "complete"}),
+        )
+        db.add(report)
+        db.flush()
+        db.add(
+            ReportSource(
+                report_id=report.id,
+                workspace_id=int(refs["workspace_id"]),
+                provider="instagram_business_login",
+                source_type="instagram_business",
+                integration_id=int(refs["integration_id"]),
+                integration_account_id=account.id,
+                dataset_id=dataset.id,
+                position=0,
+                label="Instagram Account",
+                config_json={"external_account_id": refs["instagram_account_id"]},
+            )
+        )
+        db.add(ReportVersion(report_id=report.id, version=1))
+        db.commit()
+        historical_ids = {
+            "account_id": account.id,
+            "dataset_id": dataset.id,
+            "report_id": report.id,
+        }
+    finally:
+        db.close()
+
+    response = client.delete(
+        "/integrations/instagram-business-login/disconnect",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"], "integration_id": refs["integration_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cleared_accounts"] == 1
+    assert payload["cleared_integration_accounts"] == 0
+    assert payload["cleared_tokens"] == 1
+
+    db = SessionLocal()
+    try:
+        assert db.get(Integration, int(refs["integration_id"])) is not None
+        assert db.get(IntegrationAccount, historical_ids["account_id"]) is not None
+        assert db.get(Dataset, historical_ids["dataset_id"]) is not None
+        assert db.get(Report, historical_ids["report_id"]) is not None
+        report_source = (
+            db.query(ReportSource)
+            .filter(ReportSource.report_id == historical_ids["report_id"])
+            .one()
+        )
+        assert report_source.integration_id == int(refs["integration_id"])
+        assert report_source.integration_account_id == historical_ids["account_id"]
+        assert db.query(IntegrationToken).count() == 0
+        assert db.query(MetaPage).filter(MetaPage.integration_id == int(refs["integration_id"])).count() == 0
+    finally:
+        db.close()
+
+    report_response = client.get(
+        f"/reports/{historical_ids['report_id']}",
+        headers=_auth_headers(int(refs["user_id"])),
+    )
+    assert report_response.status_code == 200
+    assert report_response.json()["id"] == historical_ids["report_id"]
+
+
+def test_instagram_business_login_disconnect_tolerates_invalid_remote_revoke(client, monkeypatch):
+    refs = _seed_connected_instagram_login()
+    monkeypatch.setattr(
+        main_module,
+        "_revoke_instagram_business_login_access_token",
+        lambda _access_token: "invalid_or_expired",
+    )
+
+    response = client.post(
+        "/integrations/instagram-business-login/disconnect",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={"workspace_id": refs["workspace_id"], "integration_id": refs["integration_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "disconnected"
+    assert payload["remote_revoke_status"] == "invalid_or_expired"
+    status_response = client.get(
+        "/integrations/instagram-business-login/status",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"workspace_id": refs["workspace_id"]},
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["connected"] is False
+    assert status_response.json()["status"] == "disconnected"
 
 
 def test_instagram_business_login_callback_saves_standalone_provider_and_token(client, monkeypatch):
@@ -498,9 +659,8 @@ def test_instagram_business_login_sync_calls_graph_instagram_and_accepts_empty_d
         "/integrations/instagram-business-login/sync",
         headers=_auth_headers(int(refs["user_id"])),
         json={
-            "workspace_id": refs["workspace_id"],
-            "integration_id": refs["integration_id"],
-            "instagram_account_id": refs["instagram_account_id"],
+            "credential_integration_id": refs["integration_id"],
+            "account_id": refs["instagram_account_id"],
             "timeframe": "last_30d",
             "force_live": True,
         },
@@ -524,8 +684,14 @@ def test_instagram_business_login_sync_calls_graph_instagram_and_accepts_empty_d
     try:
         dataset = db.get(Dataset, payload["dataset_id"])
         assert dataset is not None
+        assert dataset.data["source_type"] == "instagram_business"
         assert dataset.data["integration_type"] == "instagram_business"
         assert dataset.data["provider"] == "instagram_business_login"
+        assert dataset.data["auth_method"] == "instagram_business_login"
+        assert dataset.data["credential_integration_id"] == refs["integration_id"]
+        assert dataset.data["asset_integration_id"] == refs["integration_id"]
+        assert dataset.data["account_id"] == refs["instagram_account_id"]
+        assert dataset.data["parent_page_id"] is None
         assert dataset.data["source"] == "instagram_business_login"
         assert dataset.data["auth_type"] == "instagram_login"
         assert dataset.data["graph_host"] == "graph.instagram.com"
@@ -542,6 +708,69 @@ def test_instagram_business_login_sync_calls_graph_instagram_and_accepts_empty_d
         assert dataset.data["recent_posts"] == []
     finally:
         db.close()
+
+
+def test_instagram_business_login_canonical_sync_rejects_missing_identity_before_provider_call(
+    client,
+    monkeypatch,
+):
+    refs = _seed_connected_instagram_login()
+    db = SessionLocal()
+    try:
+        identity_account = (
+            db.query(IntegrationAccount)
+            .filter(
+                IntegrationAccount.integration_id == refs["integration_id"],
+                IntegrationAccount.external_account_id == refs["instagram_account_id"],
+            )
+            .one()
+        )
+        db.delete(identity_account)
+        db.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(
+        instagram_business_module.requests,
+        "get",
+        lambda *_args, **_kwargs: pytest.fail("provider must not be called for invalid ownership"),
+    )
+    response = client.post(
+        "/integrations/instagram-business-login/sync",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "credential_integration_id": refs["integration_id"],
+            "account_id": refs["instagram_account_id"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "instagram_business_login_identity_missing"
+
+
+def test_instagram_business_login_canonical_sync_rejects_wrong_workspace_before_provider_call(
+    client,
+    monkeypatch,
+):
+    refs = _seed_connected_instagram_login()
+    monkeypatch.setattr(
+        instagram_business_module.requests,
+        "get",
+        lambda *_args, **_kwargs: pytest.fail("provider must not be called for a workspace mismatch"),
+    )
+
+    response = client.post(
+        "/integrations/instagram-business-login/sync",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "credential_integration_id": refs["integration_id"],
+            "account_id": refs["instagram_account_id"],
+            "workspace_id": int(refs["workspace_id"]) + 1,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "workspace_mismatch"
 
 
 def test_instagram_business_login_sync_classifies_parameter_incompatibility(
@@ -976,3 +1205,87 @@ def test_instagram_business_report_accepts_dataset_from_instagram_business_login
     payload = response.json()
     assert payload["dataset_id"] == dataset_id
     assert payload["status"] == "ready"
+
+
+def test_direct_instagram_frozen_dataset_builds_authoritative_report_source():
+    refs = _seed_connected_instagram_login()
+    db = SessionLocal()
+    try:
+        dataset = Dataset(
+            workspace_id=int(refs["workspace_id"]),
+            name="direct-instagram.csv",
+            data={
+                "source_type": "instagram_business",
+                "integration_type": "instagram_business",
+                "provider": "instagram_business_login",
+                "auth_method": "instagram_business_login",
+                "credential_integration_id": refs["integration_id"],
+                "asset_integration_id": refs["integration_id"],
+                "account_id": refs["instagram_account_id"],
+                "username": "iglogin",
+                "account_name": "IG Login Account",
+                "parent_page_id": None,
+            },
+        )
+        db.add(dataset)
+        db.flush()
+        source = main_module._build_single_source_report_source(
+            db,
+            report=Report(workspace_id=int(refs["workspace_id"])),
+            dataset=dataset,
+            payload=InstagramBusinessReportCreateIn(dataset_id=dataset.id),
+            selected_sources=["instagram_business"],
+            report_inputs=dict(dataset.data),
+        )
+        assert source is not None
+        assert source.provider == "instagram_business_login"
+        assert source.source_type == "instagram_business"
+        assert source.integration_id == refs["integration_id"]
+        assert source.integration_account_id is not None
+        assert source.config_json["instagram_account_id"] == refs["instagram_account_id"]
+        assert source.config_json["external_account_id"] == refs["instagram_account_id"]
+        assert source.config_json["auth_method"] == "instagram_business_login"
+        assert source.config_json["credential_integration_id"] == refs["integration_id"]
+        assert source.config_json["asset_integration_id"] == refs["integration_id"]
+        assert source.config_json["parent_page_id"] is None
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_frozen_instagram_dataset_rejects_conflicting_report_identity(client, monkeypatch):
+    refs = _seed_connected_instagram_login()
+    db = SessionLocal()
+    try:
+        dataset = Dataset(
+            workspace_id=int(refs["workspace_id"]),
+            name="direct-instagram.csv",
+            data={
+                "source_type": "instagram_business",
+                "integration_type": "instagram_business",
+                "provider": "instagram_business_login",
+                "auth_method": "instagram_business_login",
+                "credential_integration_id": refs["integration_id"],
+                "asset_integration_id": refs["integration_id"],
+                "account_id": refs["instagram_account_id"],
+            },
+        )
+        db.add(dataset)
+        db.commit()
+        dataset_id = dataset.id
+    finally:
+        db.close()
+    monkeypatch.setattr(
+        main_module,
+        "_generate_manual_report",
+        lambda **_kwargs: pytest.fail("conflicting identity must fail before report generation"),
+    )
+
+    response = client.post(
+        "/reports/instagram-business",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={"dataset_id": dataset_id, "account_id": "wrong-account"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "dataset_account_mismatch"

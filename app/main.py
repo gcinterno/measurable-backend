@@ -163,6 +163,7 @@ from .report_recipes import (
     list_report_recipes,
 )
 from .report_templates import router as report_templates_router
+from .report_spec_api import router as report_spec_router
 from .scheduled_reports import router as scheduled_reports_router
 from .report_generation import (
     ReportDraft, ExecutableReportConfiguration, GenerateReportCommand, GenerationError,
@@ -249,6 +250,9 @@ from .schemas import (
     InstagramBusinessLoginStatusOut,
     InstagramBusinessLoginSyncIn,
     InstagramBusinessLoginSyncOut,
+    InstagramUnifiedAccountOut,
+    InstagramUnifiedAccountsOut,
+    InstagramUnifiedSourceStatusOut,
     InstagramBusinessSyncOut,
     OnboardingCompleteOut,
     OnboardingStateOut,
@@ -2831,6 +2835,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(report_templates_router)
+app.include_router(report_spec_router)
 app.include_router(scheduled_reports_router)
 
 
@@ -22866,6 +22871,74 @@ def _create_shopify_report(
     )
 
 
+def _frozen_instagram_dataset_provenance(dataset_data: dict[str, Any]) -> dict[str, Any] | None:
+    if not str(dataset_data.get("auth_method") or "").strip():
+        return None
+    auth_method = str(dataset_data.get("auth_method") or "").strip()
+    if auth_method not in {"meta_business_suite", INSTAGRAM_BUSINESS_LOGIN_PROVIDER}:
+        raise http_error(400, "invalid_instagram_dataset_provenance", "Instagram dataset auth_method is invalid.")
+    if str(dataset_data.get("source_type") or "").strip() != "instagram_business":
+        raise http_error(400, "invalid_instagram_dataset_provenance", "Instagram dataset source_type is invalid.")
+    try:
+        credential_integration_id = int(dataset_data.get("credential_integration_id"))
+        asset_integration_id = int(dataset_data.get("asset_integration_id"))
+    except (TypeError, ValueError):
+        raise http_error(
+            400,
+            "invalid_instagram_dataset_provenance",
+            "Instagram dataset integration provenance is incomplete.",
+        )
+    account_id = str(dataset_data.get("account_id") or "").strip()
+    if not account_id:
+        raise http_error(
+            400,
+            "invalid_instagram_dataset_provenance",
+            "Instagram dataset account provenance is incomplete.",
+        )
+    if auth_method == INSTAGRAM_BUSINESS_LOGIN_PROVIDER and credential_integration_id != asset_integration_id:
+        raise http_error(
+            400,
+            "invalid_instagram_dataset_provenance",
+            "Direct Instagram credential and asset integrations must match.",
+        )
+    return {
+        "auth_method": auth_method,
+        "credential_integration_id": credential_integration_id,
+        "asset_integration_id": asset_integration_id,
+        "account_id": account_id,
+        "parent_page_id": str(dataset_data.get("parent_page_id") or "").strip() or None,
+    }
+
+
+def _validate_instagram_report_payload_against_dataset(
+    *,
+    payload: InstagramBusinessReportCreateIn,
+    dataset: Dataset,
+    provenance: dict[str, Any],
+) -> None:
+    if payload.workspace_id is not None and int(payload.workspace_id) != int(dataset.workspace_id):
+        raise http_error(400, "workspace_mismatch", "workspace_id does not match the dataset workspace.")
+    if payload.integration_id is not None:
+        supplied_integration_id = int(payload.integration_id)
+        allowed_ids = {
+            int(provenance["credential_integration_id"]),
+            int(provenance["asset_integration_id"]),
+        }
+        if supplied_integration_id not in allowed_ids:
+            raise http_error(
+                400,
+                "dataset_integration_mismatch",
+                "integration_id does not match the dataset provenance.",
+            )
+    for field_name, supplied_value in (("account_id", payload.account_id), ("page_id", payload.page_id)):
+        if supplied_value is not None and str(supplied_value).strip() != str(provenance["account_id"]):
+            raise http_error(
+                400,
+                "dataset_account_mismatch",
+                f"{field_name} does not match the dataset provenance.",
+            )
+
+
 def _resolve_instagram_business_report_dataset(
     db: Session,
     current_user: User,
@@ -22882,6 +22955,13 @@ def _resolve_instagram_business_report_dataset(
                 400,
                 "invalid_instagram_dataset",
                 "Dataset is not an Instagram Business dataset.",
+            )
+        provenance = _frozen_instagram_dataset_provenance(dataset_data)
+        if provenance is not None:
+            _validate_instagram_report_payload_against_dataset(
+                payload=payload,
+                dataset=dataset,
+                provenance=provenance,
             )
         return dataset
 
@@ -23795,6 +23875,84 @@ def _build_single_source_report_source(
     if len(normalized_sources) != 1 or normalized_sources[0] not in {"facebook_pages", "instagram_business"}:
         return None
     source_type = normalized_sources[0]
+    dataset_data = dataset.data if isinstance(dataset.data, dict) else {}
+    frozen_instagram_provenance = (
+        _frozen_instagram_dataset_provenance(dataset_data)
+        if source_type == "instagram_business"
+        else None
+    )
+    if frozen_instagram_provenance is not None:
+        auth_method = str(frozen_instagram_provenance["auth_method"])
+        asset_integration_id = int(frozen_instagram_provenance["asset_integration_id"])
+        credential_integration_id = int(frozen_instagram_provenance["credential_integration_id"])
+        account_id = str(frozen_instagram_provenance["account_id"])
+        integration = (
+            db.query(Integration)
+            .filter(
+                Integration.id == asset_integration_id,
+                Integration.workspace_id == report.workspace_id,
+            )
+            .first()
+        )
+        if integration is None:
+            raise http_error(404, "integration_not_found", "Dataset asset integration not found.")
+        expected_asset_provider = (
+            INSTAGRAM_BUSINESS_LOGIN_PROVIDER
+            if auth_method == INSTAGRAM_BUSINESS_LOGIN_PROVIDER
+            else "instagram_business"
+        )
+        if integration.provider != expected_asset_provider:
+            raise http_error(
+                400,
+                "dataset_integration_mismatch",
+                "Dataset asset integration provider does not match its provenance.",
+            )
+        credential_integration = (
+            db.query(Integration)
+            .filter(
+                Integration.id == credential_integration_id,
+                Integration.workspace_id == report.workspace_id,
+                Integration.provider == auth_method,
+            )
+            .first()
+        )
+        if credential_integration is None:
+            raise http_error(404, "credential_integration_not_found", "Dataset credential integration not found.")
+        integration_account = None
+        if auth_method == INSTAGRAM_BUSINESS_LOGIN_PROVIDER:
+            integration_account = _instagram_direct_identity_account(
+                db,
+                integration_id=asset_integration_id,
+                workspace_id=report.workspace_id,
+                account_id=account_id,
+            )
+        label = _single_source_report_source_label(source_type, report_inputs, dataset)
+        return ReportSource(
+            report_id=report.id,
+            workspace_id=report.workspace_id,
+            provider=auth_method,
+            source_type="instagram_business",
+            integration_id=asset_integration_id,
+            integration_account_id=integration_account.id if integration_account is not None else None,
+            dataset_id=dataset.id,
+            position=0,
+            label=label,
+            config_json={
+                "source_type": "instagram_business",
+                "provider": auth_method,
+                "channel": "instagram",
+                "social_network": "instagram",
+                "account_name": label,
+                "username": dataset_data.get("username") or dataset_data.get("instagram_username"),
+                "instagram_username": dataset_data.get("instagram_username") or dataset_data.get("username"),
+                "instagram_account_id": account_id,
+                "external_account_id": account_id,
+                "auth_method": auth_method,
+                "credential_integration_id": credential_integration_id,
+                "asset_integration_id": asset_integration_id,
+                "parent_page_id": frozen_instagram_provenance.get("parent_page_id"),
+            },
+        )
     integration = _resolve_single_source_integration(
         db,
         workspace_id=report.workspace_id,
@@ -29511,6 +29669,50 @@ def _resolve_instagram_business_login_disconnect_target(
     return resolved_workspace_id, integration
 
 
+def _revoke_instagram_business_login_access_token(access_token: str | None) -> str:
+    normalized_token = str(access_token or "").strip()
+    if not normalized_token:
+        return "skipped"
+
+    base = str(settings.instagram_graph_api_base or "https://graph.instagram.com").strip().rstrip("/")
+    version = str(settings.instagram_graph_api_version or "").strip().strip("/")
+    version_path = f"/{version}" if version else ""
+    revoke_url = f"{base}{version_path}/me/permissions"
+    try:
+        response = requests.delete(
+            revoke_url,
+            headers={"Authorization": f"Bearer {normalized_token}"},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.warning(
+            "INSTAGRAM_BUSINESS_LOGIN_REMOTE_REVOKE_FAILED",
+            extra={"error": str(exc)},
+        )
+        return "failed"
+
+    if response.ok:
+        return "success"
+    if response.status_code in {400, 401, 403}:
+        logger.info(
+            "INSTAGRAM_BUSINESS_LOGIN_REMOTE_REVOKE_ALREADY_INVALID",
+            extra={
+                "status_code": response.status_code,
+                "response_body": str(response.text or "")[:1000] or None,
+            },
+        )
+        return "invalid_or_expired"
+
+    logger.warning(
+        "INSTAGRAM_BUSINESS_LOGIN_REMOTE_REVOKE_FAILED",
+        extra={
+            "status_code": response.status_code,
+            "response_body": str(response.text or "")[:1000] or None,
+        },
+    )
+    return "failed"
+
+
 def _disconnect_instagram_business_login_integration(
     db: Session,
     integration: Integration | None,
@@ -29524,8 +29726,11 @@ def _disconnect_instagram_business_login_integration(
             cleared_integration_accounts=0,
             cleared_tokens=0,
             token_cleared=False,
+            remote_revoke_status="skipped",
         )
 
+    _token_present, _token_decrypt_ok, access_token = _resolve_instagram_business_login_access_token(db, integration)
+    remote_revoke_status = _revoke_instagram_business_login_access_token(access_token)
     meta_records = _instagram_business_login_account_records(db, integration)
     integration_accounts = (
         db.query(IntegrationAccount)
@@ -29540,15 +29745,34 @@ def _disconnect_instagram_business_login_integration(
         if integration_account_ids
         else 0
     )
+    tokens = (
+        db.query(IntegrationToken)
+        .filter(IntegrationToken.account_id.in_(integration_account_ids))
+        .all()
+        if integration_account_ids
+        else []
+    )
 
-    for record in meta_records:
-        db.delete(record)
-    for account in integration_accounts:
-        db.delete(account)
-    integration.status = "disconnected"
-    db.add(integration)
-    db.commit()
-    db.refresh(integration)
+    try:
+        for token in tokens:
+            db.delete(token)
+        for record in meta_records:
+            db.delete(record)
+        integration.status = "disconnected"
+        db.add(integration)
+        db.commit()
+        db.refresh(integration)
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Instagram Business Login local disconnect persistence failed",
+            extra={
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "workspace_id": workspace_id or integration.workspace_id,
+                "integration_id": integration.id,
+            },
+        )
+        raise
 
     logger.info(
         "INSTAGRAM_BUSINESS_LOGIN_DISCONNECTED %s",
@@ -29558,8 +29782,10 @@ def _disconnect_instagram_business_login_integration(
                 "workspace_id": workspace_id or integration.workspace_id,
                 "integration_id": integration.id,
                 "cleared_accounts": len(meta_records),
-                "cleared_integration_accounts": len(integration_accounts),
+                "cleared_integration_accounts": 0,
+                "preserved_integration_accounts": len(integration_accounts),
                 "cleared_tokens": cleared_tokens,
+                "remote_revoke_status": remote_revoke_status,
             },
             ensure_ascii=False,
             default=str,
@@ -29569,9 +29795,10 @@ def _disconnect_instagram_business_login_integration(
     return InstagramBusinessLoginDisconnectOut(
         integration_id=integration.id,
         cleared_accounts=len(meta_records),
-        cleared_integration_accounts=len(integration_accounts),
+        cleared_integration_accounts=0,
         cleared_tokens=cleared_tokens,
         token_cleared=cleared_tokens > 0,
+        remote_revoke_status=remote_revoke_status,
     )
 
 
@@ -29704,6 +29931,263 @@ def instagram_business_login_accounts(
         provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
         integration_id=integration.id,
         accounts=[_instagram_business_login_account_out(record) for record in records],
+    )
+
+
+def _instagram_unified_discovery_status(value: object) -> str:
+    normalized = str(value or "idle").strip().lower()
+    if normalized in {"pending", "running", "failed"}:
+        return normalized
+    if normalized in {"complete", "completed", "succeeded", "success"}:
+        return "complete"
+    return "idle"
+
+
+def _instagram_unified_reauthorization_required(status: str) -> bool:
+    return status in {"needs_permission", "no_token", "disconnected", "error"}
+
+
+def _instagram_direct_identity_account(
+    db: Session,
+    *,
+    integration_id: int,
+    workspace_id: int,
+    account_id: str,
+) -> IntegrationAccount | None:
+    return (
+        db.query(IntegrationAccount)
+        .filter(
+            IntegrationAccount.integration_id == integration_id,
+            IntegrationAccount.workspace_id == workspace_id,
+            IntegrationAccount.external_account_id == account_id,
+        )
+        .first()
+    )
+
+
+@app.get("/integrations/instagram/accounts", response_model=InstagramUnifiedAccountsOut)
+def instagram_unified_accounts(
+    workspace_id: int = Query(...),
+    refresh_meta: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> InstagramUnifiedAccountsOut:
+    workspace = db.get(Workspace, workspace_id)
+    if workspace is None:
+        raise http_error(404, "workspace_not_found", "Workspace not found.")
+    _require_workspace_access(db, current_user.id, workspace_id)
+
+    rows: list[InstagramUnifiedAccountOut] = []
+    sources: dict[str, InstagramUnifiedSourceStatusOut] = {}
+
+    suite_integration = (
+        db.query(Integration)
+        .filter(
+            Integration.workspace_id == workspace_id,
+            Integration.provider == "meta_business_suite",
+        )
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    instagram_integration = (
+        db.query(Integration)
+        .filter(
+            Integration.workspace_id == workspace_id,
+            Integration.provider == "instagram_business",
+        )
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    if suite_integration is None:
+        sources["meta_business_suite"] = InstagramUnifiedSourceStatusOut(
+            auth_method="meta_business_suite",
+            credential_integration_id=None,
+            asset_integration_id=instagram_integration.id if instagram_integration is not None else None,
+            status="disconnected",
+            connected=False,
+            discovery_status="idle",
+            reauthorization_required=True,
+            account_count=0,
+        )
+    else:
+        try:
+            suite_status = _resolve_meta_suite_provider_statuses(
+                db,
+                workspace_id,
+                user_id=current_user.id,
+                context="instagram_unified_accounts",
+                live_refresh=refresh_meta,
+                include_instagram=True,
+            )
+            provider_status = _canonical_meta_provider_status_out(
+                db,
+                workspace_id=workspace_id,
+                provider="instagram_business",
+                user_id=current_user.id,
+                suite_status=suite_status,
+                context="instagram_unified_accounts",
+            )
+            resolved_suite_id = int(suite_status.get("suite_integration_id") or suite_integration.id)
+            resolved_asset_id = int(provider_status.integration_id or 0) or (
+                instagram_integration.id if instagram_integration is not None else None
+            )
+            meta_records = (
+                _query_instagram_business_records_for_sync(db, resolved_asset_id)
+                if resolved_asset_id is not None
+                else []
+            )
+            meta_status = str(provider_status.status)
+            meta_connected = bool(provider_status.connected) and not _instagram_unified_reauthorization_required(
+                meta_status
+            )
+            meta_sync_eligible = meta_connected and meta_status == "connected"
+            for record in meta_records:
+                rows.append(
+                    InstagramUnifiedAccountOut(
+                        auth_method="meta_business_suite",
+                        account_id=str(record.page_id),
+                        username=str(record.instagram_username).strip() if record.instagram_username else None,
+                        display_name=str(record.name or record.instagram_username or record.page_id),
+                        credential_integration_id=resolved_suite_id,
+                        asset_integration_id=resolved_asset_id,
+                        parent_page_id=str(record.parent_page_id) if record.parent_page_id else None,
+                        parent_page_name=str(record.business_name) if record.business_name else None,
+                        connected=meta_connected,
+                        sync_eligible=meta_sync_eligible,
+                    )
+                )
+            sources["meta_business_suite"] = InstagramUnifiedSourceStatusOut(
+                auth_method="meta_business_suite",
+                credential_integration_id=resolved_suite_id,
+                asset_integration_id=resolved_asset_id,
+                status=meta_status,
+                connected=meta_connected,
+                discovery_status=_instagram_unified_discovery_status(provider_status.discovery_status),
+                reauthorization_required=_instagram_unified_reauthorization_required(meta_status),
+                account_count=len(meta_records),
+            )
+        except Exception as exc:
+            db.rollback()
+            logger.exception(
+                "Unified Instagram Meta inventory failed",
+                extra={"workspace_id": workspace_id, "user_id": current_user.id},
+            )
+            sources["meta_business_suite"] = InstagramUnifiedSourceStatusOut(
+                auth_method="meta_business_suite",
+                credential_integration_id=suite_integration.id,
+                asset_integration_id=instagram_integration.id if instagram_integration is not None else None,
+                status="error",
+                connected=False,
+                discovery_status="failed",
+                reauthorization_required=True,
+                account_count=0,
+            )
+
+    direct_integration = (
+        db.query(Integration)
+        .filter(
+            Integration.workspace_id == workspace_id,
+            Integration.provider == INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        )
+        .order_by(Integration.id.asc())
+        .first()
+    )
+    if direct_integration is None:
+        sources["instagram_business_login"] = InstagramUnifiedSourceStatusOut(
+            auth_method="instagram_business_login",
+            status="disconnected",
+            connected=False,
+            discovery_status="idle",
+            reauthorization_required=True,
+            account_count=0,
+        )
+    else:
+        try:
+            direct_status_payload = _instagram_business_login_status_payload(db, direct_integration)
+            direct_records = _instagram_business_login_account_records(db, direct_integration)
+            direct_status = str(direct_status_payload.status)
+            if direct_status == "connected" and not direct_records:
+                direct_status = "connected_no_assets"
+            direct_connected = bool(direct_status_payload.connected) and not _instagram_unified_reauthorization_required(
+                direct_status
+            )
+            for record in direct_records:
+                identity_account = _instagram_direct_identity_account(
+                    db,
+                    integration_id=direct_integration.id,
+                    workspace_id=workspace_id,
+                    account_id=str(record.page_id),
+                )
+                rows.append(
+                    InstagramUnifiedAccountOut(
+                        auth_method="instagram_business_login",
+                        account_id=str(record.page_id),
+                        username=str(record.instagram_username).strip() if record.instagram_username else None,
+                        display_name=str(record.name or record.instagram_username or record.page_id),
+                        credential_integration_id=direct_integration.id,
+                        asset_integration_id=direct_integration.id,
+                        parent_page_id=None,
+                        parent_page_name=None,
+                        connected=direct_connected,
+                        sync_eligible=(
+                            direct_connected
+                            and direct_status == "connected"
+                            and identity_account is not None
+                        ),
+                    )
+                )
+            sources["instagram_business_login"] = InstagramUnifiedSourceStatusOut(
+                auth_method="instagram_business_login",
+                credential_integration_id=direct_integration.id,
+                asset_integration_id=direct_integration.id,
+                status=direct_status,
+                connected=direct_connected,
+                discovery_status=(
+                    "complete"
+                    if direct_status not in {"disconnected", "no_token", "error"}
+                    else "idle"
+                ),
+                reauthorization_required=_instagram_unified_reauthorization_required(direct_status),
+                account_count=len(direct_records),
+            )
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Unified Instagram direct inventory failed",
+                extra={"workspace_id": workspace_id, "user_id": current_user.id},
+            )
+            sources["instagram_business_login"] = InstagramUnifiedSourceStatusOut(
+                auth_method="instagram_business_login",
+                credential_integration_id=direct_integration.id,
+                asset_integration_id=direct_integration.id,
+                status="error",
+                connected=False,
+                discovery_status="failed",
+                reauthorization_required=True,
+                account_count=0,
+            )
+
+    normalized_search = str(search or "").strip().lower()
+    if normalized_search:
+        rows = [
+            row
+            for row in rows
+            if normalized_search in row.account_id.lower()
+            or normalized_search in str(row.username or "").lower()
+            or normalized_search in row.display_name.lower()
+            or normalized_search in str(row.parent_page_name or "").lower()
+        ]
+    matching_count = len(rows)
+    return InstagramUnifiedAccountsOut(
+        data=rows[offset : offset + limit],
+        count=matching_count,
+        limit=limit,
+        offset=offset,
+        search=search,
+        sources=sources,
     )
 
 
@@ -30078,10 +30562,34 @@ def _run_instagram_business_login_sync(
     route_name: str,
 ) -> InstagramBusinessLoginSyncOut:
     started_at = perf_counter()
+    canonical_request = (
+        payload.credential_integration_id is not None
+        or payload.account_id is not None
+    )
+    if canonical_request and payload.credential_integration_id is None:
+        raise http_error(
+            422,
+            "missing_credential_integration_id",
+            "credential_integration_id is required for canonical Instagram sync requests.",
+        )
+    if canonical_request and not str(payload.account_id or "").strip():
+        raise http_error(
+            422,
+            "missing_account_id",
+            "account_id is required for canonical Instagram sync requests.",
+        )
+    resolved_integration_id = payload.credential_integration_id or payload.integration_id
+    resolved_account_id = str(payload.account_id or payload.instagram_account_id or "").strip()
+    if not resolved_account_id:
+        raise http_error(
+            422,
+            "missing_instagram_account_id",
+            "account_id or instagram_account_id is required.",
+        )
     integration = _resolve_instagram_business_login_integration(
         db,
         current_user,
-        integration_id=payload.integration_id,
+        integration_id=resolved_integration_id,
         workspace_id=payload.workspace_id,
     )
     logger.info(
@@ -30095,7 +30603,8 @@ def _run_instagram_business_login_sync(
                 "permission": "instagram_business_manage_insights",
                 "workspace_id": integration.workspace_id,
                 "integration_id": integration.id,
-                "instagram_user_id": _mask_instagram_business_login_user_id(payload.instagram_account_id),
+                "instagram_user_id": _mask_instagram_business_login_user_id(resolved_account_id),
+                "canonical_request": canonical_request,
                 "force_live": payload.force_live,
                 "timeframe": payload.timeframe,
             },
@@ -30104,13 +30613,14 @@ def _run_instagram_business_login_sync(
             sort_keys=True,
         ),
     )
-    _token_present, _token_decrypt_ok, access_token = _resolve_instagram_business_login_access_token(db, integration)
-    if not access_token:
-        raise http_error(400, "instagram_business_login_no_token", "Instagram Business Login token not found.")
-
-    selected_record = _match_instagram_business_record(
-        _instagram_business_login_account_records(db, integration),
-        _collect_instagram_business_alias_values(payload.instagram_account_id),
+    direct_records = _instagram_business_login_account_records(db, integration)
+    selected_record = (
+        next((record for record in direct_records if str(record.page_id) == resolved_account_id), None)
+        if canonical_request
+        else _match_instagram_business_record(
+            direct_records,
+            _collect_instagram_business_alias_values(resolved_account_id),
+        )
     )
     if selected_record is None:
         raise http_error(
@@ -30118,6 +30628,28 @@ def _run_instagram_business_login_sync(
             "instagram_business_login_account_not_found",
             "Instagram Business Login account not found.",
         )
+    identity_account = _instagram_direct_identity_account(
+        db,
+        integration_id=integration.id,
+        workspace_id=integration.workspace_id,
+        account_id=str(selected_record.page_id),
+    )
+    if identity_account is None:
+        raise http_error(
+            409,
+            "instagram_business_login_identity_missing",
+            "Instagram Business Login account identity is not available. Reconnect the account.",
+        )
+    direct_status = _instagram_business_login_status_payload(db, integration)
+    if direct_status.status == "needs_permission":
+        raise http_error(
+            403,
+            "instagram_business_login_needs_permission",
+            "Instagram Business Login requires additional permissions.",
+        )
+    _token_present, _token_decrypt_ok, access_token = _resolve_instagram_business_login_access_token(db, integration)
+    if not access_token:
+        raise http_error(400, "instagram_business_login_no_token", "Instagram Business Login token not found.")
 
     timeframe_config = resolve_meta_pages_timeframe(
         payload.timeframe,
@@ -30447,9 +30979,13 @@ def _run_instagram_business_login_sync(
     csv_bytes = csv_output.getvalue().encode("utf-8")
     filename = f"instagram_business_login_{instagram_user_id}_insights.csv"
     dataset_data = {
+        "source_type": "instagram_business",
         "integration_type": "instagram_business",
         "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
         "source": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        "auth_method": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+        "credential_integration_id": integration.id,
+        "asset_integration_id": integration.id,
         "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
         "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
         "permissions_used": INSTAGRAM_BUSINESS_LOGIN_SCOPES,
@@ -32745,8 +33281,28 @@ def _sync_meta_instagram_account(
 
     csv_bytes = csv_output.getvalue().encode("utf-8")
     filename = f"meta_instagram_{instagram_user_id}_insights.csv"
+    suite_integration, _suite_access_token = _resolve_workspace_meta_business_suite_access_token(
+        db,
+        integration.workspace_id,
+    )
+    if suite_integration is None:
+        raise http_error(
+            400,
+            "meta_business_suite_not_connected",
+            "Meta Business Suite is not connected.",
+        )
     dataset_data = {
+        "source_type": "instagram_business",
         "integration_type": "instagram_business",
+        "provider": "meta_business_suite",
+        "auth_method": "meta_business_suite",
+        "credential_integration_id": suite_integration.id,
+        "asset_integration_id": integration.id,
+        "account_id": instagram_user_id,
+        "instagram_account_id": instagram_user_id,
+        "instagram_business_account_id": instagram_user_id,
+        "parent_page_id": selected_meta_record.parent_page_id,
+        "facebook_page_id": selected_meta_record.parent_page_id,
         "page_name": account_name,
         "account_name": account_name,
         "username": instagram_username,
@@ -33056,6 +33612,93 @@ def _resolve_instagram_business_sync_integration(
     return instagram_integration, suite_integration
 
 
+def _resolve_canonical_instagram_business_sync_identity(
+    db: Session,
+    *,
+    current_user: User,
+    credential_integration_id: int,
+    asset_integration_id: int,
+    account_id: str,
+) -> tuple[Integration, Integration, MetaPage]:
+    credential_integration = db.get(Integration, credential_integration_id)
+    if credential_integration is None:
+        raise http_error(404, "credential_integration_not_found", "Credential integration not found.")
+    if credential_integration.provider != "meta_business_suite":
+        raise http_error(
+            400,
+            "invalid_credential_integration_provider",
+            "credential_integration_id must identify a Meta Business Suite integration.",
+        )
+    _require_workspace_access(db, current_user.id, credential_integration.workspace_id)
+
+    asset_integration = db.get(Integration, asset_integration_id)
+    if asset_integration is None:
+        raise http_error(404, "asset_integration_not_found", "Asset integration not found.")
+    if asset_integration.provider != "instagram_business":
+        raise http_error(
+            400,
+            "invalid_asset_integration_provider",
+            "asset_integration_id must identify an Instagram Business integration.",
+        )
+    _require_workspace_access(db, current_user.id, asset_integration.workspace_id)
+    if asset_integration.workspace_id != credential_integration.workspace_id:
+        raise http_error(
+            400,
+            "credential_asset_workspace_mismatch",
+            "Credential and asset integrations must belong to the same workspace.",
+        )
+
+    token_account = _get_meta_business_suite_token_account(db, credential_integration.id)
+    token = _get_latest_integration_token(db, token_account.id) if token_account is not None else None
+    _token_present, _token_decrypt_ok, credential_access_token = _resolve_integration_token_value(token)
+    if not credential_access_token:
+        raise http_error(
+            400,
+            "meta_business_suite_not_connected",
+            "Meta Business Suite is not connected.",
+        )
+    resolved_credential, resolved_access_token = _resolve_workspace_meta_business_suite_access_token(
+        db,
+        credential_integration.workspace_id,
+    )
+    if (
+        resolved_credential is None
+        or resolved_credential.id != credential_integration.id
+        or not resolved_access_token
+    ):
+        raise http_error(
+            409,
+            "meta_credential_mismatch",
+            "The requested Meta credential is not the active credential for this workspace.",
+        )
+    if _canonical_meta_frontend_status(asset_integration.status) == "needs_permission":
+        raise http_error(
+            403,
+            "instagram_business_needs_permission",
+            "Instagram Business requires additional Meta permissions.",
+        )
+
+    normalized_account_id = str(account_id or "").strip()
+    if not normalized_account_id:
+        raise http_error(422, "missing_account_id", "account_id is required.")
+    account_record = (
+        db.query(MetaPage)
+        .filter(
+            MetaPage.integration_id == asset_integration.id,
+            MetaPage.record_type == META_RECORD_TYPE_INSTAGRAM_ACCOUNT,
+            MetaPage.page_id == normalized_account_id,
+        )
+        .first()
+    )
+    if account_record is None:
+        raise http_error(
+            404,
+            "instagram_account_not_resolved",
+            "The selected Instagram account does not belong to the requested asset integration.",
+        )
+    return asset_integration, credential_integration, account_record
+
+
 def _run_instagram_business_sync(
     *,
     db: Session,
@@ -33069,6 +33712,7 @@ def _run_instagram_business_sync(
     end_date: str | None = None,
     integration: Integration | None = None,
     suite_integration: Integration | None = None,
+    selected_meta_record: MetaPage | None = None,
 ) -> InstagramBusinessSyncOut:
     if integration is None:
         integration, suite_integration = _resolve_instagram_business_sync_integration(
@@ -33084,15 +33728,16 @@ def _run_instagram_business_sync(
             "workspace_id does not match the integration workspace.",
         )
 
-    selected_meta_record = _resolve_instagram_account_record_for_sync(
-        db,
-        integration=integration,
-        suite_integration=suite_integration,
-        current_user=current_user,
-        instagram_account_id=instagram_account_id,
-        instagram_account_aliases=instagram_account_aliases,
-        requested_integration_id=integration_id,
-    )
+    if selected_meta_record is None:
+        selected_meta_record = _resolve_instagram_account_record_for_sync(
+            db,
+            integration=integration,
+            suite_integration=suite_integration,
+            current_user=current_user,
+            instagram_account_id=instagram_account_id,
+            instagram_account_aliases=instagram_account_aliases,
+            requested_integration_id=integration_id,
+        )
     timeframe_config = resolve_meta_pages_timeframe(
         timeframe,
         start_date=start_date,
@@ -33178,6 +33823,30 @@ def _run_instagram_business_sync_request(
     if not isinstance(timeframe_selection, dict):
         timeframe_selection = {}
 
+    raw_credential_integration_id = _payload_value(
+        raw_body,
+        raw_query_params,
+        "credential_integration_id",
+        "credentialIntegrationId",
+    )
+    raw_asset_integration_id = _payload_value(
+        raw_body,
+        raw_query_params,
+        "asset_integration_id",
+        "assetIntegrationId",
+    )
+    canonical_request = (
+        raw_credential_integration_id is not None
+        or raw_asset_integration_id is not None
+    )
+    credential_integration_id = _coerce_optional_int_field(
+        raw_credential_integration_id,
+        field_name="credential_integration_id",
+    )
+    asset_integration_id = _coerce_optional_int_field(
+        raw_asset_integration_id,
+        field_name="asset_integration_id",
+    )
     integration_id = _coerce_optional_int_field(
         _payload_value(raw_body, raw_query_params, "integration_id", "integrationId"),
         field_name="integration_id",
@@ -33186,7 +33855,29 @@ def _run_instagram_business_sync_request(
         _payload_value(raw_body, raw_query_params, "workspace_id", "workspaceId"),
         field_name="workspace_id",
     )
-    instagram_account_aliases = _instagram_business_aliases_from_payload(raw_body, raw_query_params)
+    canonical_account_id = _payload_value(raw_body, raw_query_params, "account_id", "accountId")
+    if canonical_request:
+        if credential_integration_id is None:
+            raise http_error(
+                422,
+                "missing_credential_integration_id",
+                "credential_integration_id is required for canonical Meta Instagram sync requests.",
+            )
+        if asset_integration_id is None:
+            raise http_error(
+                422,
+                "missing_asset_integration_id",
+                "asset_integration_id is required for canonical Meta Instagram sync requests.",
+            )
+        if not str(canonical_account_id or "").strip():
+            raise http_error(
+                422,
+                "missing_account_id",
+                "account_id is required for canonical Meta Instagram sync requests.",
+            )
+        instagram_account_aliases = [str(canonical_account_id).strip()]
+    else:
+        instagram_account_aliases = _instagram_business_aliases_from_payload(raw_body, raw_query_params)
     instagram_account_id_value = instagram_account_aliases[0] if instagram_account_aliases else None
     timeframe_value = (
         _body_timeframe_key(raw_body.get("timeframe"))
@@ -33209,18 +33900,15 @@ def _run_instagram_business_sync_request(
         user_id=current_user.id,
         workspace_id=workspace_id,
         integration_id=integration_id,
+        credential_integration_id=credential_integration_id,
+        asset_integration_id=asset_integration_id,
+        canonical_request=canonical_request,
         account_id_present=bool(instagram_account_aliases),
         selected_account_aliases=instagram_account_aliases,
         timeframe=str(timeframe_value or "last_28_days"),
     )
 
     try:
-        integration, suite_integration = _resolve_instagram_business_sync_integration(
-            db,
-            current_user=current_user,
-            integration_id=integration_id,
-            workspace_id=workspace_id,
-        )
         if not instagram_account_aliases:
             raise http_error(
                 400,
@@ -33228,6 +33916,30 @@ def _run_instagram_business_sync_request(
                 "Select an Instagram Business account to sync.",
             )
         instagram_account_id = str(instagram_account_id_value or "").strip()
+        selected_meta_record: MetaPage | None = None
+        if canonical_request:
+            integration, suite_integration, selected_meta_record = (
+                _resolve_canonical_instagram_business_sync_identity(
+                    db,
+                    current_user=current_user,
+                    credential_integration_id=int(credential_integration_id),
+                    asset_integration_id=int(asset_integration_id),
+                    account_id=instagram_account_id,
+                )
+            )
+            if workspace_id is not None and workspace_id != integration.workspace_id:
+                raise http_error(
+                    400,
+                    "workspace_mismatch",
+                    "workspace_id does not match the integration workspace.",
+                )
+        else:
+            integration, suite_integration = _resolve_instagram_business_sync_integration(
+                db,
+                current_user=current_user,
+                integration_id=integration_id,
+                workspace_id=workspace_id,
+            )
         _meta_oauth_log(
             "INSTAGRAM_BUSINESS_SYNC_INTEGRATION_RESOLVED",
             route=route_name,
@@ -33238,6 +33950,7 @@ def _run_instagram_business_sync_request(
             requested_integration_id=integration_id,
             instagram_account_id=instagram_account_id,
             selected_account_aliases=instagram_account_aliases,
+            canonical_request=canonical_request,
         )
         _meta_oauth_log(
             "INSTAGRAM_BUSINESS_SYNC_STARTED",
@@ -33262,6 +33975,7 @@ def _run_instagram_business_sync_request(
             end_date=str(end_date_value) if end_date_value is not None else None,
             integration=integration,
             suite_integration=suite_integration,
+            selected_meta_record=selected_meta_record,
         )
         _meta_oauth_log(
             "INSTAGRAM_BUSINESS_SYNC_COMPLETED",
