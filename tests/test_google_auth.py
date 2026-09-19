@@ -433,6 +433,7 @@ def test_meta_oauth_connect_pages_url_uses_backend_callback_for_both_flows(monke
     assert query_instagram["redirect_uri"] == [expected_redirect_uri]
     assert query_instagram["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
     assert "instagram_basic" in query_instagram["scope"][0]
+    assert "instagram_manage_insights" in query_instagram["scope"][0]
     assert "instagram_business_basic" not in query_instagram["scope"][0]
 
 
@@ -487,6 +488,7 @@ def test_meta_pages_business_config_does_not_affect_instagram_or_ads_oauth(monke
     assert "config_id" not in instagram_query
     assert instagram_query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
     assert "instagram_basic" in instagram_query["scope"][0]
+    assert "instagram_manage_insights" in instagram_query["scope"][0]
     assert "instagram_business_basic" not in instagram_query["scope"][0]
     assert "instagram_business_manage_insights" not in instagram_query["scope"][0]
     assert "ads_read" not in instagram_query["scope"][0]
@@ -765,6 +767,7 @@ def test_instagram_business_auth_url_uses_facebook_oauth(monkeypatch):
     assert query["redirect_uri"] == ["https://api.measurableapp.com/integrations/meta/callback-pages"]
     assert query["scope"] == [instagram_business.INSTAGRAM_BUSINESS_OAUTH_SCOPE]
     assert "instagram_basic" in query["scope"][0]
+    assert "instagram_manage_insights" in query["scope"][0]
     assert "instagram_business_basic" not in query["scope"][0]
     assert query["response_type"] == ["code"]
 
@@ -813,6 +816,7 @@ def test_instagram_business_connect_returns_facebook_pages_scope(client, monkeyp
     assert payload["scope"] == meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN
     assert query["scope"] == [meta_ads.INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN]
     assert "instagram_basic" in query["scope"][0]
+    assert "instagram_manage_insights" in query["scope"][0]
     assert "instagram_business_basic" not in query["scope"][0]
     assert "ads_read" not in query["scope"][0]
     assert state_payload["integration_type"] == "instagram_business"

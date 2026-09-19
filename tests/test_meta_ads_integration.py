@@ -235,7 +235,8 @@ def test_meta_ads_connect_creates_separate_integration(client):
     assert payload["scope"] == meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE
     assert payload["scope"] == (
         "public_profile,pages_show_list,pages_read_engagement,read_insights,"
-        "pages_read_user_content,business_management,ads_read"
+        "pages_read_user_content,business_management,ads_read,instagram_basic,"
+        "instagram_manage_insights"
     )
     assert "ads_read" in payload["auth_url"]
     assert "business_management" in payload["auth_url"]
@@ -243,7 +244,9 @@ def test_meta_ads_connect_creates_separate_integration(client):
     assert "pages_show_list" in payload["auth_url"]
     query = parse_qs(urlparse(payload["auth_url"]).query)
     assert query["scope"] == [meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE]
-    assert not BANNED_INSTAGRAM_OAUTH_SCOPES.intersection(query["scope"][0].split(","))
+    assert {"instagram_basic", "instagram_manage_insights"}.issubset(
+        set(query["scope"][0].split(","))
+    )
     assert query["auth_type"] == ["rerequest"]
     assert query["redirect_uri"] == ["http://localhost:8000/integrations/meta/callback-pages"]
 
@@ -259,7 +262,7 @@ def test_meta_ads_connect_creates_separate_integration(client):
         db.close()
 
 
-def test_meta_business_suite_connect_url_excludes_instagram_scopes_and_config_id(client, monkeypatch):
+def test_meta_business_suite_connect_url_includes_instagram_scopes_without_config_id(client, monkeypatch):
     refs = _seed_workspace()
     monkeypatch.setattr(main_module.settings, "meta_pages_app_id", "meta-app-id")
     monkeypatch.setattr(main_module.settings, "meta_pages_app_secret", "meta-app-secret")
@@ -285,7 +288,6 @@ def test_meta_business_suite_connect_url_excludes_instagram_scopes_and_config_id
     assert payload["scope"] == meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE
     assert query["scope"] == [meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE]
     assert "config_id" not in query
-    assert not BANNED_INSTAGRAM_OAUTH_SCOPES.intersection(query["scope"][0].split(","))
     assert {
         "pages_show_list",
         "pages_read_engagement",
@@ -293,6 +295,8 @@ def test_meta_business_suite_connect_url_excludes_instagram_scopes_and_config_id
         "pages_read_user_content",
         "business_management",
         "ads_read",
+        "instagram_basic",
+        "instagram_manage_insights",
     }.issubset(set(query["scope"][0].split(",")))
     assert state_payload["integration_type"] == "meta_business_suite"
     assert state_payload["include_linked_instagram"] is False

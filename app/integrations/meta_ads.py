@@ -27,6 +27,7 @@ INSTAGRAM_BUSINESS_SCOPES_LEGACY_FACEBOOK_LOGIN = [
     "pages_read_engagement",
     "read_insights",
     "instagram_basic",
+    "instagram_manage_insights",
     "business_management",
 ]
 META_ADS_SCOPES = [
@@ -42,6 +43,8 @@ META_BUSINESS_SUITE_SCOPES = [
     "pages_read_user_content",
     "business_management",
     "ads_read",
+    "instagram_basic",
+    "instagram_manage_insights",
 ]
 FACEBOOK_PAGES_OAUTH_SCOPE = ",".join(FACEBOOK_PAGES_SCOPES)
 INSTAGRAM_BUSINESS_OAUTH_SCOPE_LEGACY_FACEBOOK_LOGIN = ",".join(

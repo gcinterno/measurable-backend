@@ -89,6 +89,8 @@ def client(monkeypatch):
         "https://api.example.test/integrations/instagram-business-login/callback",
     )
     monkeypatch.setattr(main_module.settings, "api_base_url", "https://api.example.test")
+    monkeypatch.setattr(main_module.settings, "frontend_url", "https://app.example.test")
+    monkeypatch.setattr(main_module.settings, "frontend_base_url", "https://app.example.test")
     monkeypatch.setattr(main_module.settings, "instagram_graph_api_version", "v19.0")
     monkeypatch.setattr(main_module.settings, "instagram_graph_api_base", "https://graph.instagram.com")
     monkeypatch.setattr(
@@ -631,6 +633,12 @@ def test_instagram_business_login_callback_saves_standalone_provider_and_token(c
 
     assert response.status_code == 200
     assert '"provider": "instagram_business_login"' in response.text
+    assert "https://app.example.test/integrations/instagram-business/callback?" in response.text
+    assert "status=connected" in response.text
+    assert "source=instagram_business_login" in response.text
+    assert "provider=instagram_business_login" in response.text
+    assert "Instagram+Business+Login+connected+successfully." in response.text
+    assert '"workspaceId": ' + str(refs["workspace_id"]) in response.text
     db = SessionLocal()
     try:
         integration = (
@@ -663,6 +671,26 @@ def test_instagram_business_login_callback_saves_standalone_provider_and_token(c
         ]
     finally:
         db.close()
+
+
+def test_instagram_business_login_callback_cancellation_uses_existing_frontend_callback(client):
+    response = client.get(
+        "/integrations/instagram-business-login/callback",
+        params={
+            "error": "access_denied",
+            "error_reason": "user_denied",
+            "error_description": "The user cancelled authorization.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "https://app.example.test/integrations/instagram-business/callback?" in response.text
+    assert "status=error" in response.text
+    assert "source=instagram_business_login" in response.text
+    assert "provider=instagram_business_login" in response.text
+    assert "error=user_denied" in response.text
+    assert "The+user+cancelled+authorization." in response.text
+    assert "/integrations/instagram-business-login/callback?" not in response.text
 
 
 def test_instagram_business_login_sync_rejects_completely_empty_provider_data(

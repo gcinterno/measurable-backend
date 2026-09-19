@@ -1996,7 +1996,11 @@ def test_shared_suite_token_resolves_provider_statuses_independently(client, mon
         lambda _token: {
             "data": {
                 "is_valid": True,
-                "scopes": meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE.split(","),
+                "scopes": [
+                    scope
+                    for scope in meta_ads_module.META_BUSINESS_SUITE_OAUTH_SCOPE.split(",")
+                    if scope not in {"instagram_basic", "instagram_manage_insights"}
+                ],
             }
         },
     )
@@ -2077,6 +2081,7 @@ def test_shared_suite_token_resolves_provider_statuses_independently(client, mon
     assert instagram_payload["status"] == "needs_permission"
     assert instagram_payload["asset_count"] == 0
     assert "instagram_basic" in instagram_payload["missing_scopes"]
+    assert "instagram_manage_insights" in instagram_payload["missing_scopes"]
 
 
 def test_shared_suite_token_returns_connected_no_assets_for_instagram_when_no_accounts_found(client, monkeypatch):

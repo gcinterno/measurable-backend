@@ -20,6 +20,7 @@ INSTAGRAM_BUSINESS_SCOPES = [
     "pages_read_engagement",
     "read_insights",
     "instagram_basic",
+    "instagram_manage_insights",
     "business_management",
 ]
 INSTAGRAM_BUSINESS_OAUTH_SCOPE = ",".join(INSTAGRAM_BUSINESS_SCOPES)

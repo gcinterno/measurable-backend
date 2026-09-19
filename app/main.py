@@ -12546,7 +12546,7 @@ def _instagram_business_login_popup_response(
         message=message,
         provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
         missing_scopes=missing_scopes,
-        callback_path=INSTAGRAM_BUSINESS_LOGIN_CALLBACK_PATH,
+        callback_path=INSTAGRAM_BUSINESS_CALLBACK_PATH,
     )
     frontend_origin = _meta_frontend_origin()
     success_statuses = {"connected", "connected_no_assets"}
@@ -12791,6 +12791,7 @@ def _instagram_business_required_scopes_for_status() -> list[str]:
         "pages_read_engagement",
         "read_insights",
         "instagram_basic",
+        "instagram_manage_insights",
     ]
 
 
