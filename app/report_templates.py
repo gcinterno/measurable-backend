@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .deps import get_db, require_admin_user
+from .deps import get_current_user, get_db, require_admin_user
 from .errors import http_error
-from .models import ReportTemplate, ReportTemplateVersion, User, Workspace
+from .models import ReportTemplate, ReportTemplateVersion, User, Workspace, WorkspaceMember
 from .report_spec import (
     FACEBOOK_INSTAGRAM_10_REFERENCE_REPORTSPEC,
     InvalidReportSpecError,
@@ -138,6 +138,35 @@ class ReportTemplateOut(BaseModel):
     updated_at: datetime
 
 
+class PublishedReportTemplateVersionRef(BaseModel):
+    id: int
+    version_number: int
+    schema_version: str
+
+
+class PublishedReportTemplateCatalogItem(BaseModel):
+    """Selection-safe projection of one immutable production template version."""
+
+    id: int
+    template_id: int
+    workspace_id: int | None = None
+    scope: Literal["global", "workspace"]
+    name: str
+    description: str | None = None
+    status: Literal["published"] = "published"
+    generation_mode: str
+    template_type: str
+    published_version_id: int
+    published_version: PublishedReportTemplateVersionRef
+    datasource_requirements: dict[str, Any]
+    supported_modes: list[str] = Field(default_factory=list)
+    required_source_count: int | None = None
+    minimum_source_count: int | None = None
+    required_canonical_semantics: list[str] = Field(default_factory=list)
+    optional_canonical_semantics: list[str] = Field(default_factory=list)
+    catalog_required: bool = False
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -248,6 +277,76 @@ def _template_out(template: ReportTemplate) -> ReportTemplateOut:
         archived_at=template.archived_at,
         created_at=template.created_at,
         updated_at=template.updated_at,
+    )
+
+
+def _catalog_requirement(requirements: dict[str, Any], snake_name: str, camel_name: str) -> Any:
+    if snake_name in requirements:
+        return requirements[snake_name]
+    return requirements.get(camel_name)
+
+
+def _catalog_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _catalog_optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _published_catalog_item(
+    template: ReportTemplate,
+    version: ReportTemplateVersion,
+) -> PublishedReportTemplateCatalogItem:
+    spec_json = version.spec_json if isinstance(version.spec_json, dict) else {}
+    requirements_value = spec_json.get("datasource_requirements")
+    requirements = dict(requirements_value) if isinstance(requirements_value, dict) else {}
+    return PublishedReportTemplateCatalogItem(
+        id=template.id,
+        template_id=template.id,
+        workspace_id=template.workspace_id,
+        scope="global" if template.workspace_id is None else "workspace",
+        name=template.name,
+        description=template.description,
+        generation_mode=template.generation_mode,
+        template_type=template.template_type,
+        published_version_id=version.id,
+        published_version=PublishedReportTemplateVersionRef(
+            id=version.id,
+            version_number=version.version_number,
+            schema_version=version.schema_version,
+        ),
+        datasource_requirements=requirements,
+        supported_modes=_catalog_string_list(
+            _catalog_requirement(requirements, "supported_modes", "supportedModes")
+        ),
+        required_source_count=_catalog_optional_int(
+            _catalog_requirement(requirements, "required_source_count", "requiredSourceCount")
+        ),
+        minimum_source_count=_catalog_optional_int(
+            _catalog_requirement(requirements, "minimum_source_count", "minimumSourceCount")
+        ),
+        required_canonical_semantics=_catalog_string_list(
+            _catalog_requirement(
+                requirements,
+                "required_canonical_semantics",
+                "requiredCanonicalSemantics",
+            )
+        ),
+        optional_canonical_semantics=_catalog_string_list(
+            _catalog_requirement(
+                requirements,
+                "optional_canonical_semantics",
+                "optionalCanonicalSemantics",
+            )
+        ),
+        catalog_required=bool(
+            _catalog_requirement(requirements, "catalog_required", "catalogRequired") is True
+        ),
     )
 
 
@@ -371,6 +470,45 @@ def list_report_templates(
         query = query.filter(ReportTemplate.status == status)
     templates = query.order_by(ReportTemplate.updated_at.desc(), ReportTemplate.id.desc()).all()
     return [_template_out(template) for template in templates]
+
+
+@router.get("/published", response_model=list[PublishedReportTemplateCatalogItem])
+def list_published_report_templates(
+    workspace_id: int | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[PublishedReportTemplateCatalogItem]:
+    """List immutable published versions usable in the current user's product scope."""
+    workspace_ids = [
+        int(row[0])
+        for row in db.query(WorkspaceMember.workspace_id)
+        .filter(WorkspaceMember.user_id == current_user.id)
+        .order_by(WorkspaceMember.workspace_id.asc())
+        .all()
+    ]
+    if workspace_id is not None and workspace_id not in workspace_ids:
+        raise http_error(403, "forbidden", "Workspace access denied.")
+    permitted_workspace_ids = [workspace_id] if workspace_id is not None else workspace_ids
+    rows = (
+        db.query(ReportTemplate, ReportTemplateVersion)
+        .join(
+            ReportTemplateVersion,
+            ReportTemplateVersion.id == ReportTemplate.published_version_id,
+        )
+        .filter(
+            ReportTemplate.archived_at.is_(None),
+            ReportTemplate.status != "archived",
+            ReportTemplateVersion.report_template_id == ReportTemplate.id,
+            ReportTemplateVersion.published_at.is_not(None),
+            or_(
+                ReportTemplate.workspace_id.is_(None),
+                ReportTemplate.workspace_id.in_(permitted_workspace_ids),
+            ),
+        )
+        .order_by(ReportTemplate.name.asc(), ReportTemplate.id.asc())
+        .all()
+    )
+    return [_published_catalog_item(template, version) for template, version in rows]
 
 
 @router.post("", response_model=ReportTemplateOut, status_code=201)
@@ -614,6 +752,9 @@ __all__ = [
     "ReportTemplateUpdateIn",
     "ReportTemplateVersionCreateIn",
     "ReportTemplateVersionOut",
+    "PublishedReportTemplateCatalogItem",
+    "PublishedReportTemplateVersionRef",
+    "list_published_report_templates",
     "router",
     "seed_facebook_instagram_reference_template",
     "validate_persisted_report_spec_payload",

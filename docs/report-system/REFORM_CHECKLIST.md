@@ -8,10 +8,12 @@
 - Facebook Pages 5 Recipe Enforcement Layer (FASE 3C.1): IMPLEMENTED — PENDING QA
 - Recipe-driven Facebook Pages 5 Builder Parity (FASE 3C.2): IMPLEMENTED — PARITY PASS
 - Facebook Pages 5 Recipe Production Cutover (FASE 3C.3): COMPLETE
-- Recipe V1 production wiring: IMPLEMENTED FOR FACEBOOK PAGES 5 ONLY
+- Recipe V1 production wiring: IMPLEMENTED FOR FACEBOOK PAGES 5 AND FACEBOOK + INSTAGRAM 10
 - Facebook Pages Recipe V1 / Report Engine Reform Cycle: COMPLETE
-- Facebook + Instagram 10 Recipe V1: COMPLETE
+- Facebook + Instagram 10 Recipe: COMPLETE
 - Parallel Recipe Builder: COMPLETE
 - Payload Parity: PASS
-- Production Cutover: PENDING
+- Production Cutover: COMPLETE
+- Legacy Rollback: AVAILABLE
+- Manual QA: PENDING
 - Blueprint V1: PENDING

@@ -44,6 +44,8 @@ class ExecutableReportConfiguration:
     requested_slides: int | None = None
     template: str | None = None
     report_spec: Mapping[str, Any] | None = None
+    report_template_id: int | None = None
+    report_template_version_id: int | None = None
     branding: Mapping[str, Any] | None = None
     builder_contract: str | None = None
 
@@ -119,13 +121,23 @@ def validate_executable_configuration(configuration: ExecutableReportConfigurati
         raise GenerationError("template_not_executable", "This builder does not support a template override.")
     if configuration.requested_slides is not None and configuration.requested_slides < 1:
         raise GenerationError("invalid_slide_count", "A report must contain at least one slide.")
+    if configuration.report_template_version_id is not None and configuration.report_template_id is None:
+        raise GenerationError(
+            "report_template_id_required",
+            "report_template_id is required when report_template_version_id is supplied.",
+        )
     if configuration.report_spec is not None:
         try:
             assert_valid_report_spec(configuration.report_spec)
         except InvalidReportSpecError as exc:
             raise GenerationError("invalid_report_spec", str(exc)) from exc
-        # Validation/storage do not imply execution support. Never discard supplied slides/bindings.
-        raise GenerationError("report_spec_not_executable", "This ReportSpec does not have a supported generation executor.")
+        if configuration.report_template_id is None or configuration.report_template_version_id is None:
+            # Direct arbitrary ReportSpec execution remains prohibited. Production
+            # execution must resolve an immutable published template version first.
+            raise GenerationError(
+                "report_spec_not_executable",
+                "ReportSpec execution requires a published report template version.",
+            )
     if configuration.builder_contract is not None:
         from .report_generation_builders import current_builder_contract
 
@@ -203,7 +215,7 @@ def _command_hash(command: GenerateReportCommand) -> str:
     payload = asdict(command)
     payload.pop("idempotency_key")
     # Preserve identities already persisted before optional snapshot pinning existed.
-    for key in ("branding", "builder_contract"):
+    for key in ("branding", "builder_contract", "report_template_id", "report_template_version_id"):
         if payload["configuration"][key] is None:
             payload["configuration"].pop(key)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
@@ -229,6 +241,15 @@ def _validate_generated_state(db: Session, command: GenerateReportCommand, built
         raise GenerationError("invalid_generated_report", "Generated report identity is invalid.", status_code=500)
     if report.dataset_id != command.sources[0].dataset_id:
         raise GenerationError("invalid_generated_report", "Generated report used a different dataset.", status_code=500)
+    if (
+        report.report_template_id != command.configuration.report_template_id
+        or report.report_template_version_id != command.configuration.report_template_version_id
+    ):
+        raise GenerationError(
+            "invalid_generated_template_provenance",
+            "Generated report template provenance does not match the resolved published version.",
+            status_code=500,
+        )
     if built.outcome == "configured":
         if not command.options.allow_configuration_only:
             raise GenerationError("report_not_generated", "This configuration does not produce a complete report.")
@@ -357,8 +378,14 @@ def _validate_draft(command: GenerateReportCommand, draft: ReportDraft) -> None:
 def _persist_report_draft(db: Session, command: GenerateReportCommand, draft: ReportDraft) -> BuiltReport:
     from .main import _persist_report_block_specs
 
-    report = Report(workspace_id=command.workspace_id, dataset_id=command.sources[0].dataset_id,
-                    name=draft.name, description=json.dumps(dict(draft.metadata)))
+    report = Report(
+        workspace_id=command.workspace_id,
+        dataset_id=command.sources[0].dataset_id,
+        report_template_id=command.configuration.report_template_id,
+        report_template_version_id=command.configuration.report_template_version_id,
+        name=draft.name,
+        description=json.dumps(dict(draft.metadata)),
+    )
     db.add(report)
     db.flush()
     version = ReportVersion(report_id=report.id, version=1)
@@ -456,7 +483,9 @@ def generate_report(db: Session, command: GenerateReportCommand, *,
     conflict; completed retries return the original report. Expired attempts are fenced.
     """
     from .report_generation_builders import build_report, prepare_report_inputs
+    from .report_spec_generation import resolve_published_report_template
 
+    command = resolve_published_report_template(db, command)
     reservation = _reserve_generation(db, command)
     if isinstance(reservation, GenerationResult):
         return reservation

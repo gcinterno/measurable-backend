@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 
@@ -146,6 +147,59 @@ def _reference_spec() -> dict:
     return copy.deepcopy(FACEBOOK_INSTAGRAM_10_REFERENCE_REPORTSPEC.as_dict())
 
 
+def _studio_engagement_spec() -> dict:
+    return {
+        "schema_version": "1.0",
+        "id": "test-facebook-instagram-engagement-v1",
+        "name": "TEST — Facebook + Instagram Engagement",
+        "report_type": "multi_source_social",
+        "template_id": "test-facebook-instagram-engagement",
+        "generation_mode": "template",
+        "datasource_requirements": {
+            "mode": "all",
+            "sources": ["facebook_pages", "instagram_business"],
+            "minimum_source_count": 2,
+            "required_canonical_semantics": ["engagement"],
+            "catalog_required": True,
+        },
+        "reporting_period": {"selector": "request.timeframe"},
+        "theme_ref": {"id": "default_report_theme"},
+        "slides": [
+            {
+                "id": "engagement",
+                "order": 1,
+                "slide_type": "metric",
+                "title": "Engagement",
+                "layout": "metric_chart_source_split",
+                "blocks": [
+                    {
+                        "id": "engagement-hero",
+                        "type": "metric_hero",
+                        "bindings": [{"canonical_semantic": "engagement"}],
+                    },
+                    {
+                        "id": "engagement-chart",
+                        "type": "timeseries_chart",
+                        "bindings": [{"canonical_semantic": "engagement"}],
+                    },
+                    {
+                        "id": "engagement-sources",
+                        "type": "source_split",
+                        "bindings": [{"canonical_semantic": "engagement"}],
+                    },
+                    {
+                        "id": "engagement-read",
+                        "type": "executive_read",
+                        "bindings": [],
+                        "presentation": {"region": "insight"},
+                    },
+                ],
+            }
+        ],
+        "metadata": {"authoring_surface": "report_studio"},
+    }
+
+
 def _template_payload(workspace_id: int, *, spec_json: dict | None = None) -> dict:
     return {
         "workspace_id": workspace_id,
@@ -226,6 +280,117 @@ def test_create_version(client: TestClient) -> None:
     assert version["version_number"] == 1
     assert version["schema_version"] == "1.0"
     assert version["notes"] == "Initial draft."
+
+
+def test_report_spec_capabilities_endpoint_is_authoritative(client: TestClient) -> None:
+    refs = _seed_identity()
+    _authorize(refs["admin_id"])
+
+    response = client.get("/report-spec/capabilities")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["contract_version"] == "1.0"
+    assert payload["schema_version"] == "1.0"
+    assert "metric_chart_source_split" in {layout["id"] for layout in payload["layouts"]}
+    blocks = {block["id"]: block for block in payload["block_types"]}
+    assert blocks["metric_hero"]["binding_requirement"] == "required"
+    assert blocks["executive_read"]["binding_requirement"] == "optional"
+    assert "executive_insights" not in {
+        semantic["id"] for semantic in payload["canonical_semantics"]
+    }
+    assert payload["editable_content"] == {
+        "block_fields": ["label", "title", "subtitle", "description", "text", "prefix", "suffix"],
+        "slide_fields": ["title", "eyebrow", "subtitle"],
+        "representation": "top_level_fields",
+    }
+
+
+def test_studio_engagement_spec_version_persists_and_reloads(client: TestClient) -> None:
+    refs = _seed_identity()
+    _authorize(refs["admin_id"])
+    template = _create_template(client, refs["workspace_id"])
+    spec = _studio_engagement_spec()
+
+    create_response = client.post(
+        f"/report-templates/{template['id']}/versions",
+        json={"spec_json": spec},
+    )
+
+    assert create_response.status_code == 201, create_response.text
+    created = create_response.json()
+    reload_response = client.get(
+        f"/report-templates/{template['id']}/versions/{created['id']}"
+    )
+    assert reload_response.status_code == 200
+    persisted = reload_response.json()["spec_json"]
+    assert persisted["slides"][0]["layout"] == "metric_chart_source_split"
+    assert [block["type"] for block in persisted["slides"][0]["blocks"]] == [
+        "metric_hero",
+        "timeseries_chart",
+        "source_split",
+        "executive_read",
+    ]
+    assert persisted["slides"][0]["blocks"][0]["bindings"][0]["canonical_semantic"] == "engagement"
+    assert persisted["slides"][0]["blocks"][3]["bindings"] == []
+
+
+def test_studio_editable_label_style_and_binding_persist_and_reload(client: TestClient) -> None:
+    refs = _seed_identity()
+    _authorize(refs["admin_id"])
+    template = _create_template(client, refs["workspace_id"])
+    spec = _studio_engagement_spec()
+    hero = spec["slides"][0]["blocks"][0]
+    hero.update({"label": "E2E Engagement Total", "presentation": {"borderRadius": 16}})
+
+    create_response = client.post(
+        f"/report-templates/{template['id']}/versions",
+        json={"spec_json": spec},
+    )
+
+    assert create_response.status_code == 201, create_response.text
+    version_id = create_response.json()["id"]
+    persisted = client.get(f"/report-templates/{template['id']}/versions/{version_id}").json()["spec_json"]
+    persisted_hero = persisted["slides"][0]["blocks"][0]
+
+    assert persisted_hero["bindings"][0]["canonical_semantic"] == "engagement"
+    assert persisted_hero["presentation"]["borderRadius"] == 16
+    assert persisted_hero["label"] == "E2E Engagement Total"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_error"),
+    [
+        (
+            lambda spec: spec["slides"][0]["blocks"][0].update({"bindings": []}),
+            "MISSING_DATA_BINDING",
+        ),
+        (
+            lambda spec: spec["slides"][0]["blocks"][3].update(
+                {"bindings": [{"canonical_semantic": "executive_insights"}]}
+            ),
+            "UNKNOWN_CANONICAL_BINDING",
+        ),
+    ],
+)
+def test_studio_engagement_spec_malformed_versions_are_rejected(
+    client: TestClient,
+    mutate,
+    expected_error: str,
+) -> None:
+    refs = _seed_identity()
+    _authorize(refs["admin_id"])
+    template = _create_template(client, refs["workspace_id"])
+    spec = _studio_engagement_spec()
+    mutate(spec)
+
+    response = client.post(
+        f"/report-templates/{template['id']}/versions",
+        json={"spec_json": spec},
+    )
+
+    assert response.status_code == 400
+    assert expected_error in response.json()["detail"]["message"]
 
 
 def test_reportspec_round_trip_integrity(client: TestClient) -> None:
@@ -454,6 +619,207 @@ def test_authorization_boundaries(client: TestClient) -> None:
     _authorize(refs["admin_id"], is_admin=True)
     allowed = client.get("/report-templates")
     assert allowed.status_code == 200
+
+
+def _seed_published_catalog_cases(refs: dict[str, int]) -> dict[str, int]:
+    now = datetime.now(timezone.utc)
+    db = SessionLocal()
+    try:
+        foreign_workspace = Workspace(name="Foreign Template Workspace")
+        db.add(foreign_workspace)
+        db.flush()
+
+        def add_template(
+            *,
+            name: str,
+            slug: str,
+            workspace_id: int | None,
+            status: str,
+            published: bool,
+            archived: bool = False,
+            active_draft: bool = False,
+        ) -> tuple[ReportTemplate, ReportTemplateVersion]:
+            spec = _studio_engagement_spec()
+            spec["name"] = name
+            spec["datasource_requirements"].update(
+                {
+                    "supported_modes": ["multi_source"],
+                    "required_source_count": 2,
+                    "optional_canonical_semantics": ["reach"],
+                }
+            )
+            template = ReportTemplate(
+                workspace_id=workspace_id,
+                name=name,
+                description=f"{name} description",
+                slug=slug,
+                status=status,
+                generation_mode="manual_template",
+                template_type="multi_source_social",
+                # Deliberately differs from the immutable version; the catalog
+                # must describe what D5F-A will execute, not mutable editor state.
+                datasource_requirements={"supported_modes": ["meta_ads"]},
+                metadata_json={"editor_only": True},
+                archived_at=now if archived else None,
+            )
+            db.add(template)
+            db.flush()
+            version = ReportTemplateVersion(
+                report_template_id=template.id,
+                version_number=1,
+                schema_version="1.0",
+                spec_json=spec,
+                notes="Must not leak",
+                change_summary="Must not leak",
+                published_at=now if published else None,
+            )
+            db.add(version)
+            db.flush()
+            template.active_version_id = version.id
+            template.published_version_id = version.id if published else None
+            if active_draft:
+                draft = ReportTemplateVersion(
+                    report_template_id=template.id,
+                    version_number=2,
+                    schema_version="1.0",
+                    spec_json={**spec, "name": f"{name} draft"},
+                )
+                db.add(draft)
+                db.flush()
+                template.active_version_id = draft.id
+            return template, version
+
+        global_template, _ = add_template(
+            name="Global Published",
+            slug="global-published",
+            workspace_id=None,
+            status="published",
+            published=True,
+        )
+        workspace_template, workspace_version = add_template(
+            name="Workspace Published With Draft",
+            slug="workspace-published-with-draft",
+            workspace_id=refs["workspace_id"],
+            status="draft",
+            published=True,
+            active_draft=True,
+        )
+        draft_template, _ = add_template(
+            name="Draft Only",
+            slug="draft-only",
+            workspace_id=refs["workspace_id"],
+            status="draft",
+            published=False,
+        )
+        archived_template, _ = add_template(
+            name="Archived Published",
+            slug="archived-published",
+            workspace_id=refs["workspace_id"],
+            status="archived",
+            published=True,
+            archived=True,
+        )
+        foreign_template, _ = add_template(
+            name="Foreign Published",
+            slug="foreign-published",
+            workspace_id=foreign_workspace.id,
+            status="published",
+            published=True,
+        )
+        db.commit()
+        return {
+            "global": global_template.id,
+            "workspace": workspace_template.id,
+            "workspace_version": workspace_version.id,
+            "draft": draft_template.id,
+            "archived": archived_template.id,
+            "foreign": foreign_template.id,
+            "foreign_workspace": foreign_workspace.id,
+        }
+    finally:
+        db.close()
+
+
+def test_published_catalog_is_safe_for_normal_users_and_workspace_scoped(client: TestClient) -> None:
+    refs = _seed_identity()
+    cases = _seed_published_catalog_cases(refs)
+    _authorize(refs["member_id"], is_admin=False)
+
+    response = client.get(
+        "/report-templates/published",
+        params={"workspace_id": refs["workspace_id"]},
+    )
+
+    assert response.status_code == 200
+    items = {item["template_id"]: item for item in response.json()}
+    assert set(items) == {cases["global"], cases["workspace"]}
+    selected = items[cases["workspace"]]
+    assert selected["id"] == cases["workspace"]
+    assert selected["status"] == "published"
+    assert selected["scope"] == "workspace"
+    assert selected["published_version_id"] == cases["workspace_version"]
+    assert selected["published_version"] == {
+        "id": cases["workspace_version"],
+        "version_number": 1,
+        "schema_version": "1.0",
+    }
+    assert selected["supported_modes"] == ["multi_source"]
+    assert selected["required_source_count"] == 2
+    assert selected["minimum_source_count"] == 2
+    assert selected["required_canonical_semantics"] == ["engagement"]
+    assert selected["optional_canonical_semantics"] == ["reach"]
+    assert selected["catalog_required"] is True
+    assert selected["datasource_requirements"]["supported_modes"] == ["multi_source"]
+    assert "spec_json" not in selected
+    assert "active_version_id" not in selected
+    assert "created_by_user_id" not in selected
+    assert "metadata" not in selected
+    assert cases["draft"] not in items
+    assert cases["archived"] not in items
+    assert cases["foreign"] not in items
+
+    forbidden_scope = client.get(
+        "/report-templates/published",
+        params={"workspace_id": cases["foreign_workspace"]},
+    )
+    assert forbidden_scope.status_code == 403
+
+
+def test_published_catalog_authentication_and_admin_authoring_boundaries(client: TestClient) -> None:
+    refs = _seed_identity()
+    cases = _seed_published_catalog_cases(refs)
+
+    unauthenticated = client.get("/report-templates/published")
+    assert unauthenticated.status_code == 401
+
+    _authorize(refs["member_id"], is_admin=False)
+    assert client.get("/report-templates/published").status_code == 200
+    assert client.get("/report-templates").status_code == 403
+    assert client.get(f"/report-templates/{cases['workspace']}").status_code == 403
+    assert client.patch(
+        f"/report-templates/{cases['workspace']}", json={"name": "Forbidden"}
+    ).status_code == 403
+    assert client.get(
+        f"/report-templates/{cases['workspace']}/versions"
+    ).status_code == 403
+    assert client.post(
+        f"/report-templates/{cases['workspace']}/versions",
+        json={"spec_json": _studio_engagement_spec()},
+    ).status_code == 403
+    assert client.post(
+        f"/report-templates/{cases['workspace']}/publish",
+        json={"version_id": cases["workspace_version"]},
+    ).status_code == 403
+    assert client.post(
+        f"/report-templates/{cases['workspace']}/archive"
+    ).status_code == 403
+    assert client.post(
+        "/report-templates", json=_template_payload(refs["workspace_id"])
+    ).status_code == 403
+
+    _authorize(refs["admin_id"], is_admin=True)
+    assert client.get("/report-templates/published").status_code == 200
+    assert client.get("/report-templates").status_code == 200
 
 
 def test_report_model_can_store_template_traceability() -> None:

@@ -833,6 +833,8 @@ def test_optional_snapshot_fields_preserve_phase_one_idempotency_hash(factory):
     original_payload.pop("idempotency_key")
     original_payload["configuration"].pop("branding")
     original_payload["configuration"].pop("builder_contract")
+    original_payload["configuration"].pop("report_template_id")
+    original_payload["configuration"].pop("report_template_version_id")
     original_hash = hashlib.sha256(json.dumps(original_payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     assert generation_module._command_hash(command) == original_hash
 

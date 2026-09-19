@@ -11,28 +11,15 @@ from .canonical_metric_catalog import CANONICAL_AGGREGATION_RULES
 
 REPORTSPEC_SCHEMA_VERSION = "1.0"
 SUPPORTED_REPORTSPEC_SCHEMA_VERSIONS: tuple[str, ...] = (REPORTSPEC_SCHEMA_VERSION,)
+REPORTSPEC_CAPABILITIES_CONTRACT_VERSION = "1.0"
 
 GenerationMode = Literal["template", "ai", "legacy_migration"]
+BindingRequirement = Literal["required", "optional", "prohibited"]
 
 REPORTSPEC_GENERATION_MODES: tuple[str, ...] = (
     "template",
     "ai",
     "legacy_migration",
-)
-
-REPORTSPEC_BLOCK_TYPES: tuple[str, ...] = (
-    "metric_hero",
-    "timeseries_chart",
-    "source_contribution",
-    "source_split",
-    "platform_metric",
-    "insight",
-    "executive_insight",
-    "content_performance",
-    "content_ranking",
-    "recommendation",
-    "text",
-    "cover_branding",
 )
 
 REPORTSPEC_SLIDE_TYPES: tuple[str, ...] = (
@@ -46,12 +33,18 @@ REPORTSPEC_SLIDE_TYPES: tuple[str, ...] = (
 
 REPORTSPEC_LAYOUTS: tuple[str, ...] = (
     "cover",
-    "metric_focus",
-    "metric_with_timeseries",
+    "metric_chart",
+    "metric_chart_source_split",
+    "platform_comparison",
+    "source_specific_metric",
+    "audience_split",
     "source_split",
     "content_ranking",
     "executive_summary",
     "recommendations",
+    "multi_kpi_dashboard",
+    "metric_focus",
+    "metric_with_timeseries",
     "text",
 )
 
@@ -76,32 +69,114 @@ REPORTSPEC_VISIBILITY_OPERATORS: tuple[str, ...] = (
     "not_in",
 )
 
+VISIBILITY_RULES_REQUIRING_CANONICAL_SEMANTIC: frozenset[str] = frozenset(
+    {"available", "unsupported", "missing", "empty", "not_requested"}
+)
+VISIBILITY_RULES_REQUIRING_COMPARISON: frozenset[str] = frozenset(
+    {"source_count", "minimum_contributions"}
+)
+
 REPORTSPEC_DATASOURCE_MODES: tuple[str, ...] = (
     "all",
     "any",
     "exactly",
     "single",
 )
-
-DATA_BOUND_BLOCK_TYPES: tuple[str, ...] = (
-    "metric_hero",
-    "timeseries_chart",
-    "source_contribution",
-    "source_split",
-    "platform_metric",
-    "insight",
-    "executive_insight",
-    "content_performance",
-    "content_ranking",
-    "recommendation",
+REPORTSPEC_DATASOURCE_PRODUCTION_MODES: tuple[str, ...] = (
+    "dataset",
+    "meta_pages",
+    "facebook_pages",
+    "instagram_business",
+    "meta_ads",
+    "shopify",
+    "multi_source",
 )
 
+REPORTSPEC_CANONICAL_SEMANTIC_CATEGORIES: tuple[str, ...] = tuple(
+    sorted({rule["metric_family"] for rule in CANONICAL_AGGREGATION_RULES.values()})
+)
+
+# These are authored presentation values, not provider data.  They intentionally
+# remain top-level block properties so the ReportSpec is renderer- and
+# agent-friendly and does not introduce a second `content` representation.
+REPORTSPEC_BLOCK_CONTENT_FIELDS: tuple[str, ...] = (
+    "label",
+    "title",
+    "subtitle",
+    "description",
+    "text",
+    "prefix",
+    "suffix",
+)
+REPORTSPEC_SLIDE_CONTENT_FIELDS: tuple[str, ...] = ("title", "eyebrow", "subtitle")
+
+
+@dataclass(frozen=True)
+class BlockTypeCapability:
+    id: str
+    binding_requirement: BindingRequirement
+    allowed_canonical_semantic_categories: tuple[str, ...] = ()
+    compatible_layouts: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "binding_requirement": self.binding_requirement,
+            "allowed_canonical_semantic_categories": list(
+                self.allowed_canonical_semantic_categories
+            ),
+            "compatible_layouts": list(self.compatible_layouts),
+        }
+
+
+_ALL_CANONICAL_CATEGORIES = REPORTSPEC_CANONICAL_SEMANTIC_CATEGORIES
+REPORTSPEC_BLOCK_CAPABILITIES: tuple[BlockTypeCapability, ...] = (
+    BlockTypeCapability("metric_hero", "required", _ALL_CANONICAL_CATEGORIES),
+    BlockTypeCapability("timeseries_chart", "required", _ALL_CANONICAL_CATEGORIES),
+    BlockTypeCapability("bar_chart", "required", _ALL_CANONICAL_CATEGORIES),
+    BlockTypeCapability("source_contribution", "required", _ALL_CANONICAL_CATEGORIES),
+    BlockTypeCapability("source_split", "required", _ALL_CANONICAL_CATEGORIES),
+    BlockTypeCapability("platform_metric", "required", _ALL_CANONICAL_CATEGORIES),
+    BlockTypeCapability("insight", "optional", _ALL_CANONICAL_CATEGORIES),
+    BlockTypeCapability("executive_read", "optional", _ALL_CANONICAL_CATEGORIES),
+    BlockTypeCapability(
+        "executive_insight",
+        "optional",
+        _ALL_CANONICAL_CATEGORIES,
+        ("executive_summary",),
+    ),
+    BlockTypeCapability("content_card", "required", ("content",), ("content_ranking",)),
+    BlockTypeCapability(
+        "content_performance",
+        "required",
+        ("content",),
+        ("content_ranking", "source_split"),
+    ),
+    BlockTypeCapability("content_ranking", "required", ("content",), ("content_ranking",)),
+    BlockTypeCapability(
+        "recommendation",
+        "optional",
+        _ALL_CANONICAL_CATEGORIES,
+        ("recommendations",),
+    ),
+    BlockTypeCapability("multi_kpi", "required", _ALL_CANONICAL_CATEGORIES),
+    BlockTypeCapability("text", "prohibited"),
+    BlockTypeCapability("cover_branding", "prohibited", compatible_layouts=("cover",)),
+)
+
+REPORTSPEC_BLOCK_CAPABILITIES_BY_ID: dict[str, BlockTypeCapability] = {
+    capability.id: capability for capability in REPORTSPEC_BLOCK_CAPABILITIES
+}
+REPORTSPEC_BLOCK_TYPES: tuple[str, ...] = tuple(REPORTSPEC_BLOCK_CAPABILITIES_BY_ID)
+DATA_BOUND_BLOCK_TYPES: tuple[str, ...] = tuple(
+    capability.id
+    for capability in REPORTSPEC_BLOCK_CAPABILITIES
+    if capability.binding_requirement == "required"
+)
 BLOCK_LAYOUT_COMPATIBILITY: dict[str, tuple[str, ...]] = {
-    "cover_branding": ("cover",),
-    "content_ranking": ("content_ranking",),
-    "content_performance": ("content_ranking", "source_split"),
-    "executive_insight": ("executive_summary",),
-    "recommendation": ("recommendations",),
+    capability.id: capability.compatible_layouts
+    for capability in REPORTSPEC_BLOCK_CAPABILITIES
+    if capability.compatible_layouts
 }
 
 RAW_PROVIDER_FIELD_NAMES: frozenset[str] = frozenset(
@@ -197,6 +272,13 @@ class VisibilityRule:
 class BlockSpec:
     id: str
     type: str
+    label: str | None = None
+    title: str | None = None
+    subtitle: str | None = None
+    description: str | None = None
+    text: str | None = None
+    prefix: str | None = None
+    suffix: str | None = None
     bindings: tuple[DataBinding, ...] = ()
     presentation: dict[str, Any] = field(default_factory=dict)
     visibility_rules: tuple[VisibilityRule, ...] = ()
@@ -204,7 +286,7 @@ class BlockSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.id,
             "type": self.type,
             "bindings": [binding.as_dict() for binding in self.bindings],
@@ -213,6 +295,13 @@ class BlockSpec:
             "ai_config": dict(self.ai_config) if isinstance(self.ai_config, Mapping) else None,
             "metadata": dict(self.metadata),
         }
+        # Omit absent optional content fields to keep old ReportSpecs stable;
+        # preserve authored empty strings when a field was explicitly cleared.
+        for field_name in REPORTSPEC_BLOCK_CONTENT_FIELDS:
+            value = getattr(self, field_name)
+            if value is not None:
+                payload[field_name] = value
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> BlockSpec:
@@ -235,6 +324,13 @@ class BlockSpec:
         return cls(
             id=str(payload.get("id") or "").strip(),
             type=str(payload.get("type") or "").strip(),
+            label=_content_str(payload.get("label")),
+            title=_content_str(payload.get("title")),
+            subtitle=_content_str(payload.get("subtitle")),
+            description=_content_str(payload.get("description")),
+            text=_content_str(payload.get("text")),
+            prefix=_content_str(payload.get("prefix")),
+            suffix=_content_str(payload.get("suffix")),
             bindings=tuple(parsed_bindings),
             presentation=dict(presentation) if isinstance(presentation, Mapping) else {},
             visibility_rules=tuple(
@@ -403,6 +499,82 @@ def collect_report_spec_bindings(spec: ReportSpec) -> tuple[DataBinding, ...]:
         for block in slide.blocks:
             bindings.extend(block.bindings)
     return tuple(bindings)
+
+
+def report_spec_capabilities() -> dict[str, Any]:
+    """Return the versioned editor contract backed by the validator registries."""
+    canonical_semantics = [
+        {
+            "id": semantic,
+            "category": rule["metric_family"],
+            "aggregation_method": rule["aggregation_method"],
+            "comparability_group": rule["comparability_group"],
+        }
+        for semantic, rule in CANONICAL_AGGREGATION_RULES.items()
+    ]
+    block_types = [capability.as_dict() for capability in REPORTSPEC_BLOCK_CAPABILITIES]
+    return {
+        "contract_version": REPORTSPEC_CAPABILITIES_CONTRACT_VERSION,
+        "schema_version": REPORTSPEC_SCHEMA_VERSION,
+        "supported_schema_versions": list(SUPPORTED_REPORTSPEC_SCHEMA_VERSIONS),
+        "generation_modes": list(REPORTSPEC_GENERATION_MODES),
+        "slide_types": [{"id": slide_type} for slide_type in REPORTSPEC_SLIDE_TYPES],
+        "canonical_semantics": canonical_semantics,
+        "canonical_semantic_categories": list(REPORTSPEC_CANONICAL_SEMANTIC_CATEGORIES),
+        "layouts": [{"id": layout} for layout in REPORTSPEC_LAYOUTS],
+        "block_types": block_types,
+        "block_binding_requirements": {
+            capability.id: capability.binding_requirement
+            for capability in REPORTSPEC_BLOCK_CAPABILITIES
+        },
+        "binding_contract": {
+            "field": "bindings",
+            "shape": "array",
+            "minimum_items_when_required": 1,
+            "item_required_fields": ["canonical_semantic"],
+            "item_fields": [
+                "canonical_semantic",
+                "metric_path",
+                "source_constraint",
+                "timeseries_selector",
+                "aggregation_selector",
+                "ranking_selector",
+                "metadata",
+            ],
+            "legacy_input_aliases": ["binding"],
+            "named_binding_objects_supported": False,
+        },
+        "editable_content": {
+            "block_fields": list(REPORTSPEC_BLOCK_CONTENT_FIELDS),
+            "slide_fields": list(REPORTSPEC_SLIDE_CONTENT_FIELDS),
+            "representation": "top_level_fields",
+        },
+        "visibility_rules": {
+            "rule_types": list(REPORTSPEC_VISIBILITY_RULE_TYPES),
+            "operators": list(REPORTSPEC_VISIBILITY_OPERATORS),
+            "canonical_semantic_required_for": sorted(
+                VISIBILITY_RULES_REQUIRING_CANONICAL_SEMANTIC
+            ),
+            "comparison_required_for": sorted(VISIBILITY_RULES_REQUIRING_COMPARISON),
+            "fields": ["rule_type", "canonical_semantic", "operator", "value", "metadata"],
+        },
+        "datasource_requirements": {
+            "shape": "object",
+            "modes": list(REPORTSPEC_DATASOURCE_MODES),
+            "supported_production_modes": list(REPORTSPEC_DATASOURCE_PRODUCTION_MODES),
+            "fields": {
+                "mode": "optional_mode",
+                "sources": "optional_non_empty_unique_string_array",
+                "minimum_source_count": "optional_non_negative_integer",
+                "required_source_count": "optional_non_negative_integer",
+                "supported_modes": "optional_non_empty_unique_production_mode_array",
+                "catalog_required": "optional_boolean",
+                "required_canonical_semantics": "optional_canonical_semantic_array",
+                "optional_canonical_semantics": "optional_canonical_semantic_array",
+            },
+            "additional_properties_allowed": True,
+        },
+    }
 
 
 def validate_report_spec(spec: ReportSpec | Mapping[str, Any]) -> ReportSpecValidationResult:
@@ -730,6 +902,13 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
+def _content_str(value: Any) -> str | None:
+    """Decode an optional authored field without turning an empty value into null."""
+    if value is None:
+        return None
+    return str(value)
+
+
 def _int_or_zero(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -856,7 +1035,8 @@ def _validate_block(
     else:
         seen_block_ids.add(block.id)
 
-    if block.type not in REPORTSPEC_BLOCK_TYPES:
+    capability = REPORTSPEC_BLOCK_CAPABILITIES_BY_ID.get(block.type)
+    if capability is None:
         errors.append(
             ReportSpecValidationError(
                 code="INVALID_BLOCK_TYPE",
@@ -864,7 +1044,7 @@ def _validate_block(
                 path=f"{path}.type",
             )
         )
-    compatible_layouts = BLOCK_LAYOUT_COMPATIBILITY.get(block.type)
+    compatible_layouts = capability.compatible_layouts if capability is not None else ()
     if compatible_layouts and slide.layout not in compatible_layouts:
         errors.append(
             ReportSpecValidationError(
@@ -873,7 +1053,7 @@ def _validate_block(
                 path=f"{path}.type",
             )
         )
-    if block.type in DATA_BOUND_BLOCK_TYPES and not block.bindings:
+    if capability is not None and capability.binding_requirement == "required" and not block.bindings:
         errors.append(
             ReportSpecValidationError(
                 code="MISSING_DATA_BINDING",
@@ -881,8 +1061,21 @@ def _validate_block(
                 path=f"{path}.bindings",
             )
         )
+    if capability is not None and capability.binding_requirement == "prohibited" and block.bindings:
+        errors.append(
+            ReportSpecValidationError(
+                code="PROHIBITED_DATA_BINDING",
+                message=f"Block type {block.type!r} does not accept canonical data bindings.",
+                path=f"{path}.bindings",
+            )
+        )
     for binding_index, binding in enumerate(block.bindings):
-        _validate_binding(binding, errors, f"{path}.bindings[{binding_index}]")
+        _validate_binding(
+            binding,
+            errors,
+            f"{path}.bindings[{binding_index}]",
+            capability=capability,
+        )
     _validate_visibility_rules(block.visibility_rules, errors, f"{path}.visibility_rules")
 
 
@@ -890,6 +1083,8 @@ def _validate_binding(
     binding: DataBinding,
     errors: list[ReportSpecValidationError],
     path: str,
+    *,
+    capability: BlockTypeCapability | None = None,
 ) -> None:
     if not binding.canonical_semantic:
         errors.append(
@@ -907,6 +1102,19 @@ def _validate_binding(
                 path=f"{path}.canonical_semantic",
             )
         )
+    elif capability is not None and capability.allowed_canonical_semantic_categories:
+        semantic_category = CANONICAL_AGGREGATION_RULES[binding.canonical_semantic]["metric_family"]
+        if semantic_category not in capability.allowed_canonical_semantic_categories:
+            errors.append(
+                ReportSpecValidationError(
+                    code="INVALID_CANONICAL_BINDING_CATEGORY",
+                    message=(
+                        f"Block type {capability.id!r} does not accept canonical semantic "
+                        f"{binding.canonical_semantic!r} from category {semantic_category!r}."
+                    ),
+                    path=f"{path}.canonical_semantic",
+                )
+            )
     binding_payload = binding.as_dict()
     binding_payload.pop("canonical_semantic", None)
     if _contains_raw_provider_reference(binding_payload):
@@ -950,7 +1158,7 @@ def _validate_visibility_rules(
                     path=f"{rule_path}.canonical_semantic",
                 )
             )
-        if rule.rule_type in {"available", "unsupported", "missing", "empty", "not_requested"} and not rule.canonical_semantic:
+        if rule.rule_type in VISIBILITY_RULES_REQUIRING_CANONICAL_SEMANTIC and not rule.canonical_semantic:
             errors.append(
                 ReportSpecValidationError(
                     code="MALFORMED_VISIBILITY_RULE",
@@ -958,7 +1166,7 @@ def _validate_visibility_rules(
                     path=f"{rule_path}.canonical_semantic",
                 )
             )
-        if rule.rule_type in {"source_count", "minimum_contributions"}:
+        if rule.rule_type in VISIBILITY_RULES_REQUIRING_COMPARISON:
             if rule.operator is None:
                 errors.append(
                     ReportSpecValidationError(
@@ -1038,6 +1246,54 @@ def _validate_datasource_requirements(
             )
         )
 
+    required_source_count = datasource_requirements.get("required_source_count")
+    if required_source_count is not None and (
+        not isinstance(required_source_count, int)
+        or isinstance(required_source_count, bool)
+        or required_source_count < 0
+    ):
+        errors.append(
+            ReportSpecValidationError(
+                code="MALFORMED_DATASOURCE_REQUIREMENTS",
+                message="datasource_requirements.required_source_count must be a non-negative integer.",
+                path="datasource_requirements.required_source_count",
+            )
+        )
+    if (
+        isinstance(required_source_count, int)
+        and not isinstance(required_source_count, bool)
+        and isinstance(minimum_source_count, int)
+        and not isinstance(minimum_source_count, bool)
+        and required_source_count < minimum_source_count
+    ):
+        errors.append(
+            ReportSpecValidationError(
+                code="MALFORMED_DATASOURCE_REQUIREMENTS",
+                message="required_source_count cannot be lower than minimum_source_count.",
+                path="datasource_requirements.required_source_count",
+            )
+        )
+
+    supported_modes = datasource_requirements.get("supported_modes")
+    if supported_modes is not None:
+        if (
+            not isinstance(supported_modes, list)
+            or not supported_modes
+            or any(
+                not isinstance(mode, str)
+                or mode.strip() not in REPORTSPEC_DATASOURCE_PRODUCTION_MODES
+                for mode in supported_modes
+            )
+            or len(set(supported_modes)) != len(supported_modes)
+        ):
+            errors.append(
+                ReportSpecValidationError(
+                    code="MALFORMED_DATASOURCE_REQUIREMENTS",
+                    message="datasource_requirements.supported_modes must contain unique supported production modes.",
+                    path="datasource_requirements.supported_modes",
+                )
+            )
+
     catalog_required = datasource_requirements.get("catalog_required")
     if catalog_required is not None and not isinstance(catalog_required, bool):
         errors.append(
@@ -1077,13 +1333,20 @@ def _validate_datasource_requirements(
 
 __all__ = [
     "BLOCK_LAYOUT_COMPATIBILITY",
+    "BindingRequirement",
+    "BlockTypeCapability",
     "DATA_BOUND_BLOCK_TYPES",
     "FACEBOOK_INSTAGRAM_10_REFERENCE_REPORTSPEC",
     "GenerationMode",
     "InvalidReportSpecError",
     "RAW_PROVIDER_FIELD_NAMES",
     "REPORTSPEC_BLOCK_TYPES",
+    "REPORTSPEC_BLOCK_CAPABILITIES",
+    "REPORTSPEC_BLOCK_CAPABILITIES_BY_ID",
+    "REPORTSPEC_CANONICAL_SEMANTIC_CATEGORIES",
+    "REPORTSPEC_CAPABILITIES_CONTRACT_VERSION",
     "REPORTSPEC_DATASOURCE_MODES",
+    "REPORTSPEC_DATASOURCE_PRODUCTION_MODES",
     "REPORTSPEC_GENERATION_MODES",
     "REPORTSPEC_LAYOUTS",
     "REPORTSPEC_SCHEMA_VERSION",
@@ -1102,6 +1365,7 @@ __all__ = [
     "collect_report_spec_bindings",
     "facebook_instagram_10_reference_reportspec",
     "report_spec_from_json",
+    "report_spec_capabilities",
     "report_spec_to_json",
     "validate_report_spec_datasource_requirements",
     "validate_report_spec",

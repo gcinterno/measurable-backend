@@ -167,6 +167,10 @@ def build_report(command: GenerateReportCommand, prepared: PreparedGeneration) -
     # Existing builders still share helpers with main.py. Keep one implementation during extraction.
     from . import main as providers
 
+    if command.configuration.report_spec is not None:
+        from .report_spec_generation import build_report_spec_report
+
+        return build_report_spec_report(command, prepared, providers)
     dataset = prepared.datasets[command.sources[0].dataset_id]
     parameters = BuilderParameters.from_command(command)
     builder = command.configuration.builder

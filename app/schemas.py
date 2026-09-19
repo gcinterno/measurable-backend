@@ -1547,6 +1547,8 @@ class MultiSourceReportCreateRequest(BaseModel):
     ai_mode: Literal["standard", "agents"] = "standard"
     locale: str = "en"
     title: Optional[str] = None
+    report_template_id: Optional[int] = None
+    report_template_version_id: Optional[int] = None
 
 
 class ReportCreateIn(BaseModel):
@@ -1556,6 +1558,8 @@ class ReportCreateIn(BaseModel):
     requested_slides: Optional[int] = None
     slide_count: Optional[int] = None
     ai_mode: Literal["standard", "agents"] = "standard"
+    report_template_id: Optional[int] = None
+    report_template_version_id: Optional[int] = None
 
 
 class MetaPagesReportCreateIn(BaseModel):
@@ -1568,6 +1572,8 @@ class MetaPagesReportCreateIn(BaseModel):
     requested_slides: Optional[int] = None
     slide_count: Optional[int] = None
     ai_mode: Literal["standard", "agents"] = "standard"
+    report_template_id: Optional[int] = None
+    report_template_version_id: Optional[int] = None
 
 
 class InstagramBusinessReportCreateIn(BaseModel):
@@ -1584,6 +1590,8 @@ class InstagramBusinessReportCreateIn(BaseModel):
     requested_slides: Optional[int] = None
     slide_count: Optional[int] = None
     ai_mode: Literal["standard", "agents"] = "standard"
+    report_template_id: Optional[int] = None
+    report_template_version_id: Optional[int] = None
 
 
 class MetaAdsReportCreateIn(BaseModel):
@@ -1602,12 +1610,17 @@ class MetaAdsReportCreateIn(BaseModel):
     slides: Optional[int] = None
     template: Optional[str] = None
     ai_mode: Optional[str] = "standard"
+    report_template_id: Optional[int] = None
+    report_template_version_id: Optional[int] = None
 
 
 class ReportOut(BaseSchema):
     id: int
     workspace_id: int
     dataset_id: int
+    report_template_id: Optional[int] = None
+    report_template_version_id: Optional[int] = None
+    report_spec: Optional[dict] = None
     title: str
     status: Optional[str] = None
     folder_id: Optional[str] = None
@@ -1680,6 +1693,9 @@ class ReportVersionOut(BaseSchema):
     id: int
     version_id: Optional[int] = None
     report_id: int
+    report_template_id: Optional[int] = None
+    report_template_version_id: Optional[int] = None
+    report_spec: Optional[dict] = None
     version: int
     folder_id: Optional[str] = None
     folder_name: Optional[str] = None

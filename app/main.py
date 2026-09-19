@@ -194,6 +194,7 @@ from .models import (
     ReportBlock,
     ReportShare,
     ReportSource,
+    ReportTemplateVersion,
     ReportVersion,
     Schedule,
     ShopifyConnection,
@@ -2540,6 +2541,20 @@ def _report_sources_out(db: Session, *, report_id: int) -> list[ReportSourceRead
     return [ReportSourceRead.model_validate(source) for source in report_sources]
 
 
+def _published_report_spec_for_report(db: Session, report: Report) -> dict[str, Any] | None:
+    """Expose only the immutable published spec used by this generated report."""
+    if report.report_template_id is None or report.report_template_version_id is None:
+        return None
+    version = db.get(ReportTemplateVersion, report.report_template_version_id)
+    if (
+        version is None
+        or version.report_template_id != report.report_template_id
+        or version.published_at is None
+    ):
+        return None
+    return dict(version.spec_json or {})
+
+
 def _timeframe_log_payload(
     report: Report,
     *,
@@ -2597,6 +2612,9 @@ def _report_version_out(
         id=report_version.id,
         version_id=report_version.id,
         report_id=report_version.report_id,
+        report_template_id=report.report_template_id,
+        report_template_version_id=report.report_template_version_id,
+        report_spec=_published_report_spec_for_report(db, report),
         version=report_version.version,
         folder_id=report.folder_id,
         folder_name=report.folder_name,
@@ -22833,6 +22851,8 @@ def _generate_manual_report(
                 builder=builder,
                 requested_slides=payload.requested_slides if payload.requested_slides is not None else payload.slide_count,
                 template=getattr(payload, "template", None),
+                report_template_id=getattr(payload, "report_template_id", None),
+                report_template_version_id=getattr(payload, "report_template_version_id", None),
             ),
             period=ReportingPeriod(
                 timeframe=str(timeframe.get("key") or getattr(payload, "timeframe", None) or "last_28_days"),
@@ -25022,6 +25042,9 @@ def get_report(
         id=report.id,
         workspace_id=report.workspace_id,
         dataset_id=report.dataset_id,
+        report_template_id=report.report_template_id,
+        report_template_version_id=report.report_template_version_id,
+        report_spec=_published_report_spec_for_report(db, report),
         title=report.name,
         status=_report_status(report),
         folder_id=report.folder_id,
