@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
+from fastapi import HTTPException
 from jose import JWTError, jwt
 
 from ..config import settings
@@ -54,17 +55,93 @@ def _redact_instagram_business_tokens(value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
         for key, item in value.items():
-            if key in {"access_token", "refresh_token", "authorization_code", "code"}:
-                text = str(item or "")
-                redacted[key] = f"{text[:8]}..." if text else None
+            # `error.code` is the non-secret Meta diagnostic code (for example
+            # 190 for an invalid/expired token).  Redacting every field named
+            # `code` made provider failures impossible to classify.
+            if key.lower() in {
+                "access_token",
+                "refresh_token",
+                "authorization_code",
+                "authorization",
+                "client_secret",
+                "app_secret",
+            }:
+                redacted[key] = "<redacted>" if item else None
             else:
                 redacted[key] = _redact_instagram_business_tokens(item)
         return redacted
     if isinstance(value, list):
         return [_redact_instagram_business_tokens(item) for item in value]
     if isinstance(value, str):
-        return re.sub(r"(access_token=)[^&\s]+", r"\1<redacted>", value)
+        sanitized = re.sub(
+            r"(?i)((?:access_token|refresh_token|client_secret|authorization_code)=)[^&\s]+",
+            r"\1<redacted>",
+            value,
+        )
+        return re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~-]+", r"\1<redacted>", sanitized)
     return value
+
+
+def instagram_business_login_sanitized_provider_error(
+    payload: Any,
+    *,
+    http_status: int | None,
+    stage: str,
+    endpoint: str,
+    metric_name: str | None = None,
+) -> dict[str, Any]:
+    """Extract actionable Meta diagnostics without credentials or headers."""
+    error = payload.get("error") if isinstance(payload, dict) and isinstance(payload.get("error"), dict) else {}
+    raw_message = error.get("message") if isinstance(error, dict) else None
+    if raw_message is None and not isinstance(payload, dict):
+        raw_message = payload
+    message = _truncate_instagram_business_log_value(
+        _redact_instagram_business_tokens(raw_message),
+        limit=1000,
+    )
+    return {
+        "stage": stage,
+        "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+        "endpoint": endpoint,
+        "metric": metric_name,
+        "http_status": http_status,
+        "meta_error_code": error.get("code") if isinstance(error, dict) else None,
+        "meta_error_subcode": error.get("error_subcode") if isinstance(error, dict) else None,
+        "meta_error_type": error.get("type") if isinstance(error, dict) else None,
+        "message": message,
+        "is_transient": error.get("is_transient") if isinstance(error, dict) else None,
+    }
+
+
+def _record_instagram_business_login_provider_error(
+    response_payload: dict[str, Any],
+    payload: Any,
+    *,
+    http_status: int | None,
+    stage: str,
+    endpoint: str,
+    metric_name: str | None = None,
+) -> None:
+    if http_status == 200:
+        return
+    provider_error = instagram_business_login_sanitized_provider_error(
+        payload,
+        http_status=http_status,
+        stage=stage,
+        endpoint=endpoint,
+        metric_name=metric_name,
+    )
+    response_payload["_instagram_provider_error"] = provider_error
+    logger.warning(
+        _instagram_business_log_message(
+            "INSTAGRAM_BUSINESS_LOGIN_PROVIDER_ERROR",
+            {
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                **provider_error,
+            },
+        )
+    )
 
 
 def get_missing_instagram_business_config_fields() -> list[str]:
@@ -310,10 +387,144 @@ def exchange_instagram_business_login_code_for_token(code: str) -> dict[str, Any
             str(message or "Instagram Business Login token exchange failed."),
         )
     if isinstance(payload, dict):
-        payload["_http_status_code"] = response.status_code
-        payload["_raw_body"] = _truncate_instagram_business_log_value(_redact_instagram_business_tokens(payload))
-        return payload
+        short_lived_access_token = str(payload.get("access_token") or "").strip()
+        if not short_lived_access_token:
+            raise http_error(
+                400,
+                "instagram_business_login_token_exchange_failed",
+                "Instagram Business Login did not return an access token.",
+            )
+
+        # Instagram Login authorization codes yield a one-hour token. Meta's
+        # documented /access_token exchange is required before persistence so
+        # a newly connected account remains usable beyond the initial hour.
+        base = str(settings.instagram_graph_api_base or "https://graph.instagram.com").strip().rstrip("/")
+        try:
+            long_lived_response = requests.get(
+                f"{base}/access_token",
+                params={
+                    "grant_type": "ig_exchange_token",
+                    "client_secret": _instagram_business_login_app_secret(),
+                    "access_token": short_lived_access_token,
+                },
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            logger.warning(
+                _instagram_business_log_message(
+                    "INSTAGRAM_BUSINESS_LOGIN_TOKEN_EXCHANGE_TRANSPORT_FAILED",
+                    {
+                        "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                        "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                        "stage": "long_lived_token_exchange",
+                        "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            )
+            raise http_error(
+                502,
+                "instagram_business_login_long_lived_token_exchange_failed",
+                "Instagram Business Login could not establish a durable session.",
+            ) from exc
+        try:
+            long_lived_payload = long_lived_response.json()
+        except ValueError:
+            long_lived_payload = long_lived_response.text
+        if long_lived_response.status_code != 200 or not isinstance(long_lived_payload, dict):
+            provider_error = instagram_business_login_sanitized_provider_error(
+                long_lived_payload,
+                http_status=long_lived_response.status_code,
+                stage="long_lived_token_exchange",
+                endpoint="/access_token",
+            )
+            logger.warning(
+                _instagram_business_log_message(
+                    "INSTAGRAM_BUSINESS_LOGIN_PROVIDER_ERROR",
+                    {
+                        "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                        "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                        **provider_error,
+                    },
+                )
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "instagram_business_login_long_lived_token_exchange_failed",
+                    "message": "Instagram Business Login could not establish a durable session.",
+                    "provider_error": provider_error,
+                },
+            )
+
+        long_lived_access_token = str(long_lived_payload.get("access_token") or "").strip()
+        if not long_lived_access_token:
+            raise http_error(
+                400,
+                "instagram_business_login_long_lived_token_exchange_failed",
+                "Instagram Business Login did not return a durable access token.",
+            )
+        for key in ("scope", "scopes", "permissions", "user_id"):
+            if key not in long_lived_payload and key in payload:
+                long_lived_payload[key] = payload[key]
+        long_lived_payload["_http_status_code"] = long_lived_response.status_code
+        long_lived_payload["_token_lifetime"] = "long_lived"
+        long_lived_payload["_raw_body"] = _truncate_instagram_business_log_value(
+            _redact_instagram_business_tokens(long_lived_payload)
+        )
+        return long_lived_payload
     return {"_http_status_code": response.status_code, "_raw_body": _truncate_instagram_business_log_value(payload)}
+
+
+def refresh_instagram_business_login_access_token(access_token: str) -> dict[str, Any]:
+    """Refresh a still-valid long-lived Instagram Login token."""
+    _require_instagram_business_login_config()
+    base = str(settings.instagram_graph_api_base or "https://graph.instagram.com").strip().rstrip("/")
+    response = requests.get(
+        f"{base}/refresh_access_token",
+        params={"grant_type": "ig_refresh_token", "access_token": access_token},
+        timeout=30,
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = response.text
+    if response.status_code != 200 or not isinstance(payload, dict):
+        provider_error = instagram_business_login_sanitized_provider_error(
+            payload,
+            http_status=response.status_code,
+            stage="token_refresh",
+            endpoint="/refresh_access_token",
+        )
+        logger.warning(
+            _instagram_business_log_message(
+                "INSTAGRAM_BUSINESS_LOGIN_PROVIDER_ERROR",
+                {
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
+                    **provider_error,
+                },
+            )
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "instagram_business_login_token_refresh_failed",
+                "message": "Instagram Business Login could not refresh the session.",
+                "provider_error": provider_error,
+            },
+        )
+    refreshed_access_token = str(payload.get("access_token") or "").strip()
+    if not refreshed_access_token:
+        raise http_error(
+            400,
+            "instagram_business_login_token_refresh_failed",
+            "Instagram Business Login did not return a refreshed access token.",
+        )
+    payload["_http_status_code"] = response.status_code
+    payload["_token_lifetime"] = "long_lived"
+    payload["_raw_body"] = _truncate_instagram_business_log_value(_redact_instagram_business_tokens(payload))
+    return payload
 
 
 def fetch_instagram_business_profile(access_token: str) -> dict[str, Any]:
@@ -360,26 +571,29 @@ def fetch_instagram_business_login_profile(access_token: str) -> dict[str, Any]:
     except ValueError:
         payload = response.text
     if response.status_code != 200:
+        provider_error = instagram_business_login_sanitized_provider_error(
+            payload,
+            http_status=response.status_code,
+            stage="profile_fetch",
+            endpoint="/me",
+        )
         logger.warning(
             _instagram_business_log_message(
-                "INSTAGRAM_BUSINESS_LOGIN_CONNECT_FAILED",
+                "INSTAGRAM_BUSINESS_LOGIN_PROVIDER_ERROR",
                 {
-                    "stage": "profile_fetch",
                     "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
                     "auth_type": INSTAGRAM_BUSINESS_LOGIN_AUTH_TYPE,
-                    "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
-                    "status_code": response.status_code,
-                    "response_body": _truncate_instagram_business_log_value(
-                        _redact_instagram_business_tokens(payload)
-                    ),
+                    **provider_error,
                 },
             )
         )
-        message = payload.get("error_message") if isinstance(payload, dict) else str(payload)
-        raise http_error(
-            400,
-            "instagram_business_login_profile_fetch_failed",
-            str(message or "Instagram Business Login account fetch failed."),
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "instagram_business_login_profile_fetch_failed",
+                "message": "Instagram Business Login account fetch failed.",
+                "provider_error": provider_error,
+            },
         )
     if isinstance(payload, dict):
         payload["_http_status_code"] = response.status_code
@@ -436,6 +650,14 @@ def fetch_instagram_business_login_insights_metric_with_metadata(
     response_payload["_instagram_metric_type"] = metric_type
     response_payload["_instagram_breakdown"] = breakdown
     response_payload["_instagram_timeframe"] = timeframe
+    _record_instagram_business_login_provider_error(
+        response_payload,
+        payload,
+        http_status=response.status_code,
+        stage="account_insights",
+        endpoint=f"/{instagram_user_id}/insights",
+        metric_name=metric_name,
+    )
     return response_payload
 
 
@@ -470,6 +692,13 @@ def fetch_instagram_business_login_media_page(
     )
     response_payload["_instagram_graph_host"] = INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST
     response_payload["_instagram_graph_endpoint"] = f"/{instagram_user_id}/media"
+    _record_instagram_business_login_provider_error(
+        response_payload,
+        payload,
+        http_status=response.status_code,
+        stage="media_list",
+        endpoint=f"/{instagram_user_id}/media",
+    )
     return response_payload
 
 
@@ -500,4 +729,12 @@ def fetch_instagram_business_login_media_insights_metric_with_metadata(
     response_payload["_instagram_graph_host"] = INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST
     response_payload["_instagram_graph_endpoint"] = f"/{media_id}/insights"
     response_payload["_instagram_metric_name"] = metric_name
+    _record_instagram_business_login_provider_error(
+        response_payload,
+        payload,
+        http_status=response.status_code,
+        stage="media_insights",
+        endpoint=f"/{media_id}/insights",
+        metric_name=metric_name,
+    )
     return response_payload

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -324,6 +325,65 @@ def test_instagram_business_login_connect_uses_instagram_scopes(client):
     ]
 
 
+def test_instagram_business_login_oauth_exchanges_short_lived_token_before_persistence(
+    client,
+    monkeypatch,
+):
+    calls: list[tuple[str, str, dict]] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, *, data, timeout):
+        calls.append(("POST", url, data))
+        assert data["grant_type"] == "authorization_code"
+        assert data["code"] == "one-time-code"
+        return FakeResponse(
+            200,
+            {
+                "access_token": "one-hour-token",
+                "scope": "instagram_business_basic,instagram_business_manage_insights",
+                "user_id": "17841400000000000",
+            },
+        )
+
+    def fake_get(url, *, params, timeout):
+        calls.append(("GET", url, params))
+        assert url == "https://graph.instagram.com/access_token"
+        assert params == {
+            "grant_type": "ig_exchange_token",
+            "client_secret": "ig-login-secret",
+            "access_token": "one-hour-token",
+        }
+        return FakeResponse(
+            200,
+            {
+                "access_token": "sixty-day-token",
+                "token_type": "bearer",
+                "expires_in": 5_184_000,
+            },
+        )
+
+    monkeypatch.setattr(instagram_business_module.requests, "post", fake_post)
+    monkeypatch.setattr(instagram_business_module.requests, "get", fake_get)
+
+    payload = instagram_business_module.exchange_instagram_business_login_code_for_token("one-time-code")
+
+    assert [method for method, _url, _payload in calls] == ["POST", "GET"]
+    assert payload["access_token"] == "sixty-day-token"
+    assert payload["expires_in"] == 5_184_000
+    assert payload["_token_lifetime"] == "long_lived"
+    assert payload["scope"] == "instagram_business_basic,instagram_business_manage_insights"
+    assert payload["user_id"] == "17841400000000000"
+    assert "one-hour-token" not in str(payload["_raw_body"])
+    assert "sixty-day-token" not in str(payload["_raw_body"])
+
+
 def test_instagram_business_login_disconnect_clears_token_and_cached_account(client):
     refs = _seed_connected_instagram_login()
 
@@ -605,7 +665,7 @@ def test_instagram_business_login_callback_saves_standalone_provider_and_token(c
         db.close()
 
 
-def test_instagram_business_login_sync_calls_graph_instagram_and_accepts_empty_data(
+def test_instagram_business_login_sync_rejects_completely_empty_provider_data(
     client,
     monkeypatch,
     caplog,
@@ -666,13 +726,8 @@ def test_instagram_business_login_sync_calls_graph_instagram_and_accepts_empty_d
         },
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["provider"] == "instagram_business_login"
-    assert payload["source_type"] == "instagram_business"
-    assert payload["has_data"] is False
-    assert set(payload["metrics_successful"]) == set(main_module.INSTAGRAM_BUSINESS_LOGIN_ACCOUNT_INSIGHT_METRICS)
-    assert payload["metrics_failed"] == []
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "instagram_business_login_insights_failed"
     assert captured_urls
     assert all("graph.instagram.com" in url for url in captured_urls)
     assert all("graph.facebook.com" not in url for url in captured_urls)
@@ -680,32 +735,175 @@ def test_instagram_business_login_sync_calls_graph_instagram_and_accepts_empty_d
     assert "INSTAGRAM_BUSINESS_LOGIN_INSIGHTS_RESPONSE" in caplog.text
     assert "instagram_business_manage_insights" in caplog.text
 
+    assert "INSTAGRAM_BUSINESS_LOGIN_SYNC_NO_USABLE_DATA" in caplog.text
     db = SessionLocal()
     try:
-        dataset = db.get(Dataset, payload["dataset_id"])
-        assert dataset is not None
-        assert dataset.data["source_type"] == "instagram_business"
-        assert dataset.data["integration_type"] == "instagram_business"
-        assert dataset.data["provider"] == "instagram_business_login"
-        assert dataset.data["auth_method"] == "instagram_business_login"
-        assert dataset.data["credential_integration_id"] == refs["integration_id"]
-        assert dataset.data["asset_integration_id"] == refs["integration_id"]
-        assert dataset.data["account_id"] == refs["instagram_account_id"]
-        assert dataset.data["parent_page_id"] is None
-        assert dataset.data["source"] == "instagram_business_login"
-        assert dataset.data["auth_type"] == "instagram_login"
-        assert dataset.data["graph_host"] == "graph.instagram.com"
-        assert dataset.data["permissions_used"] == [
-            "instagram_business_basic",
-            "instagram_business_manage_insights",
-        ]
-        assert dataset.data["has_data"] is False
-        assert dataset.data["impressions"] is None
-        assert dataset.data["views"] is None
-        assert dataset.data["unavailable_metrics"]["views"] == "not_returned_by_meta"
-        assert dataset.data["instagram_metric_audit"]["metrics"]["views"]["response_shape"] == "not_returned_by_meta"
-        assert dataset.data["instagram_metric_audit"]["metrics"]["views"]["metric_type"] == "total_value"
-        assert dataset.data["recent_posts"] == []
+        assert db.query(Dataset).count() == 0
+    finally:
+        db.close()
+
+
+def test_instagram_business_login_expired_provider_token_requires_reauthorization(
+    client,
+    monkeypatch,
+    caplog,
+):
+    refs = _seed_connected_instagram_login()
+    caplog.set_level("WARNING")
+    calls: list[str] = []
+
+    class FakeResponse:
+        status_code = 401
+
+        def json(self):
+            return {
+                "error": {
+                    "message": "Error validating access token: Session has expired.",
+                    "type": "OAuthException",
+                    "code": 190,
+                    "error_subcode": 0,
+                    "fbtrace_id": "safe-trace-id",
+                }
+            }
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        calls.append(url)
+        assert headers == {"Authorization": "Bearer ig-login-token"}
+        assert url.endswith("/me")
+        return FakeResponse()
+
+    monkeypatch.setattr(instagram_business_module.requests, "get", fake_get)
+
+    response = client.post(
+        "/integrations/instagram-business-login/sync",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "credential_integration_id": refs["integration_id"],
+            "account_id": refs["instagram_account_id"],
+            "timeframe": "last_30d",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "instagram_business_login_reauthorization_required",
+        "message": "Instagram Business Login session expired. Reconnect the account and try again.",
+    }
+    assert len(calls) == 1
+    assert "INSTAGRAM_BUSINESS_LOGIN_PROVIDER_ERROR" in caplog.text
+    assert '"meta_error_code": 190' in caplog.text
+    assert '"meta_error_subcode": 0' in caplog.text
+    assert '"meta_error_type": "OAuthException"' in caplog.text
+    assert '"stage": "profile_fetch"' in caplog.text
+    assert "ig-login-token" not in caplog.text
+    assert "190..." not in caplog.text
+
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, refs["integration_id"])
+        assert integration.status == "reauthorization_required"
+        assert db.query(Dataset).count() == 0
+    finally:
+        db.close()
+
+    status = client.get(
+        "/integrations/instagram-business-login/status",
+        headers=_auth_headers(int(refs["user_id"])),
+        params={"integration_id": refs["integration_id"]},
+    )
+    assert status.status_code == 200
+    assert status.json()["connected"] is False
+    assert status.json()["status"] == "needs_permission"
+    assert "Reconnect" in status.json()["message"]
+
+
+def test_instagram_business_login_known_expired_token_fails_before_provider_call(
+    client,
+    monkeypatch,
+):
+    refs = _seed_connected_instagram_login()
+    db = SessionLocal()
+    try:
+        token = db.query(IntegrationToken).one()
+        token.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.add(token)
+        db.commit()
+    finally:
+        db.close()
+
+    def unexpected_get(*_args, **_kwargs):
+        raise AssertionError("Expired stored tokens must not be sent to Meta")
+
+    monkeypatch.setattr(instagram_business_module.requests, "get", unexpected_get)
+
+    response = client.post(
+        "/integrations/instagram-business-login/sync",
+        headers=_auth_headers(int(refs["user_id"])),
+        json={
+            "credential_integration_id": refs["integration_id"],
+            "account_id": refs["instagram_account_id"],
+            "timeframe": "last_30d",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "instagram_business_login_reauthorization_required"
+    db = SessionLocal()
+    try:
+        assert db.get(Integration, refs["integration_id"]).status == "reauthorization_required"
+        assert db.query(Dataset).count() == 0
+    finally:
+        db.close()
+
+
+def test_instagram_business_login_refreshes_valid_long_lived_token_near_expiry(
+    client,
+    monkeypatch,
+):
+    refs = _seed_connected_instagram_login()
+    now = datetime.now(timezone.utc)
+    db = SessionLocal()
+    try:
+        integration = db.get(Integration, refs["integration_id"])
+        token = db.query(IntegrationToken).one()
+        token.expires_at = now + timedelta(days=2)
+        token.updated_at = now - timedelta(days=3)
+        db.add(token)
+        db.commit()
+        db.refresh(token)
+        # SQLite/SQLAlchemy preserves the explicitly supplied timestamp; this
+        # is the Meta requirement that the long-lived token be at least 24h old.
+        assert main_module._utc_datetime(token.updated_at) <= now - timedelta(hours=24)
+
+        refresh_calls: list[str] = []
+
+        def fake_refresh(access_token: str):
+            refresh_calls.append(access_token)
+            return {
+                "access_token": "refreshed-long-lived-token",
+                "expires_in": 5_184_000,
+                "_http_status_code": 200,
+            }
+
+        monkeypatch.setattr(main_module, "refresh_instagram_business_login_access_token", fake_refresh)
+
+        resolved = main_module._refresh_instagram_business_login_token_if_needed(
+            db=db,
+            integration=integration,
+            access_token="ig-login-token",
+            route_name="instagram_business_login_sync",
+        )
+
+        assert resolved == "refreshed-long-lived-token"
+        assert refresh_calls == ["ig-login-token"]
+        _present, decrypt_ok, stored_token = main_module._resolve_instagram_business_login_access_token(
+            db,
+            integration,
+        )
+        assert decrypt_ok is True
+        assert stored_token == "refreshed-long-lived-token"
+        refreshed_row = db.query(IntegrationToken).one()
+        assert main_module._utc_datetime(refreshed_row.expires_at) >= now + timedelta(days=59)
     finally:
         db.close()
 

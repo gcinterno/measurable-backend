@@ -138,6 +138,7 @@ from .integrations.instagram_business import (
     get_missing_instagram_business_config_fields,
     get_instagram_business_login_redirect_uri,
     get_instagram_business_redirect_uri,
+    refresh_instagram_business_login_access_token,
 )
 from .report_metric_catalog import (
     FACEBOOK_PAGES_PROVIDER,
@@ -10680,6 +10681,71 @@ def _instagram_business_login_error_message(payload: dict[str, Any]) -> str | No
     return message or None
 
 
+def _instagram_business_login_provider_error(payload: dict[str, Any]) -> dict[str, Any]:
+    provider_error = payload.get("_instagram_provider_error")
+    return dict(provider_error) if isinstance(provider_error, dict) else {}
+
+
+def _instagram_business_login_is_auth_error(provider_error: dict[str, Any]) -> bool:
+    try:
+        error_code = int(provider_error.get("meta_error_code"))
+    except (TypeError, ValueError):
+        error_code = None
+    http_status = provider_error.get("http_status")
+    error_type = str(provider_error.get("meta_error_type") or "").lower()
+    message = str(provider_error.get("message") or "").lower()
+    return (
+        error_code == 190
+        or http_status == 401
+        or (
+            error_type == "oauthexception"
+            and any(marker in message for marker in ("expired", "invalid", "access token", "session"))
+        )
+    )
+
+
+def _instagram_business_login_is_permission_error(provider_error: dict[str, Any]) -> bool:
+    try:
+        error_code = int(provider_error.get("meta_error_code"))
+    except (TypeError, ValueError):
+        error_code = None
+    message = str(provider_error.get("message") or "").lower()
+    return error_code in {10, 200} or any(
+        marker in message
+        for marker in (
+            "insufficient permission",
+            "missing permission",
+            "does not have permission",
+            "permissions error",
+            "not authorized",
+        )
+    )
+
+
+def _instagram_business_login_provider_access_exception(
+    provider_error: dict[str, Any],
+) -> HTTPException | None:
+    if _instagram_business_login_is_auth_error(provider_error):
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": "instagram_business_login_reauthorization_required",
+                "message": "Instagram Business Login session expired. Reconnect the account and try again.",
+                "provider_error": provider_error,
+            },
+        )
+    if _instagram_business_login_is_permission_error(provider_error):
+        return HTTPException(
+            status_code=403,
+            detail={
+                "code": "instagram_business_login_needs_permission",
+                "message": "Instagram Business Login permissions are insufficient. Reconnect and approve access.",
+                "provider_error": provider_error,
+            },
+        )
+    return None
+
+
 def _instagram_business_login_response_shape(payload: dict[str, Any]) -> dict[str, Any]:
     status_code = payload.get("_instagram_http_status_code")
     data = payload.get("data")
@@ -10952,6 +11018,10 @@ def _fetch_instagram_business_login_media_content(
             media_audit["media_edge_error"] = str(exc)
             break
         status_code = media_payload.get("_instagram_http_status_code")
+        provider_error = _instagram_business_login_provider_error(media_payload)
+        access_exc = _instagram_business_login_provider_access_exception(provider_error)
+        if access_exc is not None:
+            raise access_exc
         media_rows = media_payload.get("data") if isinstance(media_payload.get("data"), list) else []
         media_audit["pages"].append(
             {
@@ -11011,6 +11081,10 @@ def _fetch_instagram_business_login_media_content(
                         "error": {"message": str(exc)},
                     }
                 metric_status = insight_payload.get("_instagram_http_status_code")
+                provider_error = _instagram_business_login_provider_error(insight_payload)
+                access_exc = _instagram_business_login_provider_access_exception(provider_error)
+                if access_exc is not None:
+                    raise access_exc
                 metric_value = (
                     _instagram_business_login_insight_total(insight_payload)
                     if metric_status == 200
@@ -11037,6 +11111,7 @@ def _fetch_instagram_business_login_media_content(
                     "status_code": metric_status,
                     "value": metric_value,
                     "error": metric_error,
+                    "provider_error": provider_error or None,
                 }
             recent_posts.append(_instagram_business_login_media_post(raw_media, media_metrics))
             if len(recent_posts) >= max_media_items:
@@ -29615,6 +29690,16 @@ def _instagram_business_login_status_payload(
             missing_scopes=[],
             message="Instagram Business Login token could not be read.",
         )
+    if str(integration.status or "").strip().lower() in {"reauthorization_required", "needs_reconnect"}:
+        return InstagramBusinessLoginStatusOut(
+            provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+            connected=False,
+            status="needs_permission",
+            integration_id=integration.id,
+            account_count=account_count,
+            missing_scopes=[],
+            message="Instagram Business Login session expired. Reconnect the account.",
+        )
     if missing_scopes:
         return InstagramBusinessLoginStatusOut(
             provider=INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
@@ -30554,6 +30639,162 @@ def instagram_business_login_callback(
         )
 
 
+def _raise_instagram_business_login_access_failure(
+    *,
+    db: Session,
+    integration: Integration,
+    exc: HTTPException,
+    route_name: str,
+) -> None:
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    error_code = str(detail.get("code") or "")
+    provider_error = detail.get("provider_error") if isinstance(detail.get("provider_error"), dict) else {}
+    if error_code == "instagram_business_login_reauthorization_required":
+        integration.status = "reauthorization_required"
+    elif error_code == "instagram_business_login_needs_permission":
+        integration.status = "needs_permission"
+    else:
+        raise exc
+    db.add(integration)
+    db.commit()
+    logger.warning(
+        "INSTAGRAM_BUSINESS_LOGIN_SYNC_ACCESS_FAILED %s",
+        json.dumps(
+            {
+                "route": route_name,
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "workspace_id": integration.workspace_id,
+                "integration_id": integration.id,
+                "classification": error_code,
+                "provider_error": provider_error,
+            },
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ),
+    )
+    raise http_error(exc.status_code, error_code, str(detail.get("message") or "Instagram access failed."))
+
+
+def _refresh_instagram_business_login_token_if_needed(
+    *,
+    db: Session,
+    integration: Integration,
+    access_token: str,
+    route_name: str,
+) -> str:
+    token_account = _get_instagram_business_login_token_account(db, integration.id)
+    token_row = _get_latest_integration_token(db, token_account.id) if token_account is not None else None
+    expires_at = _utc_datetime(token_row.expires_at) if token_row is not None else None
+    if token_row is None or expires_at is None:
+        return access_token
+
+    now = datetime.now(timezone.utc)
+    if expires_at <= now:
+        _raise_instagram_business_login_access_failure(
+            db=db,
+            integration=integration,
+            route_name=route_name,
+            exc=HTTPException(
+                status_code=409,
+                detail={
+                    "code": "instagram_business_login_reauthorization_required",
+                    "message": "Instagram Business Login session expired. Reconnect the account and try again.",
+                    "provider_error": {
+                        "stage": "token_preflight",
+                        "graph_host": INSTAGRAM_BUSINESS_LOGIN_GRAPH_HOST,
+                        "endpoint": None,
+                        "http_status": None,
+                        "meta_error_code": None,
+                        "message": "Stored access token has expired.",
+                    },
+                },
+            ),
+        )
+
+    # Meta permits refreshing a long-lived token after its first 24 hours.
+    # Refresh only near expiry to avoid unnecessary provider traffic.
+    if expires_at > now + timedelta(days=7):
+        return access_token
+    token_updated_at = _utc_datetime(token_row.updated_at)
+    if token_updated_at is None or token_updated_at > now - timedelta(hours=24):
+        return access_token
+
+    try:
+        refreshed_payload = refresh_instagram_business_login_access_token(access_token)
+    except requests.RequestException as exc:
+        logger.warning(
+            "INSTAGRAM_BUSINESS_LOGIN_TOKEN_REFRESH_DEFERRED %s",
+            json.dumps(
+                {
+                    "route": route_name,
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "workspace_id": integration.workspace_id,
+                    "integration_id": integration.id,
+                    "reason": type(exc).__name__,
+                },
+                sort_keys=True,
+            ),
+        )
+        return access_token
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        provider_error = detail.get("provider_error") if isinstance(detail.get("provider_error"), dict) else {}
+        access_exc = _instagram_business_login_provider_access_exception(provider_error)
+        if access_exc is not None:
+            _raise_instagram_business_login_access_failure(
+                db=db,
+                integration=integration,
+                exc=access_exc,
+                route_name=route_name,
+            )
+        logger.warning(
+            "INSTAGRAM_BUSINESS_LOGIN_TOKEN_REFRESH_DEFERRED %s",
+            json.dumps(
+                {
+                    "route": route_name,
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "workspace_id": integration.workspace_id,
+                    "integration_id": integration.id,
+                    "provider_error": provider_error,
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
+        return access_token
+
+    refreshed_access_token = str(refreshed_payload.get("access_token") or "").strip()
+    expires_in = refreshed_payload.get("expires_in")
+    refreshed_expires_at = (
+        now + timedelta(seconds=int(expires_in))
+        if isinstance(expires_in, int) or (isinstance(expires_in, str) and expires_in.isdigit())
+        else expires_at
+    )
+    _replace_integration_token_encrypted(
+        db,
+        account_id=token_account.id,
+        workspace_id=integration.workspace_id,
+        access_token=refreshed_access_token,
+        expires_at=refreshed_expires_at,
+    )
+    logger.info(
+        "INSTAGRAM_BUSINESS_LOGIN_TOKEN_REFRESHED %s",
+        json.dumps(
+            {
+                "route": route_name,
+                "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                "workspace_id": integration.workspace_id,
+                "integration_id": integration.id,
+                "expires_at": refreshed_expires_at.isoformat(),
+            },
+            sort_keys=True,
+        ),
+    )
+    return refreshed_access_token
+
+
 def _run_instagram_business_login_sync(
     *,
     db: Session,
@@ -30640,6 +30881,13 @@ def _run_instagram_business_login_sync(
             "instagram_business_login_identity_missing",
             "Instagram Business Login account identity is not available. Reconnect the account.",
         )
+    integration_status = str(integration.status or "").strip().lower()
+    if integration_status in {"reauthorization_required", "needs_reconnect"}:
+        raise http_error(
+            409,
+            "instagram_business_login_reauthorization_required",
+            "Instagram Business Login session expired. Reconnect the account and try again.",
+        )
     direct_status = _instagram_business_login_status_payload(db, integration)
     if direct_status.status == "needs_permission":
         raise http_error(
@@ -30650,6 +30898,12 @@ def _run_instagram_business_login_sync(
     _token_present, _token_decrypt_ok, access_token = _resolve_instagram_business_login_access_token(db, integration)
     if not access_token:
         raise http_error(400, "instagram_business_login_no_token", "Instagram Business Login token not found.")
+    access_token = _refresh_instagram_business_login_token_if_needed(
+        db=db,
+        integration=integration,
+        access_token=access_token,
+        route_name=route_name,
+    )
 
     timeframe_config = resolve_meta_pages_timeframe(
         payload.timeframe,
@@ -30680,6 +30934,15 @@ def _run_instagram_business_login_sync(
         profile_fetch_error = str(exc)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
+        provider_error = detail.get("provider_error") if isinstance(detail.get("provider_error"), dict) else {}
+        access_exc = _instagram_business_login_provider_access_exception(provider_error)
+        if access_exc is not None:
+            _raise_instagram_business_login_access_failure(
+                db=db,
+                integration=integration,
+                exc=access_exc,
+                route_name=route_name,
+            )
         profile_fetch_error = str(detail.get("message") or exc.detail or "profile_unavailable")
 
     requested_metrics = list(INSTAGRAM_BUSINESS_LOGIN_ACCOUNT_INSIGHT_METRICS)
@@ -30743,6 +31006,15 @@ def _run_instagram_business_login_sync(
                 "error": {"message": str(exc)},
             }
         status_code = insight_payload.get("_instagram_http_status_code")
+        provider_error = _instagram_business_login_provider_error(insight_payload)
+        access_exc = _instagram_business_login_provider_access_exception(provider_error)
+        if access_exc is not None:
+            _raise_instagram_business_login_access_failure(
+                db=db,
+                integration=integration,
+                exc=access_exc,
+                route_name=route_name,
+            )
         metric_result = _normalize_instagram_business_login_insight_payload(
             insight_payload,
             metric_name=metric_name,
@@ -30786,6 +31058,7 @@ def _run_instagram_business_login_sync(
             "latest_value": metric_latest_value if metric_result.get("availability") == "available" else None,
             "end_time": metric_end_time if metric_result.get("availability") == "available" else None,
             "error": unavailable_metrics.get(metric_name),
+            "provider_error": provider_error or None,
         }
         logger.info(
             "INSTAGRAM_INSIGHT_RESPONSE %s",
@@ -30893,25 +31166,58 @@ def _run_instagram_business_login_sync(
     else:
         engagement_source_metric = None
 
-    recent_posts, top_content, media_audit = _fetch_instagram_business_login_media_content(
-        access_token=access_token,
-        instagram_user_id=instagram_user_id,
-        timeframe_config=timeframe_config,
-        route_name=route_name,
-        workspace_id=integration.workspace_id,
-        integration_id=integration.id,
-    )
+    try:
+        recent_posts, top_content, media_audit = _fetch_instagram_business_login_media_content(
+            access_token=access_token,
+            instagram_user_id=instagram_user_id,
+            timeframe_config=timeframe_config,
+            route_name=route_name,
+            workspace_id=integration.workspace_id,
+            integration_id=integration.id,
+        )
+    except HTTPException as exc:
+        _raise_instagram_business_login_access_failure(
+            db=db,
+            integration=integration,
+            exc=exc,
+            route_name=route_name,
+        )
     posts_analyzed_count = len(recent_posts)
     has_data = (
         any(value is not None for value in normalized_metrics.values())
         or followers_count is not None
+        or media_count is not None
         or bool(recent_posts)
     )
-    if not metrics_successful and not has_data:
+    if not has_data:
+        logger.warning(
+            "INSTAGRAM_BUSINESS_LOGIN_SYNC_NO_USABLE_DATA %s",
+            json.dumps(
+                {
+                    "route": route_name,
+                    "provider": INSTAGRAM_BUSINESS_LOGIN_PROVIDER,
+                    "workspace_id": integration.workspace_id,
+                    "integration_id": integration.id,
+                    "instagram_user_id": _mask_instagram_business_login_user_id(instagram_user_id),
+                    "metrics_http_successful": metrics_successful,
+                    "metrics_failed": metrics_failed,
+                    "profile_error": profile_fetch_error,
+                    "metric_errors": {
+                        metric: audit.get("provider_error") or audit.get("error")
+                        for metric, audit in metric_audit.items()
+                        if audit.get("error")
+                    },
+                    "media_error": media_audit.get("media_edge_error"),
+                },
+                ensure_ascii=False,
+                default=str,
+                sort_keys=True,
+            ),
+        )
         raise http_error(
             400,
             "instagram_business_login_insights_failed",
-            "Instagram Business Login Insights did not return a successful metric response.",
+            "Instagram Business Login did not return usable profile, insight, or media data.",
         )
     live_sync_at = datetime.now(timezone.utc)
 
